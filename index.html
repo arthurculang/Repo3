@@ -1,0 +1,566 @@
+<!doctype html>
+<!--
+  Fractal Sculpture Generator
+  Single-file web app. Deploy: drop index.html on GitHub Pages.
+  Target: iPhone Safari + desktop. Export STL for metal DMLS/SLM printing.
+  Units: millimetres.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="color-scheme" content="dark">
+<title>Fractal Sculpture</title>
+<style>
+  :root {
+    --bg: #0b0d10;
+    --panel: #14181d;
+    --panel-2: #1b2026;
+    --ink: #e8ecf1;
+    --ink-dim: #8a94a3;
+    --accent: #7bd389;
+    --accent-2: #5aa7ff;
+    --danger: #ff6b6b;
+    --border: #242a31;
+    --panel-w: 320px;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bot: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    overflow: hidden; overscroll-behavior: none;
+    -webkit-text-size-adjust: 100%;
+  }
+  button, input, select { font: inherit; color: inherit; }
+
+  #app {
+    position: fixed; inset: 0;
+    display: grid;
+    grid-template-columns: var(--panel-w) 1fr;
+    grid-template-rows: 1fr;
+  }
+
+  #stage {
+    position: relative;
+    background: radial-gradient(ellipse at 50% 40%, #1a2028 0%, #0b0d10 70%);
+    min-width: 0; min-height: 0;
+  }
+  #canvas {
+    display: block; width: 100%; height: 100%;
+    touch-action: none;
+  }
+  #topbar {
+    position: absolute; top: calc(8px + var(--safe-top)); left: 8px; right: 8px;
+    display: flex; gap: 8px; align-items: center;
+    pointer-events: none; z-index: 10;
+  }
+  #topbar > * { pointer-events: auto; }
+  #newBtn {
+    flex: 1 1 auto;
+    background: linear-gradient(180deg, #2f7d3a, #1f5a27);
+    color: #fff; font-weight: 700; letter-spacing: 0.02em;
+    border: 1px solid #3a9a47; border-radius: 10px;
+    padding: 12px 14px; font-size: 16px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.15);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #newBtn:active { transform: translateY(1px); }
+  .icon-btn {
+    background: rgba(20,24,29,0.85);
+    border: 1px solid var(--border); border-radius: 10px;
+    color: var(--ink); padding: 10px 12px; font-size: 14px;
+    cursor: pointer; white-space: nowrap;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  .icon-btn:active { background: #232a32; }
+  #stlBtn { color: var(--accent-2); border-color: #2a4a70; }
+
+  #panel {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    padding-top: var(--safe-top);
+  }
+  #panelHeader {
+    padding: 12px 14px 8px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; justify-content: space-between;
+  }
+  #panelHeader h1 {
+    margin: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+  #panelBody {
+    overflow-y: auto; overflow-x: hidden;
+    padding: 10px 14px 16px;
+    flex: 1 1 auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ctrl { margin: 10px 0 12px; }
+  .ctrl > label {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 12px; color: var(--ink-dim); margin-bottom: 4px;
+    letter-spacing: 0.02em;
+  }
+  .ctrl .val { color: var(--ink); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .ctrl input[type="range"] {
+    width: 100%; height: 28px; background: transparent; margin: 0;
+    -webkit-appearance: none; appearance: none;
+  }
+  .ctrl input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 2px; background: #2a323b;
+  }
+  .ctrl input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--accent); border: none; margin-top: -9px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  }
+  .ctrl input[type="range"]::-moz-range-track {
+    height: 4px; border-radius: 2px; background: #2a323b;
+  }
+  .ctrl input[type="range"]::-moz-range-thumb {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: var(--accent); border: none;
+  }
+  .ctrl select, .ctrl input[type="number"] {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; color: var(--ink);
+  }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row input[type="number"] { flex: 1; }
+  .dice {
+    flex: 0 0 auto; width: 36px; height: 36px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 6px; cursor: pointer; color: var(--ink);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .dice:active { background: #232a32; }
+  .hidden { display: none !important; }
+
+  #panelFooter {
+    border-top: 1px solid var(--border);
+    padding: 8px 14px calc(8px + var(--safe-bot));
+    display: flex; align-items: center; justify-content: space-between;
+    color: var(--ink-dim); font-size: 11px; letter-spacing: 0.04em;
+    background: var(--panel);
+  }
+  #version { font-variant-numeric: tabular-nums; }
+  #status { color: var(--ink-dim); }
+
+  /* Drag handle only visible on mobile sheet */
+  #sheetHandle { display: none; }
+
+  /* Narrow: bottom sheet */
+  @media (max-width: 720px) {
+    #app {
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr auto;
+    }
+    #panel {
+      border-right: none;
+      border-top: 1px solid var(--border);
+      max-height: 55vh;
+      min-height: 44px;
+      transition: max-height 220ms ease;
+      padding-top: 0;
+    }
+    #panel.collapsed { max-height: 64px; }
+    #panel.collapsed #panelBody { opacity: 0; pointer-events: none; }
+    #sheetHandle {
+      display: flex; align-items: center; justify-content: center;
+      height: 22px; cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #sheetHandle::before {
+      content: ""; width: 44px; height: 4px; border-radius: 2px;
+      background: #3a424c;
+    }
+    #panelHeader h1 { font-size: 12px; }
+    #topbar { top: calc(8px + var(--safe-top)); }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="panel" aria-label="Controls">
+    <div id="sheetHandle" aria-label="Toggle controls" role="button" tabindex="0"></div>
+    <div id="panelHeader">
+      <h1>Sculpture</h1>
+      <span id="status">ready</span>
+    </div>
+    <div id="panelBody">
+      <div class="ctrl">
+        <label>Seed <span class="val" id="seedVal">—</span></label>
+        <div class="row">
+          <input type="number" id="seed" min="0" max="4294967295" step="1" value="1">
+          <button class="dice" id="seedDice" title="Randomize seed" aria-label="Randomize seed">&#9861;</button>
+        </div>
+      </div>
+
+      <div class="ctrl">
+        <label>Complexity <span class="val" id="complexityVal">4</span></label>
+        <input type="range" id="complexity" min="1" max="7" step="1" value="4">
+      </div>
+      <div class="ctrl">
+        <label>Branches / node <span class="val" id="branchCountVal">3</span></label>
+        <input type="range" id="branchCount" min="1" max="5" step="1" value="3">
+      </div>
+      <div class="ctrl">
+        <label>Branch angle (°) <span class="val" id="branchAngleVal">35</span></label>
+        <input type="range" id="branchAngle" min="10" max="80" step="1" value="35">
+      </div>
+      <div class="ctrl">
+        <label>Radius taper <span class="val" id="taperVal">0.72</span></label>
+        <input type="range" id="taper" min="0.4" max="0.95" step="0.01" value="0.72">
+      </div>
+      <div class="ctrl">
+        <label>Trunk thickness (mm) <span class="val" id="trunkVal">6.0</span></label>
+        <input type="range" id="trunk" min="2" max="14" step="0.1" value="6">
+      </div>
+      <div class="ctrl">
+        <label>Smoothness <span class="val" id="smoothVal">0.35</span></label>
+        <input type="range" id="smooth" min="0" max="1" step="0.01" value="0.35">
+      </div>
+      <div class="ctrl">
+        <label>Polyhedral accents <span class="val" id="polyVal">0.4</span></label>
+        <input type="range" id="poly" min="0" max="1" step="0.01" value="0.4">
+      </div>
+      <div class="ctrl">
+        <label>Rings <span class="val" id="ringsVal">2</span></label>
+        <input type="range" id="rings" min="0" max="6" step="1" value="2">
+      </div>
+      <div class="ctrl">
+        <label>Ring tightness (mm) <span class="val" id="ringGapVal">0.7</span></label>
+        <input type="range" id="ringGap" min="0.5" max="2.5" step="0.05" value="0.7">
+      </div>
+      <div class="ctrl">
+        <label>Symmetry</label>
+        <select id="sym">
+          <option value="none" selected>None</option>
+          <option value="bilateral">Bilateral</option>
+          <option value="radial">Radial N-fold</option>
+        </select>
+      </div>
+      <div class="ctrl hidden" id="radialWrap">
+        <label>Radial N <span class="val" id="radialNVal">5</span></label>
+        <input type="range" id="radialN" min="2" max="8" step="1" value="5">
+      </div>
+      <div class="ctrl">
+        <label>Min negative space (mm) <span class="val" id="negVal">1.5</span></label>
+        <input type="range" id="neg" min="0.5" max="5" step="0.1" value="1.5">
+      </div>
+    </div>
+    <div id="panelFooter">
+      <span id="version">v0.1.0</span>
+      <span>mm · STL</span>
+    </div>
+  </aside>
+
+  <main id="stage">
+    <div id="topbar">
+      <button id="newBtn" aria-label="New Creature">&#10022; New Creature</button>
+      <button class="icon-btn" id="stlBtn" aria-label="Download STL">STL</button>
+      <button class="icon-btn" id="resetBtn" aria-label="Reset">Reset</button>
+    </div>
+    <canvas id="canvas"></canvas>
+  </main>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+
+const VERSION = "v0.1.0";
+document.getElementById('version').textContent = VERSION;
+
+// ---------- State ----------
+const DEFAULTS = {
+  seed: 1,
+  complexity: 4,
+  branchCount: 3,
+  branchAngle: 35,
+  taper: 0.72,
+  trunk: 6.0,
+  smooth: 0.35,
+  poly: 0.4,
+  rings: 2,
+  ringGap: 0.7,
+  sym: 'none',
+  radialN: 5,
+  neg: 1.5,
+};
+const state = { ...DEFAULTS };
+
+// ---------- Three.js scene ----------
+const canvas = document.getElementById('canvas');
+const renderer = new THREE.WebGLRenderer({
+  canvas, antialias: true, alpha: false, powerPreference: 'high-performance'
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d10);
+
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 2000);
+camera.position.set(120, 90, 160);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.rotateSpeed = 0.9;
+controls.zoomSpeed = 0.9;
+controls.panSpeed = 0.8;
+controls.minDistance = 30;
+controls.maxDistance = 600;
+
+// Lights: key + fill + rim
+const key = new THREE.DirectionalLight(0xffffff, 1.6);
+key.position.set(120, 180, 120);
+scene.add(key);
+const fill = new THREE.DirectionalLight(0x90b8ff, 0.45);
+fill.position.set(-140, 60, -60);
+scene.add(fill);
+const rim = new THREE.DirectionalLight(0xffd29a, 0.55);
+rim.position.set(20, -80, -160);
+scene.add(rim);
+scene.add(new THREE.AmbientLight(0x404852, 0.35));
+
+// Subtle ground dot so orbit has reference
+const groundGeom = new THREE.CircleGeometry(120, 64);
+const groundMat = new THREE.MeshBasicMaterial({ color: 0x141a21, transparent: true, opacity: 0.6 });
+const ground = new THREE.Mesh(groundGeom, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -50;
+scene.add(ground);
+
+// Export group: every mesh added here goes into the STL
+const exportGroup = new THREE.Group();
+scene.add(exportGroup);
+
+const material = new THREE.MeshStandardMaterial({
+  color: 0xb8c2cc, metalness: 0.85, roughness: 0.35,
+  flatShading: false,
+});
+
+// ---------- Resize ----------
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.floor(r.width));
+  const h = Math.max(1, Math.floor(r.height));
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(canvas);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+resize();
+
+// ---------- Render loop ----------
+function tick() {
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// ---------- Generator (Chunk 1: placeholder cube) ----------
+function clearExport() {
+  for (let i = exportGroup.children.length - 1; i >= 0; i--) {
+    const m = exportGroup.children[i];
+    exportGroup.remove(m);
+    if (m.geometry) m.geometry.dispose();
+  }
+}
+
+function generate() {
+  setStatus('generating…');
+  clearExport();
+
+  // Placeholder: a rounded cube scaled roughly to a future sculpture's envelope.
+  // Chunks 2–5 replace this with the real branch + SDF + ring geometry.
+  const size = 40 + state.trunk * 4;
+  const geom = new THREE.BoxGeometry(size, size, size, 2, 2, 2);
+  const mesh = new THREE.Mesh(geom, material);
+  exportGroup.add(mesh);
+
+  frameCamera();
+  setStatus(`seed ${state.seed}`);
+}
+
+function frameCamera() {
+  const box = new THREE.Box3().setFromObject(exportGroup);
+  if (box.isEmpty()) return;
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const radius = Math.max(size.x, size.y, size.z) * 0.75;
+  controls.target.copy(center);
+  const dir = camera.position.clone().sub(controls.target).normalize();
+  camera.position.copy(center).addScaledVector(dir, radius * 3.0);
+  camera.near = Math.max(0.1, radius * 0.05);
+  camera.far = radius * 40;
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
+function setStatus(msg) { document.getElementById('status').textContent = msg; }
+
+// ---------- STL export ----------
+const exporter = new STLExporter();
+function downloadSTL() {
+  try {
+    setStatus('exporting STL…');
+    const stl = exporter.parse(exportGroup, { binary: true });
+    const blob = new Blob([stl], { type: 'model/stl' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sculpture_seed${state.seed}_${VERSION}.stl`;
+    document.body.appendChild(a);
+    a.click();
+    // iOS Safari: revoke after a tick so download can start
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+    setStatus(`exported seed ${state.seed}`);
+  } catch (e) {
+    console.error(e);
+    setStatus('export failed');
+  }
+}
+
+// ---------- UI wiring ----------
+function bindSlider(id, key, format = v => v) {
+  const el = document.getElementById(id);
+  const out = document.getElementById(id + 'Val');
+  const isNum = el.type === 'range' || el.type === 'number';
+  const update = () => {
+    const v = isNum ? Number(el.value) : el.value;
+    state[key] = v;
+    if (out) out.textContent = format(v);
+  };
+  el.addEventListener('input', () => { update(); scheduleRegen(); });
+  el.addEventListener('change', () => { update(); scheduleRegen(); });
+  return { el, update };
+}
+
+function bindSelect(id, key) {
+  const el = document.getElementById(id);
+  const update = () => { state[key] = el.value; };
+  el.addEventListener('change', () => { update(); onSymChange(); scheduleRegen(); });
+  return { el, update };
+}
+
+const bindings = {
+  seed: bindSlider('seed', 'seed', v => v),
+  complexity: bindSlider('complexity', 'complexity', v => v),
+  branchCount: bindSlider('branchCount', 'branchCount', v => v),
+  branchAngle: bindSlider('branchAngle', 'branchAngle', v => v),
+  taper: bindSlider('taper', 'taper', v => v.toFixed(2)),
+  trunk: bindSlider('trunk', 'trunk', v => v.toFixed(1)),
+  smooth: bindSlider('smooth', 'smooth', v => v.toFixed(2)),
+  poly: bindSlider('poly', 'poly', v => v.toFixed(2)),
+  rings: bindSlider('rings', 'rings', v => v),
+  ringGap: bindSlider('ringGap', 'ringGap', v => v.toFixed(2)),
+  radialN: bindSlider('radialN', 'radialN', v => v),
+  neg: bindSlider('neg', 'neg', v => v.toFixed(1)),
+  sym: bindSelect('sym', 'sym'),
+};
+
+function onSymChange() {
+  document.getElementById('radialWrap').classList.toggle('hidden', state.sym !== 'radial');
+}
+onSymChange();
+
+function refreshUIFromState() {
+  for (const k of Object.keys(bindings)) {
+    const b = bindings[k];
+    if (b.el.type === 'range' || b.el.type === 'number') b.el.value = String(state[k]);
+    else b.el.value = state[k];
+    b.update();
+  }
+  onSymChange();
+}
+
+// Debounced regenerate. Fast path (Chunk 1) is instant; later chunks will
+// use short debounce during slider drag and full-quality on release.
+let regenTimer = null;
+function scheduleRegen() {
+  if (regenTimer) clearTimeout(regenTimer);
+  regenTimer = setTimeout(() => { regenTimer = null; generate(); }, 60);
+}
+
+// Buttons
+document.getElementById('seedDice').addEventListener('click', () => {
+  state.seed = Math.floor(Math.random() * 2 ** 31);
+  bindings.seed.el.value = String(state.seed);
+  bindings.seed.update();
+  scheduleRegen();
+});
+
+document.getElementById('newBtn').addEventListener('click', () => {
+  // Roll a new seed and randomize creative sliders; keep safety / symmetry alone.
+  state.seed = Math.floor(Math.random() * 2 ** 31);
+  state.complexity = 3 + Math.floor(Math.random() * 4);        // 3..6
+  state.branchCount = 2 + Math.floor(Math.random() * 3);       // 2..4
+  state.branchAngle = 20 + Math.floor(Math.random() * 50);     // 20..70
+  state.taper = 0.55 + Math.random() * 0.35;                   // 0.55..0.9
+  state.trunk = 4 + Math.random() * 7;                         // 4..11
+  state.smooth = 0.15 + Math.random() * 0.55;                  // 0.15..0.7
+  state.poly = Math.random();                                  // 0..1
+  state.rings = Math.floor(Math.random() * 5);                 // 0..4
+  refreshUIFromState();
+  scheduleRegen();
+});
+
+document.getElementById('resetBtn').addEventListener('click', () => {
+  Object.assign(state, DEFAULTS);
+  refreshUIFromState();
+  scheduleRegen();
+});
+
+document.getElementById('stlBtn').addEventListener('click', () => {
+  // Must stay synchronous to the user gesture for iOS Safari.
+  downloadSTL();
+});
+
+// Bottom-sheet collapse on narrow screens
+const panel = document.getElementById('panel');
+document.getElementById('sheetHandle').addEventListener('click', () => {
+  panel.classList.toggle('collapsed');
+});
+
+// Prevent iOS double-tap zoom on UI buttons
+document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+
+// WebGL context loss — re-run last generation on restore (full handler in Chunk 6)
+canvas.addEventListener('webglcontextlost', e => {
+  e.preventDefault();
+  setStatus('gl context lost');
+}, false);
+canvas.addEventListener('webglcontextrestored', () => {
+  setStatus('gl restored');
+  generate();
+}, false);
+
+// Initial render
+refreshUIFromState();
+generate();
+</script>
+</body>
+</html>
