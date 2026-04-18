@@ -381,7 +381,23 @@ function tick() {
 }
 requestAnimationFrame(tick);
 
-// ---------- Generator (Chunk 1: placeholder cube) ----------
+// ---------- Generator (Chunk 2: branch graph, debug-rendered) ----------
+const MIN_RADIUS = 0.5;          // mm — matches DMLS min wall thickness
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5)); // ≈ 137.5°
+const LENGTH_PER_RADIUS = 6.0;   // base segment length multiplier
+
+// Seeded PRNG — mulberry32. Deterministic across devices.
+function mulberry32(seed) {
+  let a = (seed >>> 0) || 1;
+  return function() {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 function clearExport() {
   for (let i = exportGroup.children.length - 1; i >= 0; i--) {
     const m = exportGroup.children[i];
@@ -390,19 +406,201 @@ function clearExport() {
   }
 }
 
+// Orthonormal frame where t is the given tangent. Writes into u, v.
+const _ref = new THREE.Vector3();
+function buildFrame(t, u, v) {
+  if (Math.abs(t.y) < 0.9) _ref.set(0, 1, 0); else _ref.set(1, 0, 0);
+  u.copy(_ref).cross(t).normalize();
+  v.copy(t).cross(u).normalize();
+}
+
+// Shortest distance between two 3D segments (a1→a2) and (b1→b2).
+// Standard clamped-parametric solution. Returns a scalar distance.
+const _d1 = new THREE.Vector3(), _d2 = new THREE.Vector3(), _rv = new THREE.Vector3();
+const _cp1 = new THREE.Vector3(), _cp2 = new THREE.Vector3();
+function segSegDist(a1, a2, b1, b2) {
+  _d1.subVectors(a2, a1);
+  _d2.subVectors(b2, b1);
+  _rv.subVectors(a1, b1);
+  const a = _d1.dot(_d1), e = _d2.dot(_d2), f = _d2.dot(_rv);
+  let s, t;
+  if (a <= 1e-9 && e <= 1e-9) return a1.distanceTo(b1);
+  if (a <= 1e-9) { s = 0; t = Math.max(0, Math.min(1, f / e)); }
+  else {
+    const c = _d1.dot(_rv);
+    if (e <= 1e-9) { t = 0; s = Math.max(0, Math.min(1, -c / a)); }
+    else {
+      const b = _d1.dot(_d2);
+      const denom = a * e - b * b;
+      s = denom !== 0 ? Math.max(0, Math.min(1, (b * f - c * e) / denom)) : 0;
+      t = (b * s + f) / e;
+      if (t < 0)      { t = 0; s = Math.max(0, Math.min(1, -c / a)); }
+      else if (t > 1) { t = 1; s = Math.max(0, Math.min(1, (b - c) / a)); }
+    }
+  }
+  _cp1.copy(a1).addScaledVector(_d1, s);
+  _cp2.copy(b1).addScaledVector(_d2, t);
+  return _cp1.distanceTo(_cp2);
+}
+
+// Build the branch graph. Returns { branches, accents, trunk }.
+// Every branch is guaranteed to share its start point with its parent's end,
+// so the graph is topologically connected by construction.
+function generateStructure(s) {
+  const rng = mulberry32(s.seed);
+  const branches = [];
+  const accents = [];
+
+  const trunkLen = Math.max(s.trunk * LENGTH_PER_RADIUS, 20);
+  const trunk = {
+    start: new THREE.Vector3(0, 0, 0),
+    end:   new THREE.Vector3(0, trunkLen, 0),
+    r0: s.trunk, r1: Math.max(MIN_RADIUS, s.trunk * s.taper),
+    depth: 0, parent: null,
+    tangent: new THREE.Vector3(0, 1, 0),
+  };
+  branches.push(trunk);
+
+  grow(trunk, s, rng, branches, accents);
+
+  // Recenter vertically so the piece is roughly origin-centered.
+  const box = new THREE.Box3();
+  for (const b of branches) box.expandByPoint(b.start).expandByPoint(b.end);
+  const center = box.getCenter(new THREE.Vector3());
+  for (const b of branches) { b.start.sub(center); b.end.sub(center); }
+  for (const a of accents) a.pos.sub(center);
+
+  return { branches, accents };
+}
+
+const _t = new THREE.Vector3(), _u = new THREE.Vector3(), _v = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
+function grow(parent, s, rng, branches, accents) {
+  if (parent.depth >= s.complexity) return;
+  if (parent.r1 < MIN_RADIUS * 1.1) return;
+
+  const N = Math.max(1, s.branchCount | 0);
+  const angleRad = s.branchAngle * Math.PI / 180;
+
+  // Leonardo's rule: parent_r² = Σ child_r². Asymmetric random weights.
+  const weights = new Array(N);
+  let wsum = 0;
+  for (let i = 0; i < N; i++) { weights[i] = 0.6 + rng() * 0.8; wsum += weights[i]; }
+  for (let i = 0; i < N; i++) weights[i] /= wsum;
+
+  _t.copy(parent.tangent);
+  buildFrame(_t, _u, _v);
+
+  // Gravitropic pull: trunk-ward branches feel it more; terminal branches less.
+  const gravBlend = 0.14 * (1 - parent.depth / Math.max(1, s.complexity));
+
+  const azimuth0 = rng() * Math.PI * 2;
+
+  for (let i = 0; i < N; i++) {
+    const r0 = Math.max(MIN_RADIUS, Math.sqrt(parent.r1 * parent.r1 * weights[i]) * 0.97);
+    if (r0 < MIN_RADIUS * 1.05) continue;
+    const r1 = Math.max(MIN_RADIUS, r0 * s.taper);
+
+    // Up to 6 attempts per child: rotate azimuth to dodge unrelated branches.
+    let placed = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const phi = azimuth0 + i * GOLDEN_ANGLE + attempt * (Math.PI / 7);
+      const angJitter = angleRad * (0.85 + rng() * 0.3);
+
+      const dir = new THREE.Vector3()
+        .addScaledVector(_t, Math.cos(angJitter))
+        .addScaledVector(_u, Math.sin(angJitter) * Math.cos(phi))
+        .addScaledVector(_v, Math.sin(angJitter) * Math.sin(phi));
+
+      // Blend directional bias; bias up in upper half, down in lower half for flair.
+      const bias = parent.end.y > 0 ? _up : _up.clone().multiplyScalar(-1);
+      dir.addScaledVector(bias, gravBlend).normalize();
+
+      const length = r0 * LENGTH_PER_RADIUS * (0.75 + rng() * 0.5);
+      const end = parent.end.clone().addScaledVector(dir, length);
+
+      // Self-intersection repulsion against non-ancestor branches.
+      const clearance = s.neg + r0;
+      let ok = true;
+      for (let j = 0; j < branches.length; j++) {
+        const b = branches[j];
+        if (b === parent) continue;
+        // Shared-endpoint branches (siblings/parent siblings) are fine; skip
+        // the check only when segments share an exact endpoint.
+        if (b.end.equals(parent.end) || b.start.equals(parent.end)) continue;
+        const d = segSegDist(parent.end, end, b.start, b.end);
+        if (d < clearance + Math.max(b.r0, b.r1)) { ok = false; break; }
+      }
+      if (ok) { placed = { dir, end, length }; break; }
+    }
+
+    if (!placed) continue;
+
+    const child = {
+      start: parent.end.clone(),
+      end: placed.end,
+      r0, r1,
+      depth: parent.depth + 1,
+      parent,
+      tangent: placed.dir.clone(),
+    };
+    branches.push(child);
+    grow(child, s, rng, branches, accents);
+  }
+
+  // Polyhedral accent at the junction, probabilistic on density slider.
+  if (parent.depth > 0 && rng() < s.poly * 0.85) {
+    accents.push({
+      pos: parent.end.clone(),
+      size: parent.r1 * (1.3 + rng() * 0.6),
+      axis: parent.tangent.clone(),
+      kind: rng() < 0.5 ? 'octa' : 'tetra',
+      spin: rng() * Math.PI * 2,
+    });
+  }
+}
+
+// ---------- Debug render (Chunk 2) ----------
+// Capsule per branch + polyhedron per accent. Chunk 3 replaces this
+// with a single fused marching-cubes mesh.
+const _quat = new THREE.Quaternion();
+const _axisY = new THREE.Vector3(0, 1, 0);
+const _mid = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+
+function addCapsuleMesh(b) {
+  _dir.subVectors(b.end, b.start);
+  const len = _dir.length();
+  if (len < 1e-4) return;
+  _dir.multiplyScalar(1 / len);
+  const r = (b.r0 + b.r1) * 0.5;
+  const geom = new THREE.CapsuleGeometry(Math.max(r, MIN_RADIUS), len, 4, 10);
+  const mesh = new THREE.Mesh(geom, material);
+  _mid.addVectors(b.start, b.end).multiplyScalar(0.5);
+  mesh.position.copy(_mid);
+  mesh.quaternion.setFromUnitVectors(_axisY, _dir);
+  exportGroup.add(mesh);
+}
+
+function addAccentMesh(a) {
+  const geom = a.kind === 'tetra'
+    ? new THREE.TetrahedronGeometry(a.size)
+    : new THREE.OctahedronGeometry(a.size);
+  const mesh = new THREE.Mesh(geom, material);
+  mesh.position.copy(a.pos);
+  mesh.quaternion.setFromUnitVectors(_axisY, a.axis);
+  mesh.rotateY(a.spin);
+  exportGroup.add(mesh);
+}
+
 function generate() {
   setStatus('generating…');
   clearExport();
-
-  // Placeholder: a rounded cube scaled roughly to a future sculpture's envelope.
-  // Chunks 2–5 replace this with the real branch + SDF + ring geometry.
-  const size = 40 + state.trunk * 4;
-  const geom = new THREE.BoxGeometry(size, size, size, 2, 2, 2);
-  const mesh = new THREE.Mesh(geom, material);
-  exportGroup.add(mesh);
-
+  const { branches, accents } = generateStructure(state);
+  for (const b of branches) addCapsuleMesh(b);
+  for (const a of accents)  addAccentMesh(a);
   frameCamera();
-  setStatus(`seed ${state.seed}`);
+  setStatus(`seed ${state.seed} · ${branches.length} branches · ${accents.length} accents`);
 }
 
 function frameCamera() {
