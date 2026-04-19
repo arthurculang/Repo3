@@ -288,7 +288,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v0.4.0";
+const VERSION = "v0.4.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1197,9 +1197,7 @@ const RING_RADIUS_MIN = 1.0;          // mm — branches thinner than this skip 
 const RING_RADIUS_MAX = 5.0;          // mm — branches thicker than this skip ring
 
 // Returns true if the line segA→segB actually pierces the disk defined by
-// (ringCenter, ringAxis, innerR). By construction the generator always places
-// ringCenter on the branch axis, so this pass is mostly defensive, but once
-// 4b starts offsetting ring centers for more organic placement this matters.
+// (ringCenter, ringAxis, innerR). Gates candidate selection in generateRings.
 function pierceTest(segA, segB, ringCenter, ringAxis, innerR) {
   const dx = segB.x - segA.x, dy = segB.y - segA.y, dz = segB.z - segA.z;
   const num = ringAxis.x*(ringCenter.x-segA.x) + ringAxis.y*(ringCenter.y-segA.y) + ringAxis.z*(ringCenter.z-segA.z);
@@ -1215,6 +1213,80 @@ function pierceTest(segA, segB, ringCenter, ringAxis, innerR) {
   const inPlaneZ = rz - along*ringAxis.z;
   const inPlane = Math.sqrt(inPlaneX*inPlaneX + inPlaneY*inPlaneY + inPlaneZ*inPlaneZ);
   return inPlane < innerR;
+}
+
+// Build parent→children map once per generation so capture + clearance tests
+// can query neighbours in O(1).
+function buildChildrenMap(branches) {
+  const m = new Map();
+  for (const b of branches) {
+    if (!b.parent) continue;
+    let arr = m.get(b.parent);
+    if (!arr) { arr = []; m.set(b.parent, arr); }
+    arr.push(b);
+  }
+  return m;
+}
+
+// Double-sided stopper capture (Chunk 4b). On each side of the ring along
+// the branch axis, within distance < hole diameter (= 2·innerR), there must
+// be a cross-section fatter than the hole — otherwise the ring could slide
+// off that side. Junction fatness comes from siblings + parent at b.start
+// and from children at b.end, fused through the SDF smooth-min.
+function captureTest(b, h, innerR, childrenMap) {
+  const segLen = b.start.distanceTo(b.end);
+  const distStart = h * segLen;
+  const distEnd = (1 - h) * segLen;
+  const holeDiam = 2 * innerR;
+
+  let startFat = b.r0;
+  if (b.parent) {
+    startFat = Math.max(startFat, b.parent.r1);
+    const siblings = childrenMap.get(b.parent);
+    if (siblings) for (const s of siblings) if (s !== b) startFat = Math.max(startFat, s.r0);
+  }
+  let endFat = b.r1;
+  const kids = childrenMap.get(b);
+  if (kids) for (const k of kids) endFat = Math.max(endFat, k.r0);
+
+  const startOk = (distStart < holeDiam) && (startFat > innerR);
+  const endOk = (distEnd < holeDiam) && (endFat > innerR);
+  return startOk && endOk;
+}
+
+// Shortest distance from 3D segment a→b to point p.
+function segPointDist(a, b, p) {
+  const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+  const l2 = abx*abx + aby*aby + abz*abz || 1e-9;
+  const apx = p.x - a.x, apy = p.y - a.y, apz = p.z - a.z;
+  let t = (apx*abx + apy*aby + apz*abz) / l2;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  const dx = apx - abx*t, dy = apy - aby*t, dz = apz - abz*t;
+  return Math.sqrt(dx*dx + dy*dy + dz*dz);
+}
+
+// Ring-to-branch clearance. Family-connected branches (host, parent,
+// siblings, children) are expected to pass near the ring by construction —
+// captivity depends on them. Everyone else must stay at least (minGap)
+// clear of the ring's outer tube surface.
+function clearanceTest(ring, branches, minGap, childrenMap) {
+  const { center, innerR, tubeR, branch: host } = ring;
+  const outerR = innerR + 2 * tubeR;
+  const family = new Set([host]);
+  if (host.parent) {
+    family.add(host.parent);
+    const sib = childrenMap.get(host.parent);
+    if (sib) for (const s of sib) family.add(s);
+  }
+  const kids = childrenMap.get(host);
+  if (kids) for (const k of kids) family.add(k);
+  for (const b of branches) {
+    if (family.has(b)) continue;
+    const bR = Math.max(b.r0, b.r1);
+    const d = segPointDist(b.start, b.end, center);
+    if (d < outerR + bR + minGap) return false;
+  }
+  return true;
 }
 
 const _ringPerp = new THREE.Vector3(), _ringBi = new THREE.Vector3();
@@ -1235,7 +1307,10 @@ function generateRings(branches, s, rng) {
     const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
   }
 
+  const childrenMap = buildChildrenMap(branches);
   const gap = Math.max(0.5, s.ringGap);
+  let rejPierce = 0, rejCapture = 0, rejClearance = 0;
+
   for (const b of order) {
     if (rings.length >= targetCount) break;
     const h = 0.3 + rng() * 0.4;
@@ -1257,8 +1332,15 @@ function generateRings(branches, s, rng) {
     const rAtH = b.r0 + (b.r1 - b.r0) * h;
     const innerR = rAtH + gap;
 
-    if (!pierceTest(b.start, b.end, center, axis, innerR)) continue;
-    rings.push({ center, axis, innerR, tubeR: RING_TUBE_R, branch: b });
+    if (!pierceTest(b.start, b.end, center, axis, innerR)) { rejPierce++; continue; }
+    if (!captureTest(b, h, innerR, childrenMap))           { rejCapture++; continue; }
+    const candidate = { center, axis, innerR, tubeR: RING_TUBE_R, branch: b };
+    if (!clearanceTest(candidate, branches, gap, childrenMap)) { rejClearance++; continue; }
+    rings.push(candidate);
+  }
+
+  if (rejPierce || rejCapture || rejClearance) {
+    console.log(`ring rejects: pierce=${rejPierce} capture=${rejCapture} clearance=${rejClearance}`);
   }
   return rings;
 }
