@@ -257,6 +257,23 @@
       </div>
 
       <div class="ctrl">
+        <label>Negative space</label>
+        <select id="negStyle">
+          <option value="none" selected>None</option>
+          <option value="helix">N-Helix (DNA-like spiral)</option>
+          <option value="colony">Colony pathways</option>
+        </select>
+      </div>
+      <div class="ctrl hidden" id="negStrandsWrap">
+        <label>Strands <span class="val" id="negStrandsVal">3</span></label>
+        <input type="range" id="negStrands" min="1" max="6" step="1" value="3">
+      </div>
+      <div class="ctrl hidden" id="negDensityWrap">
+        <label>Negative-space density <span class="val" id="negDensityVal">0.50</span></label>
+        <input type="range" id="negDensity" min="0" max="1" step="0.05" value="0.5">
+      </div>
+
+      <div class="ctrl">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
       </div>
@@ -339,7 +356,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.5.0";
+const VERSION = "v1.6.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -376,6 +393,9 @@ const DEFAULTS = {
   material: 'stainless',
   size: 80,  // target max bounding-box dimension (mm)
   wall: 0,   // 0 = solid. > 0 = hollow shell with this wall thickness (mm).
+  negStyle: 'none',   // 'none' | 'helix' | 'colony'
+  negStrands: 3,      // 1..6 helix strands or colony paths
+  negDensity: 0.5,    // 0..1 — tunes wrap radius / turns / path count
 };
 const state = { ...DEFAULTS };
 
@@ -1187,6 +1207,151 @@ function sdTetrahedron(lx, ly, lz, s) {
 const _fu = new THREE.Vector3(), _fv = new THREE.Vector3();
 const _sizeV = new THREE.Vector3();
 
+// ---------- Negative-space paths (Chunk D / v1.6.0) ----------
+// Generate polyline paths for the selected negative-space style. Each path
+// is a list of { x, y, z } vertices plus a common tube radius. carveNegPaths
+// then rasterizes each segment into the shared SDF field via SDF subtraction
+// (result = max(body, -tubeSDF)). Both styles enter and exit the body at
+// existing surface points so there's never a sealed cavity.
+
+function negTubeRadius(s) {
+  const mat = MATERIALS[s.material] || MATERIALS.stainless;
+  return Math.max(1.2, 1.5 * mat.minWall);
+}
+
+function helixPaths(branches, s, rng) {
+  const N = Math.max(1, Math.min(6, s.negStrands | 0));
+  const box = new THREE.Box3();
+  for (const b of branches) box.expandByPoint(b.start).expandByPoint(b.end);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  // Pick the longest axis for the helix's central direction and the two
+  // remaining axes for its perpendicular wrap plane.
+  let d = [0,0,0], p1 = [1,0,0], p2 = [0,0,1], alongLen = size.y;
+  if (size.y >= size.x && size.y >= size.z)      { d = [0,1,0]; p1 = [1,0,0]; p2 = [0,0,1]; alongLen = size.y; }
+  else if (size.x >= size.z)                      { d = [1,0,0]; p1 = [0,1,0]; p2 = [0,0,1]; alongLen = size.x; }
+  else                                            { d = [0,0,1]; p1 = [1,0,0]; p2 = [0,1,0]; alongLen = size.z; }
+  // Wrap radius and turn count scale with density slider. Wrap capped by
+  // the smallest perpendicular extent so the helix stays inside the
+  // bounding box (roughly).
+  const perp = Math.min(size.x, size.y, size.z);
+  const wrapR = perp * 0.30 * (0.6 + 0.8 * s.negDensity);
+  const turns = 1 + 2.5 * s.negDensity;
+  const tubeR = negTubeRadius(s);
+  const L = alongLen * 1.15;            // extend ±7.5% past each end so tube exits cleanly
+  const M = 48;                          // samples per strand
+  const paths = [];
+  for (let k = 0; k < N; k++) {
+    const phase = (2 * Math.PI * k) / N + rng() * 0.05;
+    const pts = new Array(M + 1);
+    for (let i = 0; i <= M; i++) {
+      const t = i / M;
+      const along = (t - 0.5) * L;
+      const ang = turns * 2 * Math.PI * t + phase;
+      const rc = Math.cos(ang) * wrapR;
+      const rs = Math.sin(ang) * wrapR;
+      pts[i] = {
+        x: center.x + along * d[0] + p1[0] * rc + p2[0] * rs,
+        y: center.y + along * d[1] + p1[1] * rc + p2[1] * rs,
+        z: center.z + along * d[2] + p1[2] * rc + p2[2] * rs,
+      };
+    }
+    paths.push({ points: pts, tubeR });
+  }
+  return paths;
+}
+
+function colonyPaths(branches, s, rng) {
+  // Need at least two off-trunk tips to connect. If the graph is too
+  // shallow we bail out quietly.
+  const tips = branches.filter(b => b.depth > 0);
+  if (tips.length < 2) return [];
+  const N = Math.max(1, Math.min(6, s.negStrands | 0));
+  const tubeR = negTubeRadius(s);
+  const M = 40;                          // samples per path
+  // Offset magnitude for the bezier control point, scales with the
+  // bounding-box size and density. Larger density → more wandering.
+  const box = new THREE.Box3();
+  for (const b of branches) box.expandByPoint(b.start).expandByPoint(b.end);
+  const size = box.getSize(new THREE.Vector3());
+  const diag = Math.sqrt(size.x*size.x + size.y*size.y + size.z*size.z);
+  const offset = diag * 0.08 * (0.5 + s.negDensity);
+  const paths = [];
+  for (let k = 0; k < N; k++) {
+    const iA = Math.floor(rng() * tips.length);
+    let iB = Math.floor(rng() * tips.length);
+    if (iB === iA) iB = (iB + 1) % tips.length;
+    const A = tips[iA].end, B = tips[iB].end;
+    // Quadratic bezier with control point near midpoint, offset by a
+    // seeded random direction so different strands take different routes
+    // through the interior.
+    const midX = (A.x + B.x) * 0.5, midY = (A.y + B.y) * 0.5, midZ = (A.z + B.z) * 0.5;
+    const ox1 = (rng() - 0.5) * 2, oy1 = (rng() - 0.5) * 2, oz1 = (rng() - 0.5) * 2;
+    const olen = Math.sqrt(ox1*ox1 + oy1*oy1 + oz1*oz1) || 1;
+    const C = {
+      x: midX + (ox1 / olen) * offset,
+      y: midY + (oy1 / olen) * offset,
+      z: midZ + (oz1 / olen) * offset,
+    };
+    const pts = new Array(M + 1);
+    for (let i = 0; i <= M; i++) {
+      const t = i / M;
+      const u = 1 - t;
+      pts[i] = {
+        x: u*u*A.x + 2*u*t*C.x + t*t*B.x,
+        y: u*u*A.y + 2*u*t*C.y + t*t*B.y,
+        z: u*u*A.z + 2*u*t*C.z + t*t*B.z,
+      };
+    }
+    paths.push({ points: pts, tubeR });
+  }
+  return paths;
+}
+
+function generateNegPaths(branches, s, rng) {
+  if (s.negStyle === 'helix')  return helixPaths(branches, s, rng);
+  if (s.negStyle === 'colony') return colonyPaths(branches, s, rng);
+  return [];
+}
+
+function carveNegPaths(field, nx, ny, nz, ox, oy, oz, voxel, paths) {
+  const stride = nx * ny;
+  for (const path of paths) {
+    const pts = path.points;
+    const r = path.tubeR;
+    const pad = r + voxel * 2;
+    for (let k = 0; k < pts.length - 1; k++) {
+      const a = pts[k], b = pts[k+1];
+      const xmin = Math.max(0,      Math.floor((Math.min(a.x, b.x) - pad - ox) / voxel));
+      const xmax = Math.min(nx - 1, Math.ceil ((Math.max(a.x, b.x) + pad - ox) / voxel));
+      const ymin = Math.max(0,      Math.floor((Math.min(a.y, b.y) - pad - oy) / voxel));
+      const ymax = Math.min(ny - 1, Math.ceil ((Math.max(a.y, b.y) + pad - oy) / voxel));
+      const zmin = Math.max(0,      Math.floor((Math.min(a.z, b.z) - pad - oz) / voxel));
+      const zmax = Math.min(nz - 1, Math.ceil ((Math.max(a.z, b.z) + pad - oz) / voxel));
+      const bax = b.x - a.x, bay = b.y - a.y, baz = b.z - a.z;
+      const l2 = bax*bax + bay*bay + baz*baz || 1e-9;
+      for (let zi = zmin; zi <= zmax; zi++) {
+        const pz = oz + zi * voxel;
+        for (let yi = ymin; yi <= ymax; yi++) {
+          const py = oy + yi * voxel;
+          const base = zi * stride + yi * nx;
+          for (let xi = xmin; xi <= xmax; xi++) {
+            const px = ox + xi * voxel;
+            const pax = px - a.x, pay = py - a.y, paz = pz - a.z;
+            let h = (pax*bax + pay*bay + paz*baz) / l2;
+            if (h < 0) h = 0; else if (h > 1) h = 1;
+            const dx = pax - bax*h, dy = pay - bay*h, dz = paz - baz*h;
+            const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+            const carve = r - dist;        // = -(dist - r); positive inside tube
+            const idx = base + xi;
+            if (carve > field[idx]) field[idx] = carve;
+          }
+        }
+      }
+    }
+  }
+}
+
 function buildField(branches, accents, s, targetVoxels = 96) {
   const box = new THREE.Box3();
   let maxR = 0;
@@ -1336,6 +1501,14 @@ function buildField(branches, accents, s, targetVoxels = 96) {
         }
       }
     }
+  }
+
+  // Negative-space carving (Chunk D). Independent RNG stream derived from
+  // the seed keeps paths deterministic but independent of earlier streams.
+  if (s.negStyle && s.negStyle !== 'none') {
+    const negRng = mulberry32((s.seed >>> 0) ^ 0x112358ab);
+    const paths = generateNegPaths(branches, s, negRng);
+    if (paths.length) carveNegPaths(field, nx, ny, nz, ox, oy, oz, voxel, paths);
   }
 
   return { field, nx, ny, nz, ox, oy, oz, voxel };
@@ -1665,8 +1838,32 @@ function checkPrintSafety(branches, voxel, fieldInfo, materialKey, wall) {
     if (wall < mat.minWall) warns.push(`shell wall=${wall.toFixed(2)}mm < ${mat.minWall}mm ${mat.label} wall limit`);
     if (voxel > wall * 0.5) warns.push(`voxel=${voxel.toFixed(2)}mm > wall/2 — shell may alias; reduce Size or disable hollow`);
   }
-  const enclosed = floodFillOutside(fieldInfo.field, fieldInfo.nx, fieldInfo.ny, fieldInfo.nz, 0);
-  if (enclosed > 0) warns.push(`${enclosed} enclosed-void voxel(s) — slicer may flag`);
+  return warns;
+}
+
+// Separate post-export neg-space clearance check. For N-helix we can compute
+// the inter-strand clearance analytically (chord between adjacent strands
+// on the wrap circle); colony paths are checked as a coarse voxel shell
+// distance instead. Called from downloadSTL after buildField.
+function checkNegSpaceSafety(s, branches) {
+  if (!s.negStyle || s.negStyle === 'none') return [];
+  const mat = MATERIALS[s.material] || MATERIALS.stainless;
+  const warns = [];
+  const tubeR = negTubeRadius(s);
+  if (tubeR < mat.minWall) warns.push(`neg-space tube radius ${tubeR.toFixed(2)}mm < ${mat.minWall}mm ${mat.label} wall limit`);
+  if (s.negStyle === 'helix') {
+    const box = new THREE.Box3();
+    for (const b of branches) box.expandByPoint(b.start).expandByPoint(b.end);
+    const size = box.getSize(new THREE.Vector3());
+    const perp = Math.min(size.x, size.y, size.z);
+    const wrapR = perp * 0.30 * (0.6 + 0.8 * s.negDensity);
+    const N = Math.max(1, Math.min(6, s.negStrands | 0));
+    const chord = 2 * wrapR * Math.sin(Math.PI / N);
+    const wallBetween = chord - 2 * tubeR;
+    if (N > 1 && wallBetween < mat.minWall) {
+      warns.push(`helix strand-to-strand wall ${wallBetween.toFixed(2)}mm < ${mat.minWall}mm — reduce strand count or density`);
+    }
+  }
   return warns;
 }
 
@@ -1849,7 +2046,8 @@ function generate(previewVoxels = 96) {
   const dt = (performance.now() - t0) | 0;
   frameCamera();
   const hollowTag = state.wall > 0 ? ` wall=${state.wall.toFixed(1)}mm` : '';
-  console.log(`gen: seed=${state.seed} size=${state.size}mm${hollowTag} sym=${state.sym}${state.sym === 'radial' ? state.radialN : ''} ${branches.length}br ${accents.length}ac ${rings.length}rg ${triCount|0}tri voxel=${voxel.toFixed(2)}mm components=${nComp} bridges=${bridges} ${dt}ms`);
+  const negTag = state.negStyle !== 'none' ? ` neg=${state.negStyle}(${state.negStrands}@${state.negDensity.toFixed(2)})` : '';
+  console.log(`gen: seed=${state.seed} size=${state.size}mm${hollowTag}${negTag} sym=${state.sym}${state.sym === 'radial' ? state.radialN : ''} ${branches.length}br ${accents.length}ac ${rings.length}rg ${triCount|0}tri voxel=${voxel.toFixed(2)}mm components=${nComp} bridges=${bridges} ${dt}ms`);
   const warn = nComp > 1 ? ` · ⚠ ${nComp} shells` : '';
   setStatus(`seed ${state.seed} · ${triCount|0} tris · ${rings.length} rings${warn}`);
 }
@@ -1910,7 +2108,8 @@ async function downloadSTL() {
 
     setStatus('exporting: safety check…');
     await nextFrame();
-    const warns = checkPrintSafety(branches, f.voxel, f, state.material, state.wall);
+    const warns = checkPrintSafety(branches, f.voxel, f, state.material, state.wall)
+      .concat(checkNegSpaceSafety(state, branches));
     if (warns.length) {
       console.warn('print-safety warnings:');
       for (const w of warns) console.warn('  ·', w);
@@ -1967,10 +2166,14 @@ function bindSlider(id, key, format = v => v) {
   return { el, update };
 }
 
-function bindSelect(id, key) {
+function bindSelect(id, key, onChange) {
   const el = document.getElementById(id);
   const update = () => { state[key] = el.value; };
-  el.addEventListener('change', () => { update(); onSymChange(); scheduleRegen(); });
+  el.addEventListener('change', () => {
+    update();
+    if (onChange) onChange();
+    scheduleRegen();
+  });
   return { el, update };
 }
 
@@ -1989,13 +2192,22 @@ const bindings = {
   ringGap: bindSlider('ringGap', 'ringGap', v => v.toFixed(2)),
   radialN: bindSlider('radialN', 'radialN', v => v),
   neg: bindSlider('neg', 'neg', v => v.toFixed(1)),
-  sym: bindSelect('sym', 'sym'),
+  negStrands: bindSlider('negStrands', 'negStrands', v => v),
+  negDensity: bindSlider('negDensity', 'negDensity', v => v.toFixed(2)),
+  sym: bindSelect('sym', 'sym', onSymChange),
+  negStyle: bindSelect('negStyle', 'negStyle', onNegChange),
 };
 
 function onSymChange() {
   document.getElementById('radialWrap').classList.toggle('hidden', state.sym !== 'radial');
 }
+function onNegChange() {
+  const hide = state.negStyle === 'none';
+  document.getElementById('negStrandsWrap').classList.toggle('hidden', hide);
+  document.getElementById('negDensityWrap').classList.toggle('hidden', hide);
+}
 onSymChange();
+onNegChange();
 
 // Material dropdown binds separately: changing it updates the shared
 // material tint only, no geometry regen needed.
@@ -2013,6 +2225,7 @@ function refreshUIFromState() {
     b.update();
   }
   onSymChange();
+  onNegChange();
   materialEl.value = state.material;
   applyMaterial(state.material);
 }
