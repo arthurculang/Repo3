@@ -334,7 +334,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.4.0";
+const VERSION = "v1.4.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -436,9 +436,8 @@ function makeLabelSprite() {
   canvas.width = 256; canvas.height = 64;
   const tex = new THREE.CanvasTexture(canvas);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: tex, depthTest: false, transparent: true,
+    map: tex, transparent: true,
   }));
-  sprite.renderOrder = 1000;
   return { sprite, canvas, tex };
 }
 
@@ -459,10 +458,9 @@ for (const axis of ['x', 'y', 'z']) {
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.Float32BufferAttribute([0,0,0, 1,0,0], 3));
   const mat = new THREE.LineBasicMaterial({
-    color: RULER_COLORS[axis], depthTest: false, transparent: true, opacity: 0.85,
+    color: RULER_COLORS[axis], transparent: true, opacity: 0.85,
   });
   const line = new THREE.Line(geom, mat);
-  line.renderOrder = 999;
   rulersGroup.add(line);
   rulerLines[axis] = line;
   const lbl = makeLabelSprite();
