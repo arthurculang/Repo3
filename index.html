@@ -288,7 +288,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v0.3.0";
+const VERSION = "v0.3.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -826,6 +826,104 @@ const MC_TRI_TABLE = new Int8Array([
 -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
 ]);
 
+// 12-bit mask per cube case: bit i set ⇒ edge i is crossed by the iso-surface.
+// Consumed by marchingCubes() to know which edge vertices to interpolate.
+const MC_EDGE_TABLE = new Int32Array([
+  0x0,0x109,0x203,0x30a,0x406,0x50f,0x605,0x70c,0x80c,0x905,0xa0f,0xb06,0xc0a,0xd03,0xe09,0xf00,
+  0x190,0x99,0x393,0x29a,0x596,0x49f,0x795,0x69c,0x99c,0x895,0xb9f,0xa96,0xd9a,0xc93,0xf99,0xe90,
+  0x230,0x339,0x33,0x13a,0x636,0x73f,0x435,0x53c,0xa3c,0xb35,0x83f,0x936,0xe3a,0xf33,0xc39,0xd30,
+  0x3a0,0x2a9,0x1a3,0xaa,0x7a6,0x6af,0x5a5,0x4ac,0xbac,0xaa5,0x9af,0x8a6,0xfaa,0xea3,0xda9,0xca0,
+  0x460,0x569,0x663,0x76a,0x66,0x16f,0x265,0x36c,0xc6c,0xd65,0xe6f,0xf66,0x86a,0x963,0xa69,0xb60,
+  0x5f0,0x4f9,0x7f3,0x6fa,0x1f6,0xff,0x3f5,0x2fc,0xdfc,0xcf5,0xfff,0xef6,0x9fa,0x8f3,0xbf9,0xaf0,
+  0x650,0x759,0x453,0x55a,0x256,0x35f,0x55,0x15c,0xe5c,0xf55,0xc5f,0xd56,0xa5a,0xb53,0x859,0x950,
+  0x7c0,0x6c9,0x5c3,0x4ca,0x3c6,0x2cf,0x1c5,0xcc,0xfcc,0xec5,0xdcf,0xcc6,0xbca,0xac3,0x9c9,0x8c0,
+  0x8c0,0x9c9,0xac3,0xbca,0xcc6,0xdcf,0xec5,0xfcc,0xcc,0x1c5,0x2cf,0x3c6,0x4ca,0x5c3,0x6c9,0x7c0,
+  0x950,0x859,0xb53,0xa5a,0xd56,0xc5f,0xf55,0xe5c,0x15c,0x55,0x35f,0x256,0x55a,0x453,0x759,0x650,
+  0xaf0,0xbf9,0x8f3,0x9fa,0xef6,0xfff,0xcf5,0xdfc,0x2fc,0x3f5,0xff,0x1f6,0x6fa,0x7f3,0x4f9,0x5f0,
+  0xb60,0xa69,0x963,0x86a,0xf66,0xe6f,0xd65,0xc6c,0x36c,0x265,0x16f,0x66,0x76a,0x663,0x569,0x460,
+  0xca0,0xda9,0xea3,0xfaa,0x8a6,0x9af,0xaa5,0xbac,0x4ac,0x5a5,0x6af,0x7a6,0xaa,0x1a3,0x2a9,0x3a0,
+  0xd30,0xc39,0xf33,0xe3a,0x936,0x83f,0xb35,0xa3c,0x53c,0x435,0x73f,0x636,0x13a,0x33,0x339,0x230,
+  0xe90,0xf99,0xc93,0xd9a,0xa96,0xb9f,0x895,0x99c,0x69c,0x795,0x49f,0x596,0x29a,0x393,0x99,0x190,
+  0xf00,0xe09,0xd03,0xc0a,0xb06,0xa0f,0x905,0x80c,0x70c,0x605,0x50f,0x406,0x30a,0x203,0x109,0x0,
+]);
+
+// Cube corner layout (Paul Bourke convention):
+//   0:(0,0,0) 1:(1,0,0) 2:(1,1,0) 3:(0,1,0)
+//   4:(0,0,1) 5:(1,0,1) 6:(1,1,1) 7:(0,1,1)
+// Edge i runs from corner MC_EA[i] to MC_EB[i].
+const MC_CX = new Int8Array([0,1,1,0,0,1,1,0]);
+const MC_CY = new Int8Array([0,0,1,1,0,0,1,1]);
+const MC_CZ = new Int8Array([0,0,0,0,1,1,1,1]);
+const MC_EA = new Int8Array([0,1,2,3,4,5,6,7,0,1,2,3]);
+const MC_EB = new Int8Array([1,2,3,0,5,6,7,4,4,5,6,7]);
+
+// Extract an iso-surface (iso=0 for SDFs) from a scalar field.
+// Emits a non-indexed BufferGeometry with position only; caller welds + normals.
+// Convention: field[i] < iso ⇒ inside, so triangles wind CCW as seen from outside.
+function marchingCubes(field, nx, ny, nz, ox, oy, oz, vs, iso) {
+  const strideZ = nx * ny;
+  const positions = [];
+  const edge = new Float32Array(36);
+  const vv = new Float32Array(8);
+  for (let z = 0; z < nz - 1; z++) {
+    for (let y = 0; y < ny - 1; y++) {
+      const rowBase = z * strideZ + y * nx;
+      for (let x = 0; x < nx - 1; x++) {
+        const i0 = rowBase + x;
+        vv[0] = field[i0];
+        vv[1] = field[i0 + 1];
+        vv[2] = field[i0 + 1 + nx];
+        vv[3] = field[i0 + nx];
+        vv[4] = field[i0 + strideZ];
+        vv[5] = field[i0 + 1 + strideZ];
+        vv[6] = field[i0 + 1 + nx + strideZ];
+        vv[7] = field[i0 + nx + strideZ];
+        let ci = 0;
+        if (vv[0] < iso) ci |= 1;
+        if (vv[1] < iso) ci |= 2;
+        if (vv[2] < iso) ci |= 4;
+        if (vv[3] < iso) ci |= 8;
+        if (vv[4] < iso) ci |= 16;
+        if (vv[5] < iso) ci |= 32;
+        if (vv[6] < iso) ci |= 64;
+        if (vv[7] < iso) ci |= 128;
+        const ef = MC_EDGE_TABLE[ci];
+        if (ef === 0) continue;
+        for (let e = 0; e < 12; e++) {
+          if (ef & (1 << e)) {
+            const a = MC_EA[e], b = MC_EB[e];
+            const va = vv[a], vb = vv[b];
+            let t = (iso - va) / (vb - va);
+            if (!isFinite(t)) t = 0.5;
+            else if (t < 0) t = 0;
+            else if (t > 1) t = 1;
+            const ax = x + MC_CX[a], ay = y + MC_CY[a], az = z + MC_CZ[a];
+            const bx = x + MC_CX[b], by = y + MC_CY[b], bz = z + MC_CZ[b];
+            edge[e*3]   = ox + vs * (ax + (bx - ax) * t);
+            edge[e*3+1] = oy + vs * (ay + (by - ay) * t);
+            edge[e*3+2] = oz + vs * (az + (bz - az) * t);
+          }
+        }
+        const tb = ci * 16;
+        for (let i = 0; i < 16; i += 3) {
+          const e0 = MC_TRI_TABLE[tb + i];
+          if (e0 === -1) break;
+          const e1 = MC_TRI_TABLE[tb + i + 1];
+          const e2 = MC_TRI_TABLE[tb + i + 2];
+          positions.push(
+            edge[e0*3], edge[e0*3+1], edge[e0*3+2],
+            edge[e1*3], edge[e1*3+1], edge[e1*3+2],
+            edge[e2*3], edge[e2*3+1], edge[e2*3+2],
+          );
+        }
+      }
+    }
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  return geom;
+}
+
 // ---------- Debug render (Chunk 2) ----------
 // Capsule per branch + polyhedron per accent. Chunk 3 replaces this
 // with a single fused marching-cubes mesh.
@@ -1021,6 +1119,38 @@ canvas.addEventListener('webglcontextrestored', () => {
   setStatus('gl restored');
   generate();
 }, false);
+
+// MC walker smoke test (Chunk 3b): build a sphere SDF, run marching cubes,
+// render alongside the debug sculpture. If this looks like a clean sphere,
+// MC_TRI_TABLE + MC_EDGE_TABLE + marchingCubes() are all wired correctly.
+// Removed in Chunk 3c when the real pipeline takes over.
+function mcSphereSmoke() {
+  // Non-Pythagorean r/vs + offset origin so no grid corner hits SDF≈0
+  // (avoids degenerate-triangle artifacts at exact-zero voxel samples).
+  const n = 30, vs = 1.13, r = 11.37;
+  const nx = n, ny = n, nz = n;
+  const ox = -n*vs/2 + 0.01, oy = -n*vs/2 + 0.02, oz = -n*vs/2 + 0.03;
+  const field = new Float32Array(nx*ny*nz);
+  for (let zi = 0; zi < nz; zi++) {
+    for (let yi = 0; yi < ny; yi++) {
+      for (let xi = 0; xi < nx; xi++) {
+        const px = ox + xi*vs, py = oy + yi*vs, pz = oz + zi*vs;
+        field[zi*nx*ny + yi*nx + xi] = Math.sqrt(px*px + py*py + pz*pz) - r;
+      }
+    }
+  }
+  let geom = marchingCubes(field, nx, ny, nz, ox, oy, oz, vs, 0);
+  const rawVerts = geom.getAttribute('position').count;
+  geom = mergeVertices(geom, 1e-4);
+  geom.computeVertexNormals();
+  const mesh = new THREE.Mesh(geom, material);
+  mesh.position.set(80, 0, 0);
+  scene.add(mesh);
+  const weldedVerts = geom.getAttribute('position').count;
+  const tris = rawVerts / 3;
+  console.log(`mc smoke sphere: r=${r}mm, ${tris|0} tris, ${rawVerts}→${weldedVerts} verts`);
+}
+mcSphereSmoke();
 
 // Initial render
 refreshUIFromState();
