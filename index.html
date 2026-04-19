@@ -286,8 +286,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v0.2.0";
+const VERSION = "v0.2.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
