@@ -240,16 +240,16 @@
         <input type="range" id="branchAngle" min="10" max="80" step="1" value="35">
       </div>
       <div class="ctrl">
-        <label>Radius taper <span class="val" id="taperVal">0.72</span></label>
-        <input type="range" id="taper" min="0.4" max="0.95" step="0.01" value="0.72">
+        <label>Radius taper <span class="val" id="taperVal">0.60</span></label>
+        <input type="range" id="taper" min="0.4" max="0.95" step="0.01" value="0.60">
       </div>
       <div class="ctrl">
         <label>Core thickness (mm) <span class="val" id="trunkVal">6.0</span></label>
         <input type="range" id="trunk" min="2" max="14" step="0.1" value="6">
       </div>
       <div class="ctrl">
-        <label>Smoothness <span class="val" id="smoothVal">0.35</span></label>
-        <input type="range" id="smooth" min="0" max="1" step="0.01" value="0.35">
+        <label>Smoothness <span class="val" id="smoothVal">0.25</span></label>
+        <input type="range" id="smooth" min="0" max="1" step="0.01" value="0.25">
       </div>
       <div class="ctrl">
         <label>Polyhedral accents <span class="val" id="polyVal">0.4</span></label>
@@ -310,7 +310,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.1.0";
+const VERSION = "v1.1.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -319,9 +319,9 @@ const DEFAULTS = {
   complexity: 4,
   branchCount: 3,
   branchAngle: 35,
-  taper: 0.72,
+  taper: 0.60,
   trunk: 6.0,
-  smooth: 0.35,
+  smooth: 0.25,
   poly: 0.4,
   rings: 2,
   ringGap: 0.7,
@@ -498,16 +498,20 @@ function generateStructure(s) {
   const coreLen = Math.max(s.trunk * 1.5, 12);
   const dirs = fibonacciSphereDirections(nRoots, rng() * Math.PI * 2);
   const rootIndex0 = branches.length;
+  // Root stubs intentionally thinner than the slider value (× 0.85) so the
+  // fused core reads as a compact lumpy ball rather than a fat sphere.
+  const rootR0 = Math.max(MIN_RADIUS, s.trunk * 0.85);
   for (const dir of dirs) {
     const len = coreLen * (0.7 + rng() * 0.6);
     branches.push({
       start: new THREE.Vector3(0, 0, 0),
       end: new THREE.Vector3(dir.x * len, dir.y * len, dir.z * len),
-      r0: s.trunk,
-      r1: Math.max(MIN_RADIUS, s.trunk * s.taper),
+      r0: rootR0,
+      r1: Math.max(MIN_RADIUS, rootR0 * s.taper),
       depth: 0,
       parent: null,
       tangent: dir.clone(),
+      wobble: rng() * Math.PI * 2,
     });
   }
   // Grow subtrees from each root (do this after all roots exist so
@@ -605,6 +609,7 @@ function grow(parent, s, rng, branches, accents) {
       depth: parent.depth + 1,
       parent,
       tangent: placed.dir.clone(),
+      wobble: rng() * Math.PI * 2,
     };
     branches.push(child);
     grow(child, s, rng, branches, accents);
@@ -1000,15 +1005,20 @@ function smin(a, b, k) {
 }
 
 // Signed distance to a cone-capsule: line segment a→b with endpoint radii
-// ra, rb. Radius interpolates linearly along the segment. This is the
-// branch primitive (ra = r0 at start, rb = r1 at taper-end).
-function sdConeCapsule(px, py, pz, ax, ay, az, bx, by, bz, ra, rb) {
+// ra, rb. Radius interpolates linearly from ra→rb along the segment, plus
+// a per-branch organic wobble (two sine components at different frequencies,
+// phase-seeded by `wobble`). The wobble breaks the "perfect cylinder" look
+// — gives branches subtle bulges and pinches along their length.
+function sdConeCapsule(px, py, pz, ax, ay, az, bx, by, bz, ra, rb, wobble) {
   const bax = bx - ax, bay = by - ay, baz = bz - az;
   const l2 = bax * bax + bay * bay + baz * baz || 1e-9;
   const pax = px - ax, pay = py - ay, paz = pz - az;
   let h = (pax * bax + pay * bay + paz * baz) / l2;
   if (h < 0) h = 0; else if (h > 1) h = 1;
-  const r = ra + (rb - ra) * h;
+  let r = ra + (rb - ra) * h;
+  const w1 = Math.sin(wobble + h * 6.2831853);
+  const w2 = Math.sin(wobble * 2.3 + h * 11.0);
+  r *= 1 + 0.10 * w1 + 0.05 * w2;
   const dx = pax - bax * h, dy = pay - bay * h, dz = paz - baz * h;
   return Math.sqrt(dx * dx + dy * dy + dz * dz) - r;
 }
@@ -1074,7 +1084,9 @@ function buildField(branches, accents, s, targetVoxels = 96) {
     const r1 = Math.max(minR, b.r1);
     const rMax = Math.max(r0, r1);
     const depthF = b.depth / Math.max(1, s.complexity);
-    const k = kBase * rMax * (0.4 + 1.6 * depthF);
+    // Smaller multiplier range keeps junctions crisp (less bulbous) while
+    // still giving a soft fillet near tips. Halved relative to v1.1.0.
+    const k = kBase * rMax * (0.2 + 0.7 * depthF);
     const pad2 = rMax + k * 2 + voxel * 2;
 
     const xmin = Math.max(0, Math.floor((Math.min(b.start.x, b.end.x) - pad2 - ox) / voxel));
@@ -1086,6 +1098,7 @@ function buildField(branches, accents, s, targetVoxels = 96) {
 
     const ax = b.start.x, ay = b.start.y, az = b.start.z;
     const bx = b.end.x, by = b.end.y, bz = b.end.z;
+    const bw = b.wobble || 0;
 
     for (let zi = zmin; zi <= zmax; zi++) {
       const pz = oz + zi * voxel;
@@ -1094,7 +1107,7 @@ function buildField(branches, accents, s, targetVoxels = 96) {
         const rowBase = zi * stride + yi * nx;
         for (let xi = xmin; xi <= xmax; xi++) {
           const px = ox + xi * voxel;
-          const d = sdConeCapsule(px, py, pz, ax, ay, az, bx, by, bz, r0, r1);
+          const d = sdConeCapsule(px, py, pz, ax, ay, az, bx, by, bz, r0, r1, bw);
           const idx = rowBase + xi;
           field[idx] = smin(field[idx], d, k);
         }
@@ -1757,9 +1770,9 @@ document.getElementById('newBtn').addEventListener('click', () => {
   state.complexity = 3 + Math.floor(Math.random() * 4);        // 3..6
   state.branchCount = 2 + Math.floor(Math.random() * 3);       // 2..4
   state.branchAngle = 20 + Math.floor(Math.random() * 50);     // 20..70
-  state.taper = 0.55 + Math.random() * 0.35;                   // 0.55..0.9
-  state.trunk = 4 + Math.random() * 7;                         // 4..11
-  state.smooth = 0.15 + Math.random() * 0.55;                  // 0.15..0.7
+  state.taper = 0.50 + Math.random() * 0.25;                   // 0.50..0.75
+  state.trunk = 3 + Math.random() * 5;                         // 3..8
+  state.smooth = 0.10 + Math.random() * 0.30;                  // 0.10..0.40
   state.poly = Math.random();                                  // 0..1
   state.rings = Math.floor(Math.random() * 5);                 // 0..4
   refreshUIFromState();
