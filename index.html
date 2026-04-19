@@ -244,7 +244,7 @@
         <input type="range" id="taper" min="0.4" max="0.95" step="0.01" value="0.72">
       </div>
       <div class="ctrl">
-        <label>Trunk thickness (mm) <span class="val" id="trunkVal">6.0</span></label>
+        <label>Core thickness (mm) <span class="val" id="trunkVal">6.0</span></label>
         <input type="range" id="trunk" min="2" max="14" step="0.1" value="6">
       </div>
       <div class="ctrl">
@@ -310,7 +310,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.0.1";
+const VERSION = "v1.1.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -466,27 +466,60 @@ function segSegDist(a1, a2, b1, b2) {
   return _cp1.distanceTo(_cp2);
 }
 
-// Build the branch graph. Returns { branches, accents, trunk }.
-// Every branch is guaranteed to share its start point with its parent's end,
-// so the graph is topologically connected by construction.
+// Build the branch graph. Returns { branches, accents }.
+// Every branch is guaranteed to share its start point with its parent's end
+// (or the shared origin, for root stubs), so the graph is topologically
+// connected by construction. The core is a cluster of short root capsules
+// radiating from origin in Fibonacci-lattice directions; their smooth-min
+// union at origin fuses into a roughly-spherical core. Each root then
+// recursively grows a subtree outward in 3D.
+function fibonacciSphereDirections(n, phaseOffset) {
+  const out = [];
+  const phi = Math.PI * (3 - Math.sqrt(5)); // golden angle
+  const denom = Math.max(1, n - 1);
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i / denom) * 2; // +1 → -1
+    const r = Math.sqrt(Math.max(0, 1 - y * y));
+    const theta = phaseOffset + phi * i;
+    out.push(new THREE.Vector3(Math.cos(theta) * r, y, Math.sin(theta) * r));
+  }
+  return out;
+}
+
 function generateStructure(s) {
   const rng = mulberry32(s.seed);
   const branches = [];
   const accents = [];
 
-  const trunkLen = Math.max(s.trunk * LENGTH_PER_RADIUS, 20);
-  const trunk = {
-    start: new THREE.Vector3(0, 0, 0),
-    end:   new THREE.Vector3(0, trunkLen, 0),
-    r0: s.trunk, r1: Math.max(MIN_RADIUS, s.trunk * s.taper),
-    depth: 0, parent: null,
-    tangent: new THREE.Vector3(0, 1, 0),
-  };
-  branches.push(trunk);
+  // Core: N root stubs radiating in all 3D directions from origin.
+  // Short length (~1.5 × trunk slider) so the fused overlap at origin
+  // reads as a lumpy ball rather than an elongated trunk.
+  const nRoots = 6 + Math.floor(rng() * 6);  // 6..11
+  const coreLen = Math.max(s.trunk * 1.5, 12);
+  const dirs = fibonacciSphereDirections(nRoots, rng() * Math.PI * 2);
+  const rootIndex0 = branches.length;
+  for (const dir of dirs) {
+    const len = coreLen * (0.7 + rng() * 0.6);
+    branches.push({
+      start: new THREE.Vector3(0, 0, 0),
+      end: new THREE.Vector3(dir.x * len, dir.y * len, dir.z * len),
+      r0: s.trunk,
+      r1: Math.max(MIN_RADIUS, s.trunk * s.taper),
+      depth: 0,
+      parent: null,
+      tangent: dir.clone(),
+    });
+  }
+  // Grow subtrees from each root (do this after all roots exist so
+  // self-intersection repulsion can see every sibling).
+  const nRootBranches = branches.length - rootIndex0;
+  for (let i = 0; i < nRootBranches; i++) {
+    grow(branches[rootIndex0 + i], s, rng, branches, accents);
+  }
 
-  grow(trunk, s, rng, branches, accents);
-
-  // Recenter vertically so the piece is roughly origin-centered.
+  // Recenter so the piece is origin-centered. With the symmetric fibonacci
+  // roots the centroid is already near origin, but accumulated drift from
+  // repulsion-retries can shift it a few mm.
   const box = new THREE.Box3();
   for (const b of branches) box.expandByPoint(b.start).expandByPoint(b.end);
   const center = box.getCenter(new THREE.Vector3());
@@ -497,7 +530,6 @@ function generateStructure(s) {
 }
 
 const _t = new THREE.Vector3(), _u = new THREE.Vector3(), _v = new THREE.Vector3();
-const _up = new THREE.Vector3(0, 1, 0);
 function grow(parent, s, rng, branches, accents) {
   if (parent.depth >= s.complexity) return;
   if (parent.r1 < MIN_RADIUS * 1.1) return;
@@ -514,8 +546,17 @@ function grow(parent, s, rng, branches, accents) {
   _t.copy(parent.tangent);
   buildFrame(_t, _u, _v);
 
-  // Gravitropic pull: trunk-ward branches feel it more; terminal branches less.
-  const gravBlend = 0.14 * (1 - parent.depth / Math.max(1, s.complexity));
+  // Directional bias, pulling children radially outward from origin. Core-
+  // adjacent branches feel it more; terminal tips less (so outer foliage
+  // stays irregular). When parent.end is very near origin — which happens
+  // at the first generation off a short root stub — fall back to the
+  // parent tangent direction, preserving the root's outward heading.
+  const radBlend = 0.18 * (1 - parent.depth / Math.max(1, s.complexity));
+  const _bias = new THREE.Vector3();
+  const pe = parent.end;
+  const peLen = Math.sqrt(pe.x*pe.x + pe.y*pe.y + pe.z*pe.z);
+  if (peLen > 0.5) _bias.set(pe.x / peLen, pe.y / peLen, pe.z / peLen);
+  else             _bias.copy(parent.tangent);
 
   const azimuth0 = rng() * Math.PI * 2;
 
@@ -535,9 +576,7 @@ function grow(parent, s, rng, branches, accents) {
         .addScaledVector(_u, Math.sin(angJitter) * Math.cos(phi))
         .addScaledVector(_v, Math.sin(angJitter) * Math.sin(phi));
 
-      // Blend directional bias; bias up in upper half, down in lower half for flair.
-      const bias = parent.end.y > 0 ? _up : _up.clone().multiplyScalar(-1);
-      dir.addScaledVector(bias, gravBlend).normalize();
+      dir.addScaledVector(_bias, radBlend).normalize();
 
       const length = r0 * LENGTH_PER_RADIUS * (0.75 + rng() * 0.5);
       const end = parent.end.clone().addScaledVector(dir, length);
