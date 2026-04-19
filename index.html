@@ -288,7 +288,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v0.3.2";
+const VERSION = "v0.3.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1080,14 +1080,109 @@ function buildField(branches, accents, s) {
 }
 
 function buildBodyMesh(branches, accents, s) {
-  const f = buildField(branches, accents, s);
-  let geom = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
-  const rawVerts = geom.getAttribute('position').count;
-  if (rawVerts === 0) return { mesh: null, triCount: 0, voxel: f.voxel };
-  geom = mergeVertices(geom, 1e-4);
-  geom.computeVertexNormals();
-  const mesh = new THREE.Mesh(geom, material);
-  return { mesh, triCount: rawVerts / 3, voxel: f.voxel };
+  // Try up to 3 auto-bridges to collapse stray shells into the main body.
+  // Every retry prepends an extra cone-capsule between the main component
+  // and the nearest stray vertex, then rebuilds the field from scratch.
+  const bridges = [];
+  const MAX_RETRIES = 3;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const allBranches = bridges.length ? branches.concat(bridges) : branches;
+    const f = buildField(allBranches, accents, s);
+    let geom = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
+    const rawVerts = geom.getAttribute('position').count;
+    if (rawVerts === 0) {
+      return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: bridges.length };
+    }
+    geom = mergeVertices(geom, 1e-4);
+    const comp = countComponents(geom);
+    if (comp.nComp <= 1 || attempt === MAX_RETRIES) {
+      geom.computeVertexNormals();
+      const mesh = new THREE.Mesh(geom, material);
+      const triCount = geom.getIndex().count / 3;
+      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: bridges.length };
+    }
+    const br = findBridge(geom, comp.vertComp, comp.nComp);
+    if (!br) {
+      geom.computeVertexNormals();
+      const mesh = new THREE.Mesh(geom, material);
+      const triCount = geom.getIndex().count / 3;
+      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: bridges.length };
+    }
+    // Bridge thick enough to survive the voxel sampling + a print-safety floor.
+    const bridgeR = Math.max(f.voxel * 1.5, 0.8);
+    const startV = new THREE.Vector3(br.ax, br.ay, br.az);
+    const endV = new THREE.Vector3(br.bx, br.by, br.bz);
+    bridges.push({
+      start: startV,
+      end: endV,
+      r0: bridgeR, r1: bridgeR,
+      depth: 0, parent: null,
+      tangent: endV.clone().sub(startV).normalize(),
+    });
+  }
+}
+
+// Union-find on the welded index buffer. Every triangle's three verts
+// must be in the same component, so unioning the pairs collapses the
+// partition into one root per connected shell.
+function countComponents(geom) {
+  const V = geom.getAttribute('position').count;
+  const idx = geom.getIndex().array;
+  const parent = new Int32Array(V);
+  for (let i = 0; i < V; i++) parent[i] = i;
+  function find(x) {
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  }
+  for (let i = 0; i < idx.length; i += 3) {
+    const a = find(idx[i]), b = find(idx[i+1]), c = find(idx[i+2]);
+    if (a !== b) parent[a] = b;
+    if (b !== c) parent[b] = c;
+  }
+  const rootToId = new Map();
+  const vertComp = new Int32Array(V);
+  let nComp = 0;
+  for (let i = 0; i < V; i++) {
+    const r = find(i);
+    let id = rootToId.get(r);
+    if (id === undefined) { id = nComp++; rootToId.set(r, id); }
+    vertComp[i] = id;
+  }
+  return { nComp, vertComp };
+}
+
+// Find the pair of vertices (one in the largest component, one in any
+// other component) with minimum Euclidean distance. Brute-force but
+// bounded — strays are usually small relative to the main body.
+function findBridge(geom, vertComp, nComp) {
+  const pos = geom.getAttribute('position').array;
+  const V = geom.getAttribute('position').count;
+  const buckets = [];
+  for (let i = 0; i < nComp; i++) buckets.push([]);
+  for (let i = 0; i < V; i++) buckets[vertComp[i]].push(i);
+  let mainComp = 0;
+  for (let i = 1; i < nComp; i++) if (buckets[i].length > buckets[mainComp].length) mainComp = i;
+  const mainVerts = buckets[mainComp];
+  let best = Infinity, bestA = -1, bestB = -1;
+  for (let c = 0; c < nComp; c++) {
+    if (c === mainComp) continue;
+    const other = buckets[c];
+    for (let i = 0; i < mainVerts.length; i++) {
+      const a = mainVerts[i];
+      const ax = pos[a*3], ay = pos[a*3+1], az = pos[a*3+2];
+      for (let j = 0; j < other.length; j++) {
+        const b = other[j];
+        const dx = pos[b*3] - ax, dy = pos[b*3+1] - ay, dz = pos[b*3+2] - az;
+        const d2 = dx*dx + dy*dy + dz*dz;
+        if (d2 < best) { best = d2; bestA = a; bestB = b; }
+      }
+    }
+  }
+  if (bestA < 0) return null;
+  return {
+    ax: pos[bestA*3], ay: pos[bestA*3+1], az: pos[bestA*3+2],
+    bx: pos[bestB*3], by: pos[bestB*3+1], bz: pos[bestB*3+2],
+  };
 }
 
 function generate() {
@@ -1095,12 +1190,13 @@ function generate() {
   clearExport();
   const t0 = performance.now();
   const { branches, accents } = generateStructure(state);
-  const { mesh, triCount, voxel } = buildBodyMesh(branches, accents, state);
+  const { mesh, triCount, voxel, nComp, bridges } = buildBodyMesh(branches, accents, state);
   if (mesh) exportGroup.add(mesh);
   const dt = (performance.now() - t0) | 0;
   frameCamera();
-  console.log(`gen: seed=${state.seed} ${branches.length}br ${accents.length}ac ${triCount|0}tri voxel=${voxel.toFixed(2)}mm ${dt}ms`);
-  setStatus(`seed ${state.seed} · ${triCount|0} tris · ${dt}ms`);
+  console.log(`gen: seed=${state.seed} ${branches.length}br ${accents.length}ac ${triCount|0}tri voxel=${voxel.toFixed(2)}mm components=${nComp} bridges=${bridges} ${dt}ms`);
+  const warn = nComp > 1 ? ` · ⚠ ${nComp} shells` : '';
+  setStatus(`seed ${state.seed} · ${triCount|0} tris · ${dt}ms${warn}`);
 }
 
 function frameCamera() {
