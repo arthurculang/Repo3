@@ -1,9 +1,31 @@
 <!doctype html>
 <!--
-  Fractal Sculpture Generator
-  Single-file web app. Deploy: drop index.html on GitHub Pages.
-  Target: iPhone Safari + desktop. Export STL for metal DMLS/SLM printing.
-  Units: millimetres.
+  Fractal Sculpture Generator — v1.0.0
+  Single-file web app. Target: iPhone Safari + desktop. Export STL for
+  metal DMLS/SLM printing. Units: millimetres.
+
+  Deploy to GitHub Pages:
+    1. Commit index.html to the branch configured as the Pages source
+       (repo Settings → Pages → Build and deployment → Branch).
+    2. GitHub serves it at https://<user>.github.io/<repo>/.
+    3. No build step: everything is inline + ES-module imports from
+       https://unpkg.com/three@0.160.0/. CDN fetched on first load.
+
+  Pipeline (see § comments inline):
+    generateStructure  Chunk 2  seeded branch graph, phyllotaxis,
+                                gravitropism, self-intersection repulsion
+    applySymmetry      Chunk 5a bilateral / radial-N with plane/axis dedupe
+    buildField         Chunk 3c scatter-rasterize SDF into Float32Array
+    marchingCubes      Chunk 3b custom MC walker w/ inline tables
+    mergeVertices      three.js weld verts within 1e-4
+    countComponents    Chunk 3d union-find — auto-bridge up to 3 retries
+    generateRings      Chunk 4  candidate pierce + capture + clearance
+    checkPrintSafety   Chunk 5b flood-fill enclosed-void detection
+
+  Development:
+    Every artifact lives in this file. No bundler, no build. Open
+    with any static server (or just file://) to test. Same seed +
+    same sliders always produce the same sculpture.
 -->
 <html lang="en">
 <head>
@@ -288,7 +310,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v0.5.1";
+const VERSION = "v1.0.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1078,7 +1100,7 @@ function buildField(branches, accents, s, targetVoxels = 96) {
   return { field, nx, ny, nz, ox, oy, oz, voxel };
 }
 
-function buildBodyMesh(branches, accents, s) {
+function buildBodyMesh(branches, accents, s, previewVoxels = 96) {
   // Try up to 3 auto-bridges to collapse stray shells into the main body.
   // Every retry prepends an extra cone-capsule between the main component
   // and the nearest stray vertex, then rebuilds the field from scratch.
@@ -1086,13 +1108,15 @@ function buildBodyMesh(branches, accents, s) {
   const MAX_RETRIES = 3;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const allBranches = bridges.length ? branches.concat(bridges) : branches;
-    const f = buildField(allBranches, accents, s);
-    let geom = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
-    const rawVerts = geom.getAttribute('position').count;
+    const f = buildField(allBranches, accents, s, previewVoxels);
+    const raw = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
+    const rawVerts = raw.getAttribute('position').count;
     if (rawVerts === 0) {
+      raw.dispose();
       return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: bridges.length };
     }
-    geom = mergeVertices(geom, 1e-4);
+    const geom = mergeVertices(raw, 1e-4);
+    raw.dispose();
     const comp = countComponents(geom);
     if (comp.nComp <= 1 || attempt === MAX_RETRIES) {
       geom.computeVertexNormals();
@@ -1107,6 +1131,7 @@ function buildBodyMesh(branches, accents, s) {
       const triCount = geom.getIndex().count / 3;
       return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: bridges.length };
     }
+    geom.dispose();
     // Bridge thick enough to survive the voxel sampling + a print-safety floor.
     const bridgeR = Math.max(f.voxel * 1.5, 0.8);
     const startV = new THREE.Vector3(br.ax, br.ay, br.az);
@@ -1489,13 +1514,13 @@ function symmetrizeRings(rings, s) {
   return out;
 }
 
-function generate() {
-  setStatus('generating…');
+function generate(previewVoxels = 96) {
+  setStatus(previewVoxels < 96 ? `generating @ ${previewVoxels}³…` : 'generating…');
   clearExport();
   const t0 = performance.now();
   const { branches: rawBranches, accents: rawAccents } = generateStructure(state);
   const { branches, accents } = applySymmetry(rawBranches, rawAccents, state);
-  const { mesh, triCount, voxel, nComp, bridges } = buildBodyMesh(branches, accents, state);
+  const { mesh, triCount, voxel, nComp, bridges } = buildBodyMesh(branches, accents, state, previewVoxels);
   if (mesh) exportGroup.add(mesh);
   // Rings generated from the raw (pre-symmetry) branch set, then mirrored.
   // This keeps ring placement deterministic w.r.t. seed and ensures every
@@ -1660,12 +1685,19 @@ function refreshUIFromState() {
   onSymChange();
 }
 
-// Debounced regenerate. Fast path (Chunk 1) is instant; later chunks will
-// use short debounce during slider drag and full-quality on release.
-let regenTimer = null;
+// Dual-phase regen (Chunk 6). Fast 64³ preview fires at most every 30ms
+// during continuous slider drag — gives ~30fps interactive feedback with
+// less voxel detail. Full 96³ pass fires 300ms after the last input event,
+// delivering the crisp final when the drag settles. Both phases share the
+// same seed+state, so the only visible difference is surface resolution.
+let fastScheduled = false, fullTimer = null;
 function scheduleRegen() {
-  if (regenTimer) clearTimeout(regenTimer);
-  regenTimer = setTimeout(() => { regenTimer = null; generate(); }, 60);
+  if (!fastScheduled) {
+    fastScheduled = true;
+    setTimeout(() => { fastScheduled = false; generate(64); }, 30);
+  }
+  if (fullTimer) clearTimeout(fullTimer);
+  fullTimer = setTimeout(() => { fullTimer = null; generate(96); }, 300);
 }
 
 // Buttons
@@ -1711,12 +1743,17 @@ document.getElementById('sheetHandle').addEventListener('click', () => {
 // Prevent iOS double-tap zoom on UI buttons
 document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
 
-// WebGL context loss — re-run last generation on restore (full handler in Chunk 6)
+// WebGL context loss (Chunk 6). iOS Safari backgrounds discard the GL
+// context; on restore we rebuild the mesh so three.js re-uploads fresh
+// geometry/normals to the new context on next render. Preventing the
+// default on "lost" suppresses Safari's "WebGL crashed" banner.
 canvas.addEventListener('webglcontextlost', e => {
   e.preventDefault();
+  console.warn('webgl context lost');
   setStatus('gl context lost');
 }, false);
 canvas.addEventListener('webglcontextrestored', () => {
+  console.log('webgl context restored — rebuilding geometry');
   setStatus('gl restored');
   generate();
 }, false);
