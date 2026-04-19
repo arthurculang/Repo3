@@ -288,7 +288,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v0.4.1";
+const VERSION = "v0.5.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1356,21 +1356,115 @@ function addRingMeshes(rings) {
   }
 }
 
+// ---------- Symmetry (Chunk 5a) ----------
+// None: no-op. Bilateral: mirror through the X=0 plane (x → -x). Radial-N:
+// N-fold rotation around the Y axis, N ∈ [2,8]. Applied after the branch
+// graph is generated but before the SDF field is rasterized, so the
+// symmetric copies are fused by the same smooth-min pipeline that handles
+// the original body. Rings are mirrored separately after candidate selection
+// so that a ring on a primary branch is paired with an identical ring on
+// every symmetric copy.
+//
+// Dedupe: a primitive whose every reference point lies on the symmetry set
+// would produce exactly the same primitive when transformed; skip it.
+const SYM_EPS = 0.01;                 // mm — "on the plane/axis" threshold
+
+function symTransforms(s) {
+  if (s.sym === 'bilateral') return [{ type: 'bilateral' }];
+  if (s.sym === 'radial') {
+    const N = Math.max(2, Math.min(8, s.radialN | 0));
+    const out = [];
+    for (let k = 1; k < N; k++) {
+      const a = 2 * Math.PI * k / N;
+      out.push({ type: 'radial', c: Math.cos(a), sn: Math.sin(a) });
+    }
+    return out;
+  }
+  return [];
+}
+
+function onSymmetrySet(v, tx) {
+  if (tx.type === 'bilateral') return Math.abs(v.x) < SYM_EPS;
+  if (tx.type === 'radial')    return Math.abs(v.x) < SYM_EPS && Math.abs(v.z) < SYM_EPS;
+  return false;
+}
+
+function symVec(v, tx) {
+  if (tx.type === 'bilateral') return new THREE.Vector3(-v.x, v.y, v.z);
+  if (tx.type === 'radial') {
+    return new THREE.Vector3(v.x * tx.c - v.z * tx.sn, v.y, v.x * tx.sn + v.z * tx.c);
+  }
+  return v.clone();
+}
+
+function applySymmetry(branches, accents, s) {
+  const txs = symTransforms(s);
+  if (txs.length === 0) return { branches, accents };
+  const outBranches = branches.slice();
+  const outAccents = accents.slice();
+  for (const tx of txs) {
+    for (const b of branches) {
+      if (onSymmetrySet(b.start, tx) && onSymmetrySet(b.end, tx)) continue;
+      outBranches.push({
+        start: symVec(b.start, tx),
+        end: symVec(b.end, tx),
+        r0: b.r0, r1: b.r1,
+        depth: b.depth,
+        parent: b.parent,
+        tangent: symVec(b.tangent, tx),
+      });
+    }
+    for (const a of accents) {
+      if (onSymmetrySet(a.pos, tx)) continue;
+      outAccents.push({
+        pos: symVec(a.pos, tx),
+        size: a.size,
+        axis: symVec(a.axis, tx),
+        kind: a.kind,
+        spin: a.spin,
+      });
+    }
+  }
+  return { branches: outBranches, accents: outAccents };
+}
+
+function symmetrizeRings(rings, s) {
+  const txs = symTransforms(s);
+  if (txs.length === 0) return rings;
+  const out = rings.slice();
+  for (const tx of txs) {
+    for (const r of rings) {
+      if (onSymmetrySet(r.center, tx)) continue;
+      out.push({
+        center: symVec(r.center, tx),
+        axis: symVec(r.axis, tx).normalize(),
+        innerR: r.innerR,
+        tubeR: r.tubeR,
+        branch: r.branch,
+      });
+    }
+  }
+  return out;
+}
+
 function generate() {
   setStatus('generating…');
   clearExport();
   const t0 = performance.now();
-  const { branches, accents } = generateStructure(state);
+  const { branches: rawBranches, accents: rawAccents } = generateStructure(state);
+  const { branches, accents } = applySymmetry(rawBranches, rawAccents, state);
   const { mesh, triCount, voxel, nComp, bridges } = buildBodyMesh(branches, accents, state);
   if (mesh) exportGroup.add(mesh);
-  // Rings use a separate deterministic RNG stream so ring placement is stable
-  // w.r.t. seed but independent of any future branch-graph PRNG drift.
+  // Rings generated from the raw (pre-symmetry) branch set, then mirrored.
+  // This keeps ring placement deterministic w.r.t. seed and ensures every
+  // symmetric copy gets the same rings in the same relative positions.
   const ringRng = mulberry32((state.seed >>> 0) ^ 0x7a5529c1);
-  const rings = generateRings(branches, state, ringRng);
+  const rawRings = generateRings(rawBranches, state, ringRng);
+  const rings = symmetrizeRings(rawRings, state);
   addRingMeshes(rings);
   const dt = (performance.now() - t0) | 0;
   frameCamera();
-  console.log(`gen: seed=${state.seed} ${branches.length}br ${accents.length}ac ${rings.length}rg ${triCount|0}tri voxel=${voxel.toFixed(2)}mm components=${nComp} bridges=${bridges} ${dt}ms`);
+  console.log(`gen: seed=${state.seed} sym=${state.sym}${state.sym === 'radial' ? state.radialN : ''} ${branches.length}br ${accents.length}ac ${rings.length}rg ${triCount|0}tri voxel=${voxel.toFixed(2)}mm components=${nComp} bridges=${bridges} ${dt}ms`);
   const warn = nComp > 1 ? ` · ⚠ ${nComp} shells` : '';
   setStatus(`seed ${state.seed} · ${triCount|0} tris · ${rings.length} rings${warn}`);
 }
