@@ -356,7 +356,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.7.0";
+const VERSION = "v1.7.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1375,7 +1375,7 @@ function carveNegPaths(field, nx, ny, nz, ox, oy, oz, voxel, paths) {
   }
 }
 
-function buildField(branches, accents, s, targetVoxels = 96) {
+function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches = []) {
   const box = new THREE.Box3();
   let maxR = 0;
   for (const b of branches) {
@@ -1534,6 +1534,40 @@ function buildField(branches, accents, s, targetVoxels = 96) {
     if (paths.length) carveNegPaths(field, nx, ny, nz, ox, oy, oz, voxel, paths);
   }
 
+  // Post-carve union-rasterize (Chunk 3d follow-up, v1.7.1). Bridge
+  // capsules added by buildBodyMesh's auto-repair must survive the neg-
+  // space carving that would otherwise re-sever what they just reconnected.
+  // Uses hard min (not smooth-min) so the bridge reads as a thin wire
+  // rather than a fat blob, and renders on top of any carving.
+  for (const b of postCarveBranches) {
+    const r0 = Math.max(minR, b.r0);
+    const r1 = Math.max(minR, b.r1);
+    const rMax = Math.max(r0, r1);
+    const pad2 = rMax + voxel * 2;
+    const xmin = Math.max(0,      Math.floor((Math.min(b.start.x, b.end.x) - pad2 - ox) / voxel));
+    const xmax = Math.min(nx - 1, Math.ceil ((Math.max(b.start.x, b.end.x) + pad2 - ox) / voxel));
+    const ymin = Math.max(0,      Math.floor((Math.min(b.start.y, b.end.y) - pad2 - oy) / voxel));
+    const ymax = Math.min(ny - 1, Math.ceil ((Math.max(b.start.y, b.end.y) + pad2 - oy) / voxel));
+    const zmin = Math.max(0,      Math.floor((Math.min(b.start.z, b.end.z) - pad2 - oz) / voxel));
+    const zmax = Math.min(nz - 1, Math.ceil ((Math.max(b.start.z, b.end.z) + pad2 - oz) / voxel));
+    const ax = b.start.x, ay = b.start.y, az = b.start.z;
+    const bx = b.end.x,   by = b.end.y,   bz = b.end.z;
+    const bw = b.wobble || 0;
+    for (let zi = zmin; zi <= zmax; zi++) {
+      const pz = oz + zi * voxel;
+      for (let yi = ymin; yi <= ymax; yi++) {
+        const py = oy + yi * voxel;
+        const rowBase = zi * stride + yi * nx;
+        for (let xi = xmin; xi <= xmax; xi++) {
+          const px = ox + xi * voxel;
+          const d = sdConeCapsule(px, py, pz, ax, ay, az, bx, by, bz, r0, r1, bw);
+          const idx = rowBase + xi;
+          if (d < field[idx]) field[idx] = d;
+        }
+      }
+    }
+  }
+
   return { field, nx, ny, nz, ox, oy, oz, voxel };
 }
 
@@ -1544,8 +1578,9 @@ function buildBodyMesh(branches, accents, s, previewVoxels = 96) {
   const bridges = [];
   const MAX_RETRIES = 3;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const allBranches = bridges.length ? branches.concat(bridges) : branches;
-    const f = buildField(allBranches, accents, s, previewVoxels);
+    // Bridges are passed to the postCarve slot so they're rasterized after
+    // hollow / drain / neg-space carving — a carve pass can't sever them.
+    const f = buildField(branches, accents, s, previewVoxels, bridges);
     const raw = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
     const rawVerts = raw.getAttribute('position').count;
     if (rawVerts === 0) {
@@ -1569,8 +1604,10 @@ function buildBodyMesh(branches, accents, s, previewVoxels = 96) {
       return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: bridges.length };
     }
     geom.dispose();
-    // Bridge thick enough to survive the voxel sampling + a print-safety floor.
-    const bridgeR = Math.max(f.voxel * 1.5, 0.8);
+    // Bridge thick enough to resolve at the sampling grid AND meet the
+    // active material's minimum wall so a printed connector survives.
+    const bridgeMat = MATERIALS[s.material] || MATERIALS.stainless;
+    const bridgeR = Math.max(f.voxel * 1.5, bridgeMat.minWall * 1.5, 0.8);
     const startV = new THREE.Vector3(br.ax, br.ay, br.az);
     const endV = new THREE.Vector3(br.bx, br.by, br.bz);
     bridges.push({
