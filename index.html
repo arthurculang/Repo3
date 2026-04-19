@@ -288,7 +288,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v0.3.3";
+const VERSION = "v0.4.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1185,6 +1185,95 @@ function findBridge(geom, vertComp, nComp) {
   };
 }
 
+// ---------- Ring generator (Chunk 4a) ----------
+// Select branch segments whose local radius sits in a threadable band, then
+// wrap each with a torus centered on the branch axis at a random parameter
+// h ∈ [0.3, 0.7], with the ring axis = branch tangent + small random tilt.
+// Emits as separate TorusGeometry shells — per spec this still counts as
+// mechanically connected because the ring is captively interlocked (the
+// stopper capture test lands in 4b).
+const RING_TUBE_R = 1.0;              // mm — torus tube radius, above DMLS wall min
+const RING_RADIUS_MIN = 1.0;          // mm — branches thinner than this skip ring
+const RING_RADIUS_MAX = 5.0;          // mm — branches thicker than this skip ring
+
+// Returns true if the line segA→segB actually pierces the disk defined by
+// (ringCenter, ringAxis, innerR). By construction the generator always places
+// ringCenter on the branch axis, so this pass is mostly defensive, but once
+// 4b starts offsetting ring centers for more organic placement this matters.
+function pierceTest(segA, segB, ringCenter, ringAxis, innerR) {
+  const dx = segB.x - segA.x, dy = segB.y - segA.y, dz = segB.z - segA.z;
+  const num = ringAxis.x*(ringCenter.x-segA.x) + ringAxis.y*(ringCenter.y-segA.y) + ringAxis.z*(ringCenter.z-segA.z);
+  const den = ringAxis.x*dx + ringAxis.y*dy + ringAxis.z*dz;
+  if (Math.abs(den) < 1e-6) return false;
+  const t = num / den;
+  if (t < 0 || t > 1) return false;
+  const px = segA.x + t*dx, py = segA.y + t*dy, pz = segA.z + t*dz;
+  const rx = px - ringCenter.x, ry = py - ringCenter.y, rz = pz - ringCenter.z;
+  const along = rx*ringAxis.x + ry*ringAxis.y + rz*ringAxis.z;
+  const inPlaneX = rx - along*ringAxis.x;
+  const inPlaneY = ry - along*ringAxis.y;
+  const inPlaneZ = rz - along*ringAxis.z;
+  const inPlane = Math.sqrt(inPlaneX*inPlaneX + inPlaneY*inPlaneY + inPlaneZ*inPlaneZ);
+  return inPlane < innerR;
+}
+
+const _ringPerp = new THREE.Vector3(), _ringBi = new THREE.Vector3();
+function generateRings(branches, s, rng) {
+  const rings = [];
+  const targetCount = s.rings | 0;
+  if (targetCount === 0) return rings;
+  const candidates = branches.filter(b => {
+    const rAvg = (b.r0 + b.r1) * 0.5;
+    return b.depth >= 1 && rAvg >= RING_RADIUS_MIN && rAvg <= RING_RADIUS_MAX;
+  });
+  if (candidates.length === 0) return rings;
+
+  // Fisher-Yates via seeded RNG for deterministic candidate order.
+  const order = candidates.slice();
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+  }
+
+  const gap = Math.max(0.5, s.ringGap);
+  for (const b of order) {
+    if (rings.length >= targetCount) break;
+    const h = 0.3 + rng() * 0.4;
+    const cx = b.start.x + (b.end.x - b.start.x) * h;
+    const cy = b.start.y + (b.end.y - b.start.y) * h;
+    const cz = b.start.z + (b.end.z - b.start.z) * h;
+    const center = new THREE.Vector3(cx, cy, cz);
+
+    // Axis = branch tangent + 0..20° tilt in a random azimuth.
+    buildFrame(b.tangent, _ringPerp, _ringBi);
+    const tilt = (rng() * 20) * Math.PI / 180;
+    const phi = rng() * Math.PI * 2;
+    const axis = new THREE.Vector3()
+      .copy(b.tangent).multiplyScalar(Math.cos(tilt))
+      .addScaledVector(_ringPerp, Math.sin(tilt) * Math.cos(phi))
+      .addScaledVector(_ringBi,  Math.sin(tilt) * Math.sin(phi))
+      .normalize();
+
+    const rAtH = b.r0 + (b.r1 - b.r0) * h;
+    const innerR = rAtH + gap;
+
+    if (!pierceTest(b.start, b.end, center, axis, innerR)) continue;
+    rings.push({ center, axis, innerR, tubeR: RING_TUBE_R, branch: b });
+  }
+  return rings;
+}
+
+const _ringZ = new THREE.Vector3(0, 0, 1);
+function addRingMeshes(rings) {
+  for (const r of rings) {
+    const geom = new THREE.TorusGeometry(r.innerR + r.tubeR, r.tubeR, 10, 32);
+    const mesh = new THREE.Mesh(geom, material);
+    mesh.position.copy(r.center);
+    mesh.quaternion.setFromUnitVectors(_ringZ, r.axis);
+    exportGroup.add(mesh);
+  }
+}
+
 function generate() {
   setStatus('generating…');
   clearExport();
@@ -1192,11 +1281,16 @@ function generate() {
   const { branches, accents } = generateStructure(state);
   const { mesh, triCount, voxel, nComp, bridges } = buildBodyMesh(branches, accents, state);
   if (mesh) exportGroup.add(mesh);
+  // Rings use a separate deterministic RNG stream so ring placement is stable
+  // w.r.t. seed but independent of any future branch-graph PRNG drift.
+  const ringRng = mulberry32((state.seed >>> 0) ^ 0x7a5529c1);
+  const rings = generateRings(branches, state, ringRng);
+  addRingMeshes(rings);
   const dt = (performance.now() - t0) | 0;
   frameCamera();
-  console.log(`gen: seed=${state.seed} ${branches.length}br ${accents.length}ac ${triCount|0}tri voxel=${voxel.toFixed(2)}mm components=${nComp} bridges=${bridges} ${dt}ms`);
+  console.log(`gen: seed=${state.seed} ${branches.length}br ${accents.length}ac ${rings.length}rg ${triCount|0}tri voxel=${voxel.toFixed(2)}mm components=${nComp} bridges=${bridges} ${dt}ms`);
   const warn = nComp > 1 ? ` · ⚠ ${nComp} shells` : '';
-  setStatus(`seed ${state.seed} · ${triCount|0} tris · ${dt}ms${warn}`);
+  setStatus(`seed ${state.seed} · ${triCount|0} tris · ${rings.length} rings${warn}`);
 }
 
 function frameCamera() {
