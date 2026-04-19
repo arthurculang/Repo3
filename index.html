@@ -288,7 +288,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v0.5.0";
+const VERSION = "v0.5.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -970,7 +970,7 @@ function sdTetrahedron(lx, ly, lz, s) {
 const _fu = new THREE.Vector3(), _fv = new THREE.Vector3();
 const _sizeV = new THREE.Vector3();
 
-function buildField(branches, accents, s) {
+function buildField(branches, accents, s, targetVoxels = 96) {
   const box = new THREE.Box3();
   let maxR = 0;
   for (const b of branches) {
@@ -989,7 +989,6 @@ function buildField(branches, accents, s) {
   box.getSize(_sizeV);
   const maxDim = Math.max(_sizeV.x, _sizeV.y, _sizeV.z);
 
-  const targetVoxels = 96;
   const voxel = maxDim / targetVoxels;
   const nx = Math.max(8, Math.ceil(_sizeV.x / voxel) + 1);
   const ny = Math.max(8, Math.ceil(_sizeV.y / voxel) + 1);
@@ -1356,6 +1355,49 @@ function addRingMeshes(rings) {
   }
 }
 
+// ---------- Print-safety gate (Chunk 5b) ----------
+// Flood-fills all "outside" voxels (field ≥ iso) from a corner seed; any
+// outside-signed voxel the fill can't reach is trapped inside the mesh,
+// which a slicer would treat as a non-drainable cavity. For our padded
+// bounding box the corner voxel is guaranteed to be outside (field = 1e6).
+function floodFillOutside(field, nx, ny, nz, iso) {
+  const sZ = nx * ny;
+  const N = field.length;
+  const seen = new Uint8Array(N);
+  const stack = [0];
+  seen[0] = 1;
+  while (stack.length) {
+    const idx = stack.pop();
+    const x = idx % nx;
+    const zySlab = Math.floor(idx / nx);
+    const y = zySlab % ny;
+    const z = Math.floor(zySlab / ny);
+    if (x > 0)        { const n = idx - 1;  if (!seen[n] && field[n] >= iso) { seen[n] = 1; stack.push(n); } }
+    if (x < nx - 1)   { const n = idx + 1;  if (!seen[n] && field[n] >= iso) { seen[n] = 1; stack.push(n); } }
+    if (y > 0)        { const n = idx - nx; if (!seen[n] && field[n] >= iso) { seen[n] = 1; stack.push(n); } }
+    if (y < ny - 1)   { const n = idx + nx; if (!seen[n] && field[n] >= iso) { seen[n] = 1; stack.push(n); } }
+    if (z > 0)        { const n = idx - sZ; if (!seen[n] && field[n] >= iso) { seen[n] = 1; stack.push(n); } }
+    if (z < nz - 1)   { const n = idx + sZ; if (!seen[n] && field[n] >= iso) { seen[n] = 1; stack.push(n); } }
+  }
+  let enclosed = 0;
+  for (let i = 0; i < N; i++) if (field[i] >= iso && !seen[i]) enclosed++;
+  return enclosed;
+}
+
+// Runs cheap pre-export checks against the sampled high-res field.
+// Warnings are informational — export proceeds either way.
+const DMLS_MIN_WALL = 0.5; // mm
+function checkPrintSafety(branches, voxel, fieldInfo) {
+  const warns = [];
+  if (voxel > 1.0) warns.push(`voxel=${voxel.toFixed(2)}mm may alias thin features`);
+  let minR = Infinity;
+  for (const b of branches) { if (b.r0 < minR) minR = b.r0; if (b.r1 < minR) minR = b.r1; }
+  if (minR < DMLS_MIN_WALL) warns.push(`min branch radius=${minR.toFixed(2)}mm < ${DMLS_MIN_WALL}mm DMLS wall limit`);
+  const enclosed = floodFillOutside(fieldInfo.field, fieldInfo.nx, fieldInfo.ny, fieldInfo.nz, 0);
+  if (enclosed > 0) warns.push(`${enclosed} enclosed-void voxel(s) — slicer may flag`);
+  return warns;
+}
+
 // ---------- Symmetry (Chunk 5a) ----------
 // None: no-op. Bilateral: mirror through the X=0 plane (x → -x). Radial-N:
 // N-fold rotation around the Y axis, N ∈ [2,8]. Applied after the branch
@@ -1486,25 +1528,82 @@ function frameCamera() {
 
 function setStatus(msg) { document.getElementById('status').textContent = msg; }
 
-// ---------- STL export ----------
+// ---------- STL export (Chunk 5b) ----------
+// Rebuilds the body mesh at a higher voxel resolution (EXPORT_VOXELS),
+// runs the print-safety gate, then writes the binary STL. Progress is
+// communicated via setStatus() between phases, each yielding a frame
+// so the DOM actually paints before the next blocking phase starts.
+// The <a> is created synchronously inside the click handler so the
+// iOS Safari download gesture is preserved; .click() fires after the
+// blob is ready via the same anchor reference.
 const exporter = new STLExporter();
-function downloadSTL() {
+const EXPORT_VOXELS = 160;
+const nextFrame = () => new Promise(r => requestAnimationFrame(r));
+
+async function downloadSTL() {
+  const a = document.createElement('a');
+  document.body.appendChild(a);
+  let highResGroup = null;
   try {
-    setStatus('exporting STL…');
-    const stl = exporter.parse(exportGroup, { binary: true });
+    setStatus(`exporting: building ${EXPORT_VOXELS}³ field…`);
+    await nextFrame();
+
+    const { branches: rawB, accents: rawA } = generateStructure(state);
+    const { branches, accents } = applySymmetry(rawB, rawA, state);
+    const f = buildField(branches, accents, state, EXPORT_VOXELS);
+
+    setStatus('exporting: marching cubes…');
+    await nextFrame();
+    let geom = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
+    if (geom.getAttribute('position').count === 0) {
+      setStatus('export failed: empty mesh');
+      a.remove();
+      return;
+    }
+    geom = mergeVertices(geom, 1e-4);
+    geom.computeVertexNormals();
+    const bodyMesh = new THREE.Mesh(geom, material);
+
+    setStatus('exporting: safety check…');
+    await nextFrame();
+    const warns = checkPrintSafety(branches, f.voxel, f);
+    if (warns.length) {
+      console.warn('print-safety warnings:');
+      for (const w of warns) console.warn('  ·', w);
+    }
+
+    setStatus('exporting: writing STL…');
+    await nextFrame();
+    highResGroup = new THREE.Group();
+    highResGroup.add(bodyMesh);
+    const ringRng = mulberry32((state.seed >>> 0) ^ 0x7a5529c1);
+    const rings = symmetrizeRings(generateRings(rawB, state, ringRng), state);
+    for (const r of rings) {
+      const rg = new THREE.TorusGeometry(r.innerR + r.tubeR, r.tubeR, 10, 32);
+      const rm = new THREE.Mesh(rg, material);
+      rm.position.copy(r.center);
+      rm.quaternion.setFromUnitVectors(_ringZ, r.axis);
+      highResGroup.add(rm);
+    }
+    const stl = exporter.parse(highResGroup, { binary: true });
     const blob = new Blob([stl], { type: 'model/stl' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
     a.href = url;
     a.download = `sculpture_seed${state.seed}_${VERSION}.stl`;
-    document.body.appendChild(a);
     a.click();
-    // iOS Safari: revoke after a tick so download can start
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
-    setStatus(`exported seed ${state.seed}`);
+
+    const warnLabel = warns.length ? ` · ⚠ ${warns.length}` : '';
+    setStatus(`exported seed ${state.seed} @ ${EXPORT_VOXELS}³${warnLabel}`);
   } catch (e) {
     console.error(e);
     setStatus('export failed');
+    a.remove();
+  } finally {
+    // Free the high-res geometry so iPhone doesn't hold two copies in memory.
+    if (highResGroup) {
+      for (const child of highResGroup.children) if (child.geometry) child.geometry.dispose();
+    }
   }
 }
 
