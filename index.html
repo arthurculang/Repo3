@@ -288,7 +288,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v0.3.1";
+const VERSION = "v0.3.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -924,47 +924,183 @@ function marchingCubes(field, nx, ny, nz, ox, oy, oz, vs, iso) {
   return geom;
 }
 
-// ---------- Debug render (Chunk 2) ----------
-// Capsule per branch + polyhedron per accent. Chunk 3 replaces this
-// with a single fused marching-cubes mesh.
-const _quat = new THREE.Quaternion();
-const _axisY = new THREE.Vector3(0, 1, 0);
-const _mid = new THREE.Vector3();
-const _dir = new THREE.Vector3();
-
-function addCapsuleMesh(b) {
-  _dir.subVectors(b.end, b.start);
-  const len = _dir.length();
-  if (len < 1e-4) return;
-  _dir.multiplyScalar(1 / len);
-  const r = (b.r0 + b.r1) * 0.5;
-  const geom = new THREE.CapsuleGeometry(Math.max(r, MIN_RADIUS), len, 4, 10);
-  const mesh = new THREE.Mesh(geom, material);
-  _mid.addVectors(b.start, b.end).multiplyScalar(0.5);
-  mesh.position.copy(_mid);
-  mesh.quaternion.setFromUnitVectors(_axisY, _dir);
-  exportGroup.add(mesh);
+// ---------- SDF primitives (Chunk 3c) ----------
+// Polynomial smooth-min (Inigo Quilez). k is the blend radius in field
+// units; k → 0 reduces to plain min. For k > 0 the result is ≤ min(a,b),
+// producing a smooth fillet between two SDFs wherever they're within k.
+function smin(a, b, k) {
+  if (k <= 1e-6) return a < b ? a : b;
+  const h = Math.max(0, k - Math.abs(a - b)) / k;
+  return (a < b ? a : b) - h * h * k * 0.25;
 }
 
-function addAccentMesh(a) {
-  const geom = a.kind === 'tetra'
-    ? new THREE.TetrahedronGeometry(a.size)
-    : new THREE.OctahedronGeometry(a.size);
+// Signed distance to a cone-capsule: line segment a→b with endpoint radii
+// ra, rb. Radius interpolates linearly along the segment. This is the
+// branch primitive (ra = r0 at start, rb = r1 at taper-end).
+function sdConeCapsule(px, py, pz, ax, ay, az, bx, by, bz, ra, rb) {
+  const bax = bx - ax, bay = by - ay, baz = bz - az;
+  const l2 = bax * bax + bay * bay + baz * baz || 1e-9;
+  const pax = px - ax, pay = py - ay, paz = pz - az;
+  let h = (pax * bax + pay * bay + paz * baz) / l2;
+  if (h < 0) h = 0; else if (h > 1) h = 1;
+  const r = ra + (rb - ra) * h;
+  const dx = pax - bax * h, dy = pay - bay * h, dz = paz - baz * h;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz) - r;
+}
+
+// Local-space octahedron SDF (axis-aligned at origin, half-extent s).
+// Caller transforms world p → local via a dot-product frame before calling.
+function sdOctahedron(lx, ly, lz, s) {
+  return (Math.abs(lx) + Math.abs(ly) + Math.abs(lz) - s) * 0.57735026;
+}
+
+// Local-space tetrahedron SDF. Approximate; sharp at the four faces, soft
+// everywhere else. Good enough as an aesthetic accent.
+function sdTetrahedron(lx, ly, lz, s) {
+  const t1 = Math.abs(lx + ly) - lz;
+  const t2 = Math.abs(lx - ly) + lz;
+  return (Math.max(t1, t2) - s) * 0.57735026;
+}
+
+// ---------- Field builder + body mesh (Chunk 3c) ----------
+// Scatter-rasterize every primitive into its own AABB in a shared scalar
+// field. Branches use smooth-min with k proportional to radius × depth
+// (sharper at trunk, softer at tips); accents use hard min so polyhedral
+// facets stay crisp against the organic body.
+const _fu = new THREE.Vector3(), _fv = new THREE.Vector3();
+const _sizeV = new THREE.Vector3();
+
+function buildField(branches, accents, s) {
+  const box = new THREE.Box3();
+  let maxR = 0;
+  for (const b of branches) {
+    box.expandByPoint(b.start);
+    box.expandByPoint(b.end);
+    const r = Math.max(b.r0, b.r1);
+    if (r > maxR) maxR = r;
+  }
+  for (const a of accents) {
+    box.expandByPoint(a.pos);
+    if (a.size > maxR) maxR = a.size;
+  }
+  const pad = maxR * 2 + 4;
+  box.min.addScalar(-pad);
+  box.max.addScalar(pad);
+  box.getSize(_sizeV);
+  const maxDim = Math.max(_sizeV.x, _sizeV.y, _sizeV.z);
+
+  const targetVoxels = 96;
+  const voxel = maxDim / targetVoxels;
+  const nx = Math.max(8, Math.ceil(_sizeV.x / voxel) + 1);
+  const ny = Math.max(8, Math.ceil(_sizeV.y / voxel) + 1);
+  const nz = Math.max(8, Math.ceil(_sizeV.z / voxel) + 1);
+  const ox = box.min.x, oy = box.min.y, oz = box.min.z;
+  const stride = nx * ny;
+
+  const field = new Float32Array(nx * ny * nz);
+  field.fill(1e6);
+
+  // Clamp primitive radius to at least 0.8 × voxel so thin tips don't
+  // alias out of the sampling grid.
+  const minR = voxel * 0.8;
+  const kBase = s.smooth;
+
+  for (const b of branches) {
+    const r0 = Math.max(minR, b.r0);
+    const r1 = Math.max(minR, b.r1);
+    const rMax = Math.max(r0, r1);
+    const depthF = b.depth / Math.max(1, s.complexity);
+    const k = kBase * rMax * (0.4 + 1.6 * depthF);
+    const pad2 = rMax + k * 2 + voxel * 2;
+
+    const xmin = Math.max(0, Math.floor((Math.min(b.start.x, b.end.x) - pad2 - ox) / voxel));
+    const xmax = Math.min(nx - 1, Math.ceil((Math.max(b.start.x, b.end.x) + pad2 - ox) / voxel));
+    const ymin = Math.max(0, Math.floor((Math.min(b.start.y, b.end.y) - pad2 - oy) / voxel));
+    const ymax = Math.min(ny - 1, Math.ceil((Math.max(b.start.y, b.end.y) + pad2 - oy) / voxel));
+    const zmin = Math.max(0, Math.floor((Math.min(b.start.z, b.end.z) - pad2 - oz) / voxel));
+    const zmax = Math.min(nz - 1, Math.ceil((Math.max(b.start.z, b.end.z) + pad2 - oz) / voxel));
+
+    const ax = b.start.x, ay = b.start.y, az = b.start.z;
+    const bx = b.end.x, by = b.end.y, bz = b.end.z;
+
+    for (let zi = zmin; zi <= zmax; zi++) {
+      const pz = oz + zi * voxel;
+      for (let yi = ymin; yi <= ymax; yi++) {
+        const py = oy + yi * voxel;
+        const rowBase = zi * stride + yi * nx;
+        for (let xi = xmin; xi <= xmax; xi++) {
+          const px = ox + xi * voxel;
+          const d = sdConeCapsule(px, py, pz, ax, ay, az, bx, by, bz, r0, r1);
+          const idx = rowBase + xi;
+          field[idx] = smin(field[idx], d, k);
+        }
+      }
+    }
+  }
+
+  for (const a of accents) {
+    // Build an orthonormal frame whose w-axis is the accent axis, then
+    // spin it around w by a.spin. World p → local via dot products.
+    buildFrame(a.axis, _fu, _fv);
+    const cs = Math.cos(a.spin), sn = Math.sin(a.spin);
+    const ux = _fu.x * cs + _fv.x * sn, uy = _fu.y * cs + _fv.y * sn, uz = _fu.z * cs + _fv.z * sn;
+    const vx = -_fu.x * sn + _fv.x * cs, vy = -_fu.y * sn + _fv.y * cs, vz = -_fu.z * sn + _fv.z * cs;
+    const wx = a.axis.x, wy = a.axis.y, wz = a.axis.z;
+    const siz = Math.max(minR * 1.2, a.size);
+    const pad2 = siz + voxel * 2;
+
+    const xmin = Math.max(0, Math.floor((a.pos.x - pad2 - ox) / voxel));
+    const xmax = Math.min(nx - 1, Math.ceil((a.pos.x + pad2 - ox) / voxel));
+    const ymin = Math.max(0, Math.floor((a.pos.y - pad2 - oy) / voxel));
+    const ymax = Math.min(ny - 1, Math.ceil((a.pos.y + pad2 - oy) / voxel));
+    const zmin = Math.max(0, Math.floor((a.pos.z - pad2 - oz) / voxel));
+    const zmax = Math.min(nz - 1, Math.ceil((a.pos.z + pad2 - oz) / voxel));
+
+    const isTetra = a.kind === 'tetra';
+
+    for (let zi = zmin; zi <= zmax; zi++) {
+      const dz = oz + zi * voxel - a.pos.z;
+      for (let yi = ymin; yi <= ymax; yi++) {
+        const dy = oy + yi * voxel - a.pos.y;
+        const rowBase = zi * stride + yi * nx;
+        for (let xi = xmin; xi <= xmax; xi++) {
+          const dx = ox + xi * voxel - a.pos.x;
+          const lx = dx * ux + dy * uy + dz * uz;
+          const ly = dx * vx + dy * vy + dz * vz;
+          const lz = dx * wx + dy * wy + dz * wz;
+          const d = isTetra ? sdTetrahedron(lx, ly, lz, siz) : sdOctahedron(lx, ly, lz, siz);
+          const idx = rowBase + xi;
+          if (d < field[idx]) field[idx] = d;
+        }
+      }
+    }
+  }
+
+  return { field, nx, ny, nz, ox, oy, oz, voxel };
+}
+
+function buildBodyMesh(branches, accents, s) {
+  const f = buildField(branches, accents, s);
+  let geom = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
+  const rawVerts = geom.getAttribute('position').count;
+  if (rawVerts === 0) return { mesh: null, triCount: 0, voxel: f.voxel };
+  geom = mergeVertices(geom, 1e-4);
+  geom.computeVertexNormals();
   const mesh = new THREE.Mesh(geom, material);
-  mesh.position.copy(a.pos);
-  mesh.quaternion.setFromUnitVectors(_axisY, a.axis);
-  mesh.rotateY(a.spin);
-  exportGroup.add(mesh);
+  return { mesh, triCount: rawVerts / 3, voxel: f.voxel };
 }
 
 function generate() {
   setStatus('generating…');
   clearExport();
+  const t0 = performance.now();
   const { branches, accents } = generateStructure(state);
-  for (const b of branches) addCapsuleMesh(b);
-  for (const a of accents)  addAccentMesh(a);
+  const { mesh, triCount, voxel } = buildBodyMesh(branches, accents, state);
+  if (mesh) exportGroup.add(mesh);
+  const dt = (performance.now() - t0) | 0;
   frameCamera();
-  setStatus(`seed ${state.seed} · ${branches.length} branches · ${accents.length} accents`);
+  console.log(`gen: seed=${state.seed} ${branches.length}br ${accents.length}ac ${triCount|0}tri voxel=${voxel.toFixed(2)}mm ${dt}ms`);
+  setStatus(`seed ${state.seed} · ${triCount|0} tris · ${dt}ms`);
 }
 
 function frameCamera() {
@@ -1119,38 +1255,6 @@ canvas.addEventListener('webglcontextrestored', () => {
   setStatus('gl restored');
   generate();
 }, false);
-
-// MC walker smoke test (Chunk 3b): build a sphere SDF, run marching cubes,
-// render alongside the debug sculpture. If this looks like a clean sphere,
-// MC_TRI_TABLE + MC_EDGE_TABLE + marchingCubes() are all wired correctly.
-// Removed in Chunk 3c when the real pipeline takes over.
-function mcSphereSmoke() {
-  // Non-Pythagorean r/vs + offset origin so no grid corner hits SDF≈0
-  // (avoids degenerate-triangle artifacts at exact-zero voxel samples).
-  const n = 30, vs = 1.13, r = 11.37;
-  const nx = n, ny = n, nz = n;
-  const ox = -n*vs/2 + 0.01, oy = -n*vs/2 + 0.02, oz = -n*vs/2 + 0.03;
-  const field = new Float32Array(nx*ny*nz);
-  for (let zi = 0; zi < nz; zi++) {
-    for (let yi = 0; yi < ny; yi++) {
-      for (let xi = 0; xi < nx; xi++) {
-        const px = ox + xi*vs, py = oy + yi*vs, pz = oz + zi*vs;
-        field[zi*nx*ny + yi*nx + xi] = Math.sqrt(px*px + py*py + pz*pz) - r;
-      }
-    }
-  }
-  let geom = marchingCubes(field, nx, ny, nz, ox, oy, oz, vs, 0);
-  const rawVerts = geom.getAttribute('position').count;
-  geom = mergeVertices(geom, 1e-4);
-  geom.computeVertexNormals();
-  const mesh = new THREE.Mesh(geom, material);
-  mesh.position.set(80, 0, 0);
-  scene.add(mesh);
-  const weldedVerts = geom.getAttribute('position').count;
-  const tris = rawVerts / 3;
-  console.log(`mc smoke sphere: r=${r}mm, ${tris|0} tris, ${rawVerts}→${weldedVerts} verts`);
-}
-mcSphereSmoke();
 
 // Initial render
 refreshUIFromState();
