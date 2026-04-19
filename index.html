@@ -228,6 +228,19 @@
       </div>
 
       <div class="ctrl">
+        <label>Metal</label>
+        <select id="material">
+          <option value="stainless">Stainless Steel (316L)</option>
+          <option value="titanium">Titanium (Ti-6Al-4V)</option>
+          <option value="aluminum">Aluminum (AlSi10Mg)</option>
+          <option value="inconel">Inconel 718</option>
+          <option value="cocr">Cobalt-Chrome</option>
+          <option value="bronze">Bronze</option>
+          <option value="copper">Copper (CuCr1Zr)</option>
+        </select>
+      </div>
+
+      <div class="ctrl">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
       </div>
@@ -310,10 +323,23 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.1.1";
+const VERSION = "v1.2.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
+// Non-toxic DMLS/SLM metals. color/metalness/roughness drive the preview
+// material; minWall feeds the pre-export print-safety gate; label appears
+// in warnings and goes into the STL filename slug.
+const MATERIALS = {
+  stainless: { label: 'Stainless Steel (316L)', slug: 'stainless', color: 0xc0c5cc, metalness: 0.90, roughness: 0.30, minWall: 0.4 },
+  titanium:  { label: 'Titanium (Ti-6Al-4V)',   slug: 'titanium',  color: 0x9ea2a4, metalness: 0.85, roughness: 0.40, minWall: 0.5 },
+  aluminum:  { label: 'Aluminum (AlSi10Mg)',    slug: 'aluminum',  color: 0xcfd5da, metalness: 0.85, roughness: 0.45, minWall: 0.5 },
+  inconel:   { label: 'Inconel 718',            slug: 'inconel',   color: 0xb5a692, metalness: 0.85, roughness: 0.35, minWall: 0.5 },
+  cocr:      { label: 'Cobalt-Chrome',          slug: 'cocr',      color: 0xb8bcc4, metalness: 0.95, roughness: 0.25, minWall: 0.4 },
+  bronze:    { label: 'Bronze',                 slug: 'bronze',    color: 0xa97142, metalness: 0.90, roughness: 0.30, minWall: 0.5 },
+  copper:    { label: 'Copper (CuCr1Zr)',       slug: 'copper',    color: 0xb87333, metalness: 0.95, roughness: 0.25, minWall: 0.6 },
+};
+
 const DEFAULTS = {
   seed: 1,
   complexity: 4,
@@ -328,6 +354,7 @@ const DEFAULTS = {
   sym: 'none',
   radialN: 5,
   neg: 1.5,
+  material: 'stainless',
 };
 const state = { ...DEFAULTS };
 
@@ -379,9 +406,21 @@ const exportGroup = new THREE.Group();
 scene.add(exportGroup);
 
 const material = new THREE.MeshStandardMaterial({
-  color: 0xb8c2cc, metalness: 0.85, roughness: 0.35,
+  color: MATERIALS[DEFAULTS.material].color,
+  metalness: MATERIALS[DEFAULTS.material].metalness,
+  roughness: MATERIALS[DEFAULTS.material].roughness,
   flatShading: false,
 });
+
+// Swap the shared material's tint to match the selected metal preset. All
+// meshes (body + rings) share this material reference, so the swap takes
+// effect on the next render frame without rebuilding geometry.
+function applyMaterial(key) {
+  const m = MATERIALS[key] || MATERIALS.stainless;
+  material.color.setHex(m.color);
+  material.metalness = m.metalness;
+  material.roughness = m.roughness;
+}
 
 // ---------- Resize ----------
 function resize() {
@@ -1466,14 +1505,16 @@ function floodFillOutside(field, nx, ny, nz, iso) {
 }
 
 // Runs cheap pre-export checks against the sampled high-res field.
-// Warnings are informational — export proceeds either way.
-const DMLS_MIN_WALL = 0.5; // mm
-function checkPrintSafety(branches, voxel, fieldInfo) {
+// Warnings are informational — export proceeds either way. Wall-thickness
+// threshold comes from the selected metal preset since each DMLS alloy has
+// its own documented minimum printable wall.
+function checkPrintSafety(branches, voxel, fieldInfo, materialKey) {
+  const mat = MATERIALS[materialKey] || MATERIALS.stainless;
   const warns = [];
   if (voxel > 1.0) warns.push(`voxel=${voxel.toFixed(2)}mm may alias thin features`);
   let minR = Infinity;
   for (const b of branches) { if (b.r0 < minR) minR = b.r0; if (b.r1 < minR) minR = b.r1; }
-  if (minR < DMLS_MIN_WALL) warns.push(`min branch radius=${minR.toFixed(2)}mm < ${DMLS_MIN_WALL}mm DMLS wall limit`);
+  if (minR < mat.minWall) warns.push(`min branch radius=${minR.toFixed(2)}mm < ${mat.minWall}mm ${mat.label} wall limit`);
   const enclosed = floodFillOutside(fieldInfo.field, fieldInfo.nx, fieldInfo.ny, fieldInfo.nz, 0);
   if (enclosed > 0) warns.push(`${enclosed} enclosed-void voxel(s) — slicer may flag`);
   return warns;
@@ -1647,7 +1688,7 @@ async function downloadSTL() {
 
     setStatus('exporting: safety check…');
     await nextFrame();
-    const warns = checkPrintSafety(branches, f.voxel, f);
+    const warns = checkPrintSafety(branches, f.voxel, f, state.material);
     if (warns.length) {
       console.warn('print-safety warnings:');
       for (const w of warns) console.warn('  ·', w);
@@ -1669,8 +1710,9 @@ async function downloadSTL() {
     const stl = exporter.parse(highResGroup, { binary: true });
     const blob = new Blob([stl], { type: 'model/stl' });
     const url = URL.createObjectURL(blob);
+    const matSlug = (MATERIALS[state.material] || MATERIALS.stainless).slug;
     a.href = url;
-    a.download = `sculpture_seed${state.seed}_${VERSION}.stl`;
+    a.download = `sculpture_${matSlug}_seed${state.seed}_${VERSION}.stl`;
     a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 
@@ -1731,6 +1773,14 @@ function onSymChange() {
 }
 onSymChange();
 
+// Material dropdown binds separately: changing it updates the shared
+// material tint only, no geometry regen needed.
+const materialEl = document.getElementById('material');
+materialEl.addEventListener('change', () => {
+  state.material = materialEl.value;
+  applyMaterial(state.material);
+});
+
 function refreshUIFromState() {
   for (const k of Object.keys(bindings)) {
     const b = bindings[k];
@@ -1739,6 +1789,8 @@ function refreshUIFromState() {
     b.update();
   }
   onSymChange();
+  materialEl.value = state.material;
+  applyMaterial(state.material);
 }
 
 // Dual-phase regen (Chunk 6). Fast 64³ preview fires at most every 30ms
