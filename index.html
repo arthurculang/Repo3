@@ -252,8 +252,8 @@
       </div>
 
       <div class="ctrl">
-        <label>Wall thickness (mm) <span class="val" id="wallVal">0.0</span></label>
-        <input type="range" id="wall" min="0" max="5" step="0.1" value="0">
+        <label>Wall thickness (mm) <span class="val" id="wallVal">1.0</span></label>
+        <input type="range" id="wall" min="0" max="5" step="0.1" value="1.0">
       </div>
 
       <div class="ctrl">
@@ -356,7 +356,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.6.0";
+const VERSION = "v1.7.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -392,7 +392,8 @@ const DEFAULTS = {
   neg: 1.5,
   material: 'stainless',
   size: 80,  // target max bounding-box dimension (mm)
-  wall: 0,   // 0 = solid. > 0 = hollow shell with this wall thickness (mm).
+  wall: 1.0, // default hollow shell with 1mm wall — above every material's
+             // minWall, sensible at default size/export-resolution.
   negStyle: 'none',   // 'none' | 'helix' | 'colony'
   negStrands: 3,      // 1..6 helix strands or colony paths
   negDensity: 0.5,    // 0..1 — tunes wrap radius / turns / path count
@@ -1216,7 +1217,13 @@ const _sizeV = new THREE.Vector3();
 
 function negTubeRadius(s) {
   const mat = MATERIALS[s.material] || MATERIALS.stainless;
-  return Math.max(1.2, 1.5 * mat.minWall);
+  // Scales with sculpture size and density. At the default size=80mm and
+  // density=0.5 this gives ~7mm radius (14mm-wide channels) — enough to
+  // actually read as negative space rather than a capillary. Absolute
+  // floor is 1.5 × minWall so printability is preserved at density=0.
+  const sizeFactor = s.size / 80;
+  const r = (2 + 10 * s.negDensity) * sizeFactor;
+  return Math.max(1.5 * mat.minWall, r);
 }
 
 function helixPaths(branches, s, rng) {
@@ -1231,15 +1238,15 @@ function helixPaths(branches, s, rng) {
   if (size.y >= size.x && size.y >= size.z)      { d = [0,1,0]; p1 = [1,0,0]; p2 = [0,0,1]; alongLen = size.y; }
   else if (size.x >= size.z)                      { d = [1,0,0]; p1 = [0,1,0]; p2 = [0,0,1]; alongLen = size.x; }
   else                                            { d = [0,0,1]; p1 = [1,0,0]; p2 = [0,1,0]; alongLen = size.z; }
-  // Wrap radius and turn count scale with density slider. Wrap capped by
-  // the smallest perpendicular extent so the helix stays inside the
-  // bounding box (roughly).
+  // Wrap radius and turn count scale with density slider. Wrap is up to
+  // 55% of the smallest perpendicular extent so the helix takes bold
+  // swings through the core rather than a tight central spindle.
   const perp = Math.min(size.x, size.y, size.z);
-  const wrapR = perp * 0.30 * (0.6 + 0.8 * s.negDensity);
-  const turns = 1 + 2.5 * s.negDensity;
+  const wrapR = perp * (0.30 + 0.25 * s.negDensity);
+  const turns = 2 + 4 * s.negDensity;
   const tubeR = negTubeRadius(s);
   const L = alongLen * 1.15;            // extend ±7.5% past each end so tube exits cleanly
-  const M = 48;                          // samples per strand
+  const M = 64;                          // samples per strand (denser for fat tubes)
   const paths = [];
   for (let k = 0; k < N; k++) {
     const phase = (2 * Math.PI * k) / N + rng() * 0.05;
@@ -1268,40 +1275,56 @@ function colonyPaths(branches, s, rng) {
   if (tips.length < 2) return [];
   const N = Math.max(1, Math.min(6, s.negStrands | 0));
   const tubeR = negTubeRadius(s);
-  const M = 40;                          // samples per path
-  // Offset magnitude for the bezier control point, scales with the
-  // bounding-box size and density. Larger density → more wandering.
   const box = new THREE.Box3();
   for (const b of branches) box.expandByPoint(b.start).expandByPoint(b.end);
   const size = box.getSize(new THREE.Vector3());
   const diag = Math.sqrt(size.x*size.x + size.y*size.y + size.z*size.z);
-  const offset = diag * 0.08 * (0.5 + s.negDensity);
+  // Wander scale: how far intermediate waypoints drift off the direct
+  // A→B line. Bigger density = more meandering tunnels.
+  const wander = diag * (0.06 + 0.14 * s.negDensity);
+  // Number of waypoints (including endpoints). More density = more bends.
+  const nWay = 4 + Math.floor(s.negDensity * 4);  // 4..8 waypoints
+  // Smooth each wander-walk with Catmull-Rom so the carved tunnel curves
+  // rather than looking like faceted line segments.
+  const samplesPerSeg = 12;
   const paths = [];
   for (let k = 0; k < N; k++) {
     const iA = Math.floor(rng() * tips.length);
     let iB = Math.floor(rng() * tips.length);
     if (iB === iA) iB = (iB + 1) % tips.length;
     const A = tips[iA].end, B = tips[iB].end;
-    // Quadratic bezier with control point near midpoint, offset by a
-    // seeded random direction so different strands take different routes
-    // through the interior.
-    const midX = (A.x + B.x) * 0.5, midY = (A.y + B.y) * 0.5, midZ = (A.z + B.z) * 0.5;
-    const ox1 = (rng() - 0.5) * 2, oy1 = (rng() - 0.5) * 2, oz1 = (rng() - 0.5) * 2;
-    const olen = Math.sqrt(ox1*ox1 + oy1*oy1 + oz1*oz1) || 1;
-    const C = {
-      x: midX + (ox1 / olen) * offset,
-      y: midY + (oy1 / olen) * offset,
-      z: midZ + (oz1 / olen) * offset,
-    };
-    const pts = new Array(M + 1);
-    for (let i = 0; i <= M; i++) {
-      const t = i / M;
-      const u = 1 - t;
-      pts[i] = {
-        x: u*u*A.x + 2*u*t*C.x + t*t*B.x,
-        y: u*u*A.y + 2*u*t*C.y + t*t*B.y,
-        z: u*u*A.z + 2*u*t*C.z + t*t*B.z,
-      };
+    // Build waypoints: linearly interpolate then perturb interior points.
+    const way = [{ x: A.x, y: A.y, z: A.z }];
+    for (let j = 1; j < nWay - 1; j++) {
+      const t = j / (nWay - 1);
+      way.push({
+        x: A.x + (B.x - A.x) * t + (rng() - 0.5) * 2 * wander,
+        y: A.y + (B.y - A.y) * t + (rng() - 0.5) * 2 * wander,
+        z: A.z + (B.z - A.z) * t + (rng() - 0.5) * 2 * wander,
+      });
+    }
+    way.push({ x: B.x, y: B.y, z: B.z });
+    // Catmull-Rom through waypoints (endpoint-duplicated so first/last
+    // segments have proper tangents without introducing extra control
+    // points).
+    const ctrl = [way[0], ...way, way[way.length - 1]];
+    const pts = [];
+    for (let i = 0; i < way.length - 1; i++) {
+      const p0 = ctrl[i], p1 = ctrl[i+1], p2 = ctrl[i+2], p3 = ctrl[i+3];
+      const steps = i === way.length - 2 ? samplesPerSeg + 1 : samplesPerSeg;
+      for (let j = 0; j < steps; j++) {
+        const t = j / samplesPerSeg;
+        const t2 = t * t, t3 = t2 * t;
+        const a = -0.5*t3 + t2 - 0.5*t;
+        const b =  1.5*t3 - 2.5*t2 + 1;
+        const c = -1.5*t3 + 2*t2 + 0.5*t;
+        const d =  0.5*t3 - 0.5*t2;
+        pts.push({
+          x: a*p0.x + b*p1.x + c*p2.x + d*p3.x,
+          y: a*p0.y + b*p1.y + c*p2.y + d*p3.y,
+          z: a*p0.z + b*p1.z + c*p2.z + d*p3.z,
+        });
+      }
     }
     paths.push({ points: pts, tubeR });
   }
@@ -2210,11 +2233,20 @@ onSymChange();
 onNegChange();
 
 // Material dropdown binds separately: changing it updates the shared
-// material tint only, no geometry regen needed.
+// material tint and, if the current wall thickness is below the new
+// alloy's minimum printable wall, bumps wall up to that floor (and
+// triggers a regen since the geometry changes).
 const materialEl = document.getElementById('material');
 materialEl.addEventListener('change', () => {
   state.material = materialEl.value;
   applyMaterial(state.material);
+  const newMin = (MATERIALS[state.material] || MATERIALS.stainless).minWall;
+  if (state.wall > 0 && state.wall < newMin) {
+    state.wall = newMin;
+    bindings.wall.el.value = String(newMin);
+    bindings.wall.update();
+    scheduleRegen();
+  }
 });
 
 function refreshUIFromState() {
