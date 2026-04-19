@@ -310,7 +310,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.0.0";
+const VERSION = "v1.0.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -881,7 +881,11 @@ const MC_EB = new Int8Array([1,2,3,0,5,6,7,4,4,5,6,7]);
 
 // Extract an iso-surface (iso=0 for SDFs) from a scalar field.
 // Emits a non-indexed BufferGeometry with position only; caller welds + normals.
-// Convention: field[i] < iso ⇒ inside, so triangles wind CCW as seen from outside.
+// Convention: field[i] < iso ⇒ inside. We emit each triangle as (e0, e2, e1)
+// instead of (e0, e1, e2) because three.js's MC triTable is wound CW from
+// outside; swapping the last two vertices flips to CCW so computeVertexNormals
+// produces outward-facing normals and back-face culling keeps the outside
+// visible instead of the inside (bug fixed in v1.0.1).
 function marchingCubes(field, nx, ny, nz, ox, oy, oz, vs, iso) {
   const strideZ = nx * ny;
   const positions = [];
@@ -934,8 +938,8 @@ function marchingCubes(field, nx, ny, nz, ox, oy, oz, vs, iso) {
           const e2 = MC_TRI_TABLE[tb + i + 2];
           positions.push(
             edge[e0*3], edge[e0*3+1], edge[e0*3+2],
-            edge[e1*3], edge[e1*3+1], edge[e1*3+2],
             edge[e2*3], edge[e2*3+1], edge[e2*3+2],
+            edge[e1*3], edge[e1*3+1], edge[e1*3+2],
           );
         }
       }
