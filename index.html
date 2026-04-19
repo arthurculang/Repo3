@@ -186,10 +186,16 @@
       grid-template-columns: 1fr;
       grid-template-rows: 1fr auto;
     }
+    /* HTML order is panel→stage, but on mobile we want canvas on top
+       (greedy 1fr row) and panel as a bottom sheet (auto row, capped
+       by max-height). Without explicit grid-row assignments the panel
+       lands in row 1 and devours the viewport. */
+    #stage { grid-row: 1; }
     #panel {
+      grid-row: 2;
       border-right: none;
       border-top: 1px solid var(--border);
-      max-height: 55vh;
+      max-height: 50vh;
       min-height: 44px;
       transition: max-height 220ms ease;
       padding-top: 0;
@@ -328,7 +334,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.3.0";
+const VERSION = "v1.4.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
