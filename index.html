@@ -370,7 +370,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.9.1";
+const VERSION = "v1.9.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1689,6 +1689,80 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
   return { field, nx, ny, nz, ox, oy, oz, voxel };
 }
 
+// Interior repair vein (Chunk v1.9.2). Builds a polyline from `start` to
+// `end` that dips toward origin (the body's deep interior) at mid-path,
+// smooths it with Catmull-Rom, and returns it as a list of cone-capsule
+// sub-segments suitable for direct rasterization through buildField's
+// postCarve slot. Replaces the prior straight-line bridge that took the
+// shortest path through air; this version runs through the body's
+// interior so it reads as a vein, not an external strut.
+function interiorBridgeSegments(start, end, s, rng, voxel) {
+  const mat = MATERIALS[s.material] || MATERIALS.stainless;
+  const baseR = Math.max(mat.minWall * 1.5, voxel * 1.5, 0.8);
+  const nWay = 5 + Math.floor(rng() * 3); // 5..7 waypoints incl. endpoints
+  const way = [{ x: start.x, y: start.y, z: start.z }];
+  for (let i = 1; i < nWay - 1; i++) {
+    const t = i / (nWay - 1);
+    const lx = start.x + (end.x - start.x) * t;
+    const ly = start.y + (end.y - start.y) * t;
+    const lz = start.z + (end.z - start.z) * t;
+    // Origin pull: peaks at mid-path, zero at endpoints. Forces the path
+    // to dip through the body's centroid (which is at origin after
+    // generateStructure's recenter) rather than going straight through air.
+    const pull = 0.5 * Math.sin(t * Math.PI);
+    // Lateral jitter: small random offset perpendicular-ish, larger near
+    // mid-path so the vein curves organically rather than radial-symmetric.
+    const j = 4 * Math.sin(t * Math.PI);
+    way.push({
+      x: lx * (1 - pull) + (rng() - 0.5) * 2 * j,
+      y: ly * (1 - pull) + (rng() - 0.5) * 2 * j,
+      z: lz * (1 - pull) + (rng() - 0.5) * 2 * j,
+    });
+  }
+  way.push({ x: end.x, y: end.y, z: end.z });
+
+  // Catmull-Rom smoothing (endpoint duplicated for clean tangents).
+  const ctrl = [way[0], ...way, way[way.length - 1]];
+  const samplesPerSeg = 6;
+  const pts = [];
+  for (let i = 0; i < way.length - 1; i++) {
+    const p0 = ctrl[i], p1 = ctrl[i+1], p2 = ctrl[i+2], p3 = ctrl[i+3];
+    const steps = i === way.length - 2 ? samplesPerSeg + 1 : samplesPerSeg;
+    for (let j = 0; j < steps; j++) {
+      const t = j / samplesPerSeg;
+      const t2 = t * t, t3 = t2 * t;
+      const a = -0.5*t3 + t2 - 0.5*t;
+      const b =  1.5*t3 - 2.5*t2 + 1;
+      const c = -1.5*t3 + 2*t2 + 0.5*t;
+      const d =  0.5*t3 - 0.5*t2;
+      pts.push({
+        x: a*p0.x + b*p1.x + c*p2.x + d*p3.x,
+        y: a*p0.y + b*p1.y + c*p2.y + d*p3.y,
+        z: a*p0.z + b*p1.z + c*p2.z + d*p3.z,
+      });
+    }
+  }
+
+  // Convert to cone-capsule segments at uniform radius (organic wobble
+  // skipped for repair veins — clean tubes are easier to verify visually
+  // when something disconnected is being patched).
+  const segs = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i+1];
+    const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+    const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+    segs.push({
+      start: new THREE.Vector3(a.x, a.y, a.z),
+      end:   new THREE.Vector3(b.x, b.y, b.z),
+      r0: baseR, r1: baseR,
+      depth: 0, parent: null,
+      tangent: new THREE.Vector3(dx/len, dy/len, dz/len),
+      wobble: 0,
+    });
+  }
+  return segs;
+}
+
 function buildBodyMesh(branches, accents, s, previewVoxels = 96) {
   // Decorative+structural inner links are computed once up front (seeded
   // RNG, deterministic per state.seed) and passed to every retry. They
@@ -1696,49 +1770,57 @@ function buildBodyMesh(branches, accents, s, previewVoxels = 96) {
   // survive any neg-space tunnels.
   const linkRng = mulberry32((s.seed >>> 0) ^ 0x4e54c0de);
   const innerLinks = generateInnerLinks(branches, s, linkRng);
+  const bridgeRng = mulberry32((s.seed >>> 0) ^ 0x9d7e2c8a);
+  // Comprehensive disconnect-repair loop. Builds the mesh, runs union-find,
+  // and if any orphan shells remain it routes an interior repair vein
+  // between the largest component and the nearest stray, then rebuilds
+  // and re-checks. Loops until components == 1 or the safety cap fires.
+  // 20 iterations is well past anything seen in practice (typical: 0–2).
   const bridges = [];
-  const MAX_RETRIES = 3;
+  let nRepairs = 0;
+  const MAX_RETRIES = 20;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    // postCarve = inner-links + auto-repair bridges, rasterized after
-    // hollow / drain / neg-space carving so no carve can sever them.
     const postCarve = bridges.length ? innerLinks.concat(bridges) : innerLinks;
     const f = buildField(branches, accents, s, previewVoxels, postCarve);
     const raw = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
     const rawVerts = raw.getAttribute('position').count;
     if (rawVerts === 0) {
       raw.dispose();
-      return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: bridges.length };
+      return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
     }
     const geom = mergeVertices(raw, 1e-4);
     raw.dispose();
     const comp = countComponents(geom);
-    if (comp.nComp <= 1 || attempt === MAX_RETRIES) {
+    if (comp.nComp <= 1) {
       geom.computeVertexNormals();
       const mesh = new THREE.Mesh(geom, material);
       const triCount = geom.getIndex().count / 3;
-      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: bridges.length };
+      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs };
+    }
+    if (attempt === MAX_RETRIES) {
+      console.warn(`buildBodyMesh: hit MAX_RETRIES (${MAX_RETRIES}) with ${comp.nComp} components remaining (seed=${s.seed})`);
+      geom.computeVertexNormals();
+      const mesh = new THREE.Mesh(geom, material);
+      const triCount = geom.getIndex().count / 3;
+      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs };
     }
     const br = findBridge(geom, comp.vertComp, comp.nComp);
     if (!br) {
+      console.warn(`buildBodyMesh: findBridge returned null with ${comp.nComp} components (seed=${s.seed})`);
       geom.computeVertexNormals();
       const mesh = new THREE.Mesh(geom, material);
       const triCount = geom.getIndex().count / 3;
-      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: bridges.length };
+      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs };
     }
     geom.dispose();
-    // Bridge thick enough to resolve at the sampling grid AND meet the
-    // active material's minimum wall so a printed connector survives.
-    const bridgeMat = MATERIALS[s.material] || MATERIALS.stainless;
-    const bridgeR = Math.max(f.voxel * 1.5, bridgeMat.minWall * 1.5, 0.8);
+    // Generate an interior repair vein and append all its sub-segments to
+    // the bridges list. Next iteration's postCarve includes the new vein,
+    // and union-find should report one fewer component.
     const startV = new THREE.Vector3(br.ax, br.ay, br.az);
-    const endV = new THREE.Vector3(br.bx, br.by, br.bz);
-    bridges.push({
-      start: startV,
-      end: endV,
-      r0: bridgeR, r1: bridgeR,
-      depth: 0, parent: null,
-      tangent: endV.clone().sub(startV).normalize(),
-    });
+    const endV   = new THREE.Vector3(br.bx, br.by, br.bz);
+    const segs = interiorBridgeSegments(startV, endV, s, bridgeRng, f.voxel);
+    for (const seg of segs) bridges.push(seg);
+    nRepairs++;
   }
 }
 
