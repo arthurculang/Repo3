@@ -446,7 +446,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.15.0</span>
+      <span id="version">v1.16.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -484,7 +484,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.15.0";
+const VERSION = "v1.16.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2472,20 +2472,20 @@ function analyzePrintability(buildResult, rings, s, branches) {
       : `min branch radius ${minR.toFixed(2)}mm < ${mat.minWall}mm — increase Core thickness`,
   });
 
-  // 4. Voxel resolution vs wall (preview-quality concern only — the 160³
-  // export uses much smaller voxels and resolves any reasonable wall
-  // cleanly). severity:'warn' so a preview-alias finding doesn't gate
-  // printability; bumping the wall would surprise the user.
+  // 4. Voxel resolution vs wall — at large sizes the export voxel is also
+  // larger than thin walls and will alias even on the printed STL.
+  // severity:'block' + autoFix:true so the auto-fix loop bumps wall to
+  // ≥ voxel; "all checks pass" then truly means all checks pass.
   if (s.wall > 0) {
     const ok = voxel <= s.wall + 1e-6;
     checks.push({
       name: 'resolution',
       pass: ok,
-      severity: 'warn',
-      autoFix: false,
+      severity: 'block',
+      autoFix: true,
       label: ok
-        ? `voxel ${voxel.toFixed(2)}mm ≤ wall — preview resolves cleanly`
-        : `voxel ${voxel.toFixed(2)}mm > wall ${s.wall.toFixed(2)}mm — preview may alias (export at 160³ should still resolve)`,
+        ? `voxel ${voxel.toFixed(2)}mm ≤ wall — shell resolves cleanly at this size`
+        : `voxel ${voxel.toFixed(2)}mm > wall ${s.wall.toFixed(2)}mm — wall too thin for this size`,
     });
   }
 
@@ -2533,17 +2533,29 @@ function analyzePrintability(buildResult, rings, s, branches) {
 
 // Mutate state to fix auto-fixable check failures. Returns the array of
 // human-readable fix descriptions applied; empty array means no progress
-// could be made and the loop should stop.
+// could be made and the loop should stop. Wall-related fixes are unified
+// into a single bump that satisfies every constraint at once:
+//   ≥ material.minWall   so the alloy can actually print it
+//   ≥ preview voxel      so the shell samples + renders cleanly at this
+//                        sculpture size (and downstream at 160³ export
+//                        too, since export voxel < preview voxel)
 function applyAutoFix(state, checks, voxel) {
   const mat = MATERIALS[state.material] || MATERIALS.stainless;
   const fixes = [];
-  for (const c of checks) {
-    if (c.pass || !c.autoFix) continue;
-    if (c.name === 'wall' && state.wall > 0 && state.wall < mat.minWall) {
-      const before = state.wall;
-      state.wall = mat.minWall;
-      fixes.push(`wall ${before.toFixed(2)}→${state.wall.toFixed(2)}mm (${mat.label} min)`);
-    }
+  if (state.wall <= 0) return fixes;
+  const failingWallCheck = checks.find(c => !c.pass && c.autoFix && (c.name === 'wall' || c.name === 'resolution'));
+  if (!failingWallCheck) return fixes;
+  // Unified target wall thickness covering both the material minimum and
+  // the resolution constraint, plus a tiny epsilon so the post-fix check
+  // unambiguously passes (avoids floating-point ties that would loop).
+  const target = Math.max(mat.minWall, voxel * 1.02);
+  if (state.wall < target - 1e-6) {
+    const before = state.wall;
+    state.wall = target;
+    const reasons = [];
+    if (Math.abs(target - mat.minWall) < 1e-6) reasons.push(`${mat.label} min`);
+    if (target > mat.minWall + 1e-6)            reasons.push(`resolves at size ${state.size}mm`);
+    fixes.push(`wall ${before.toFixed(2)}→${state.wall.toFixed(2)}mm (${reasons.join(', ') || 'printability'})`);
   }
   return fixes;
 }
