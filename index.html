@@ -177,6 +177,24 @@
   #version { font-variant-numeric: tabular-nums; }
   #status { color: var(--ink-dim); }
 
+  /* Busy spinner — shown while a generation or export is running.
+     Driven on the compositor (CSS rotation) so it animates even when
+     the main thread is briefly blocked by SDF/MC work. */
+  #statusBox { display: inline-flex; align-items: center; gap: 6px; }
+  .busy-dot {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid transparent;
+    border-top-color: var(--accent);
+    border-right-color: var(--accent);
+    border-radius: 50%;
+    opacity: 0;
+    animation: spin 0.7s linear infinite;
+    transition: opacity 0.15s ease;
+  }
+  #statusBox.busy .busy-dot { opacity: 1; }
+  @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+
   /* Drag handle only visible on mobile sheet */
   #sheetHandle { display: none; }
 
@@ -222,7 +240,7 @@
     <div id="sheetHandle" aria-label="Toggle controls" role="button" tabindex="0"></div>
     <div id="panelHeader">
       <h1>Sculpture</h1>
-      <span id="status">ready</span>
+      <span id="statusBox"><span class="busy-dot"></span><span id="status">ready</span></span>
     </div>
     <div id="panelBody">
       <div class="ctrl">
@@ -370,7 +388,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.9.2";
+const VERSION = "v1.10.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2314,6 +2332,10 @@ function generate(previewVoxels = 96) {
   console.log(`gen: seed=${state.seed} size=${state.size}mm${hollowTag}${negTag} sym=${state.sym}${state.sym === 'radial' ? state.radialN : ''} ${branches.length}br ${accents.length}ac ${rings.length}rg ${triCount|0}tri voxel=${voxel.toFixed(2)}mm components=${nComp} bridges=${bridges} ${dt}ms`);
   const warn = nComp > 1 ? ` · ⚠ ${nComp} shells` : '';
   setStatus(`seed ${state.seed} · ${triCount|0} tris · ${rings.length} rings${warn}`);
+  // Only release the busy state when no further regen is pending — during
+  // continuous slider drag the fast pass finishes before the full pass
+  // schedules; keeping busy on through both prevents spinner flicker.
+  if (!fastScheduled && !fullTimer) setBusy(false);
 }
 
 function frameCamera() {
@@ -2332,6 +2354,7 @@ function frameCamera() {
 }
 
 function setStatus(msg) { document.getElementById('status').textContent = msg; }
+function setBusy(on) { document.getElementById('statusBox').classList.toggle('busy', !!on); }
 
 // ---------- STL export (Chunk 5b) ----------
 // Rebuilds the body mesh at a higher voxel resolution (EXPORT_VOXELS),
@@ -2349,6 +2372,7 @@ async function downloadSTL() {
   const a = document.createElement('a');
   document.body.appendChild(a);
   let highResGroup = null;
+  setBusy(true);
   try {
     setStatus(`exporting: building ${EXPORT_VOXELS}³ field…`);
     await nextFrame();
@@ -2412,6 +2436,7 @@ async function downloadSTL() {
     if (highResGroup) {
       for (const child of highResGroup.children) if (child.geometry) child.geometry.dispose();
     }
+    setBusy(false);
   }
 }
 
@@ -2511,12 +2536,23 @@ function refreshUIFromState() {
 // same seed+state, so the only visible difference is surface resolution.
 let fastScheduled = false, fullTimer = null;
 function scheduleRegen() {
+  // Light up the spinner immediately so the user sees feedback even though
+  // the actual generate() will block the main thread for ~50–500ms. The
+  // rAF wrap ensures the browser gets one paint cycle to render the busy
+  // state before generate() starts blocking.
+  setBusy(true);
   if (!fastScheduled) {
     fastScheduled = true;
-    setTimeout(() => { fastScheduled = false; generate(64); }, 30);
+    setTimeout(() => {
+      fastScheduled = false;
+      requestAnimationFrame(() => generate(64));
+    }, 30);
   }
   if (fullTimer) clearTimeout(fullTimer);
-  fullTimer = setTimeout(() => { fullTimer = null; generate(96); }, 300);
+  fullTimer = setTimeout(() => {
+    fullTimer = null;
+    requestAnimationFrame(() => generate(96));
+  }, 300);
 }
 
 // Buttons
