@@ -321,7 +321,7 @@
       <h1>Sculpture</h1>
       <span id="statusBox"><span class="busy-dot"></span><span id="status">ready</span></span>
     </div>
-    <div id="printReport" class="report-idle" role="button" tabindex="0" aria-label="Printability report (click to expand)">
+    <div id="printReport" class="report-idle expanded" role="button" tabindex="0" aria-label="Printability report (click to collapse)">
       <div class="report-summary">
         <span class="report-status">— awaiting first generation</span>
         <span class="report-fixes"></span>
@@ -370,23 +370,23 @@
       </div>
 
       <div class="ctrl">
-        <label>Inner links <span class="val" id="innerLinksVal">5</span></label>
-        <input type="range" id="innerLinks" min="0" max="12" step="1" value="5">
+        <label>Inner links <span class="val" id="innerLinksVal">2</span></label>
+        <input type="range" id="innerLinks" min="0" max="12" step="1" value="2">
       </div>
 
       <div class="ctrl">
         <label>Negative space</label>
         <select id="negStyle">
-          <option value="none" selected>None</option>
-          <option value="helix">N-Helix (DNA-like spiral)</option>
+          <option value="none">None</option>
+          <option value="helix" selected>N-Helix (DNA-like spiral)</option>
           <option value="colony">Colony pathways</option>
         </select>
       </div>
-      <div class="ctrl hidden" id="negStrandsWrap">
+      <div class="ctrl" id="negStrandsWrap">
         <label>Strands <span class="val" id="negStrandsVal">3</span></label>
         <input type="range" id="negStrands" min="1" max="6" step="1" value="3">
       </div>
-      <div class="ctrl hidden" id="negDensityWrap">
+      <div class="ctrl" id="negDensityWrap">
         <label>Negative-space density <span class="val" id="negDensityVal">0.50</span></label>
         <input type="range" id="negDensity" min="0" max="1" step="0.05" value="0.5">
       </div>
@@ -446,7 +446,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.13.0</span>
+      <span id="version">v1.14.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -484,7 +484,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.13.0";
+const VERSION = "v1.14.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -530,10 +530,11 @@ const DEFAULTS = {
   size: 80,  // target max bounding-box dimension (mm)
   wall: 1.0, // default hollow shell with 1mm wall — above every material's
              // minWall, sensible at default size/export-resolution.
-  negStyle: 'none',   // 'none' | 'helix' | 'colony'
+  negStyle: 'helix',  // 'none' | 'helix' | 'colony' — default to helix so
+                      // the cavity reads as carved-through from first paint
   negStrands: 3,      // 1..6 helix strands or colony paths
   negDensity: 0.5,    // 0..1 — tunes wrap radius / turns / path count
-  innerLinks: 5,      // 0..12 always-on meandering material links between branch tips
+  innerLinks: 2,      // 0..12 always-on meandering material links between branch tips
 };
 const state = { ...DEFAULTS };
 
@@ -2010,7 +2011,13 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     for (let i = 1; i < comp.nComp; i++) if (counts[i] > counts[largestC]) largestC = i;
     const tgt = centroids[largestC];
     const mat = MATERIALS[s.material] || MATERIALS.stainless;
-    const veinR = Math.max(f.voxel * 2.0, mat.minWall * 2.0, 1.0);
+    // Phase 2 veins are intentionally slim — just enough to guarantee the
+    // connection samples cleanly at preview resolution AND meets the
+    // material's minWall. Earlier values were 2× both of those, which
+    // filled the cavity and hid the negative space; now we use the
+    // smaller of the safe floors so the body's interior remains visible
+    // through any helix/colony tunnels.
+    const veinR = Math.max(f.voxel * 1.0, mat.minWall * 1.0, 0.7);
     for (let c = 0; c < comp.nComp; c++) {
       if (c === largestC) continue;
       const src = centroids[c];
