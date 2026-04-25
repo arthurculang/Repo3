@@ -326,12 +326,12 @@
       <div class="ctrl">
         <label>Symmetry</label>
         <select id="sym">
-          <option value="none" selected>None</option>
+          <option value="none">None</option>
           <option value="bilateral">Bilateral</option>
-          <option value="radial">Radial N-fold</option>
+          <option value="radial" selected>Radial N-fold</option>
         </select>
       </div>
-      <div class="ctrl hidden" id="radialWrap">
+      <div class="ctrl" id="radialWrap">
         <label>Radial N <span class="val" id="radialNVal">5</span></label>
         <input type="range" id="radialN" min="2" max="8" step="1" value="5">
       </div>
@@ -370,7 +370,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.9.0";
+const VERSION = "v1.9.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -409,7 +409,7 @@ const DEFAULTS = {
   poly: 0.4,
   rings: 2,
   ringGap: 0.7,
-  sym: 'none',
+  sym: 'radial',
   radialN: 5,
   neg: 1.5,
   material: 'stainless',
