@@ -235,43 +235,46 @@
   .report-checks li.fail::before  { content: "✗ "; color: var(--danger); font-weight: 700; }
   .report-checks li.fixed::before { content: "⚙ "; color: #f0a040; font-weight: 700; }
 
-  /* Big progress overlay (Chunk A / v1.11.0). Sits on top of the canvas
-     during heavy synchronous work so the user has unmissable feedback,
-     not just the small panel-header dot. CSS animation runs on the
-     compositor thread so it keeps spinning even when the main thread
-     is briefly blocked by SDF rasterization or marching cubes. */
+  /* Progress overlay (Chunk A / v1.11.0, repositioned in v1.17.0).
+     A compact corner pill in the upper-right of the canvas — below the
+     topbar so it doesn't overlap New Creature / STL / Reset. No
+     backdrop blur and no canvas dim, so the user can keep watching
+     the realtime build assemble itself underneath. */
   #progressOverlay {
-    position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    background: rgba(11,13,16,0.55);
+    position: absolute;
+    top: calc(56px + var(--safe-top));
+    right: 12px;
+    display: flex; align-items: center;
     pointer-events: none; opacity: 0;
     transition: opacity 0.18s ease;
     z-index: 8;
-    -webkit-backdrop-filter: blur(2px);
-    backdrop-filter: blur(2px);
+    max-width: calc(100% - 24px);
   }
   #progressOverlay.active { opacity: 1; }
   #progressInner {
-    background: rgba(20,24,29,0.95);
+    background: rgba(20,24,29,0.92);
     border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 18px 22px;
-    display: flex; flex-direction: column; align-items: center; gap: 10px;
-    min-width: 180px; max-width: 80%;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    border-radius: 999px;
+    padding: 6px 12px 6px 8px;
+    display: flex; flex-direction: row; align-items: center; gap: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
   }
   #progressSpinner {
-    width: 32px; height: 32px;
-    border: 3px solid #2a323b;
+    flex: 0 0 auto;
+    width: 16px; height: 16px;
+    border: 2px solid #2a323b;
     border-top-color: var(--accent);
     border-right-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }
   #progressText {
-    color: var(--ink); font-size: 13px; line-height: 1.3;
-    text-align: center; font-variant-numeric: tabular-nums;
-    letter-spacing: 0.02em;
+    color: var(--ink); font-size: 11px; line-height: 1.25;
+    font-variant-numeric: tabular-nums; letter-spacing: 0.02em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: min(40vw, 320px);
   }
 
   /* Drag handle only visible on mobile sheet */
@@ -383,12 +386,12 @@
         </select>
       </div>
       <div class="ctrl" id="negStrandsWrap">
-        <label>Strands <span class="val" id="negStrandsVal">3</span></label>
-        <input type="range" id="negStrands" min="1" max="6" step="1" value="3">
+        <label>Strands <span class="val" id="negStrandsVal">4</span></label>
+        <input type="range" id="negStrands" min="1" max="6" step="1" value="4">
       </div>
       <div class="ctrl" id="negDensityWrap">
-        <label>Negative-space density <span class="val" id="negDensityVal">0.50</span></label>
-        <input type="range" id="negDensity" min="0" max="1" step="0.05" value="0.5">
+        <label>Negative-space density <span class="val" id="negDensityVal">0.70</span></label>
+        <input type="range" id="negDensity" min="0" max="1" step="0.05" value="0.7">
       </div>
 
       <div class="ctrl">
@@ -446,7 +449,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.16.0</span>
+      <span id="version">v1.17.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -484,7 +487,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.16.0";
+const VERSION = "v1.17.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -532,8 +535,10 @@ const DEFAULTS = {
              // minWall, sensible at default size/export-resolution.
   negStyle: 'helix',  // 'none' | 'helix' | 'colony' — default to helix so
                       // the cavity reads as carved-through from first paint
-  negStrands: 3,      // 1..6 helix strands or colony paths
-  negDensity: 0.5,    // 0..1 — tunes wrap radius / turns / path count
+  negStrands: 4,      // 1..6 helix strands or colony paths
+  negDensity: 0.7,    // 0..1 — tunes wrap radius / turns / path count.
+                      // Higher default for a more skeletal look with
+                      // larger tunnels exposing the interior veins.
   innerLinks: 2,      // 0..12 always-on meandering material links between branch tips
 };
 const state = { ...DEFAULTS };
