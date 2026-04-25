@@ -446,7 +446,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.14.0</span>
+      <span id="version">v1.15.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -484,7 +484,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.14.0";
+const VERSION = "v1.15.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -677,6 +677,33 @@ const material = new THREE.MeshStandardMaterial({
 // Swap the shared material's tint to match the selected metal preset. All
 // meshes (body + rings) share this material reference, so the swap takes
 // effect on the next render frame without rebuilding geometry.
+// Skeleton material for the pre-MC visualization phase. Single shared
+// instance so we don't leak materials each generation. Picks up the
+// theme accent colour so it reads against the dark stage background.
+const skeletonMaterial = new THREE.LineBasicMaterial({
+  color: 0x7bd389, transparent: true, opacity: 0.85,
+});
+
+// Build a LineSegments object from the branch graph: one line per branch
+// connecting its start to its end. Used as the first visible step during
+// generation so the user sees the structural framework before the body
+// fills in around it.
+function buildSkeletonMesh(branches) {
+  const positions = new Float32Array(branches.length * 6);
+  for (let i = 0; i < branches.length; i++) {
+    const b = branches[i];
+    positions[i*6+0] = b.start.x;
+    positions[i*6+1] = b.start.y;
+    positions[i*6+2] = b.start.z;
+    positions[i*6+3] = b.end.x;
+    positions[i*6+4] = b.end.y;
+    positions[i*6+5] = b.end.z;
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  return new THREE.LineSegments(geom, skeletonMaterial);
+}
+
 function applyMaterial(key) {
   const m = MATERIALS[key] || MATERIALS.stainless;
   material.color.setHex(m.color);
@@ -1944,7 +1971,18 @@ function interiorBridgeSegments(start, end, s, rng, voxel) {
   return segs;
 }
 
-async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentToken) {
+// Live-preview mesh for use during the build pipeline. Clones the geom
+// (cheap; ~5ms for 10k verts) so the original can be disposed by
+// buildBodyMesh on the next iteration without invalidating the mesh
+// the user is currently looking at. Vertex normals are computed on the
+// clone so lighting is correct.
+function makePreviewMesh(geom) {
+  const c = geom.clone();
+  c.computeVertexNormals();
+  return new THREE.Mesh(c, material);
+}
+
+async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentToken, onPhase) {
   // Decorative+structural inner links are computed once up front (seeded
   // RNG, deterministic per state.seed) and passed to every retry. They
   // sit in the same post-carve slot as auto-repair bridges so they
@@ -1970,14 +2008,21 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     comp = countComponents(geom);
   };
 
+  // ----- Initial body build. Show it as soon as it's ready so the user
+  // sees the carved/hollowed isosurface appear in place of the skeleton.
+  rebuild();
+  if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
+  if (onPhase) await onPhase(
+    `built isosurface — ${comp.nComp} ${comp.nComp === 1 ? 'piece' : 'pieces'}, checking connectivity…`,
+    makePreviewMesh(geom)
+  );
+
   // ----- Phase 1: nearest-pair → origin-pulled vein (v1.9.2). Cheap
   // attempts that fix most disconnects. 20 iterations is well past
   // anything seen in practice (typical: 0–2).
-  rebuild();
-  if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
   const PHASE1_RETRIES = 20;
   for (let attempt = 0; comp.nComp > 1 && attempt < PHASE1_RETRIES; attempt++) {
-    setProgress(`repairing orphans (${nRepairs} ${nRepairs === 1 ? 'vein' : 'veins'})…`);
+    setProgress(`Phase 1 repair: routing vein ${attempt+1} (${comp.nComp} pieces)…`);
     await yieldFrame();
     if (parentToken != null && parentToken !== genToken) return null;
     const br = findBridge(geom, comp.vertComp, comp.nComp);
@@ -1990,6 +2035,10 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     nRepairs++;
     rebuild();
     if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
+    if (onPhase) await onPhase(
+      `Phase 1 vein ${attempt+1} added — ${comp.nComp} ${comp.nComp === 1 ? 'piece' : 'pieces'} now`,
+      makePreviewMesh(geom)
+    );
   }
 
   // ----- Phase 2 (Chunk B / v1.12.0): centroid-to-largest snake veins.
@@ -2003,7 +2052,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   // connection cannot alias out at preview or export resolution.
   const PHASE2_RETRIES = 4;
   for (let p2 = 0; comp.nComp > 1 && p2 < PHASE2_RETRIES; p2++) {
-    setProgress(`final orphan repair (${nRepairs} veins)…`);
+    setProgress(`Phase 2 repair: routing snake veins centroid → main (${comp.nComp} pieces)…`);
     await yieldFrame();
     if (parentToken != null && parentToken !== genToken) return null;
     const { centroids, counts } = componentCentroidsAndSizes(geom, comp.vertComp, comp.nComp);
@@ -2018,6 +2067,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     // smaller of the safe floors so the body's interior remains visible
     // through any helix/colony tunnels.
     const veinR = Math.max(f.voxel * 1.0, mat.minWall * 1.0, 0.7);
+    const veinsThisRound = comp.nComp - 1;
     for (let c = 0; c < comp.nComp; c++) {
       if (c === largestC) continue;
       const src = centroids[c];
@@ -2040,6 +2090,10 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     geom.dispose();
     rebuild();
     if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
+    if (onPhase) await onPhase(
+      `Phase 2 round ${p2+1}: ${veinsThisRound} snake ${veinsThisRound === 1 ? 'vein' : 'veins'} added — ${comp.nComp} ${comp.nComp === 1 ? 'piece' : 'pieces'} now`,
+      makePreviewMesh(geom)
+    );
   }
 
   if (comp.nComp > 1) {
@@ -2683,11 +2737,32 @@ async function generate(previewVoxels = 96) {
   scaleStructureToSize(rawBranches, rawAccents, state.size);
   const { branches, accents } = applySymmetry(rawBranches, rawAccents, state);
 
+  // Phase 0 (Chunk B / v1.15.0): show the structural skeleton in the
+  // canvas before the SDF rasterization runs. Gives the user something
+  // visible to anchor on while the field builds, and reveals the
+  // branching structure that gets thickened into the body.
+  setProgress(`rasterizing ${branches.length} branches into the SDF…`);
+  clearExport();
+  exportGroup.add(buildSkeletonMesh(branches));
+  await yieldFrame();
+  if (myToken !== genToken) return;
+
   setProgress('marching cubes…');
   await yieldFrame();
   if (myToken !== genToken) return;
 
-  let result = await buildBodyMesh(branches, accents, state, previewVoxels, myToken);
+  // onPhase callback drives the in-canvas live preview. Each call swaps
+  // the previous in-progress mesh out and the new one in, then yields a
+  // frame so the user actually sees the change.
+  const onPhase = async (label, previewMesh) => {
+    if (myToken !== genToken) { previewMesh.geometry.dispose(); return; }
+    setProgress(label);
+    clearExport();
+    exportGroup.add(previewMesh);
+    await yieldFrame();
+  };
+
+  let result = await buildBodyMesh(branches, accents, state, previewVoxels, myToken, onPhase);
   if (myToken !== genToken) return;
   if (!result) return;
   let { mesh, triCount, voxel, nComp, bridges } = result;
@@ -2722,7 +2797,7 @@ async function generate(previewVoxels = 96) {
     setProgress(`auto-fix #${fixCount+1}: ${fixes.join(', ')}…`);
     await yieldFrame();
     if (myToken !== genToken) return;
-    const reb = await buildBodyMesh(branches, accents, state, previewVoxels, myToken);
+    const reb = await buildBodyMesh(branches, accents, state, previewVoxels, myToken, onPhase);
     if (myToken !== genToken) return;
     if (!reb) return;
     result = reb;
