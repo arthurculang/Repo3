@@ -1,8 +1,8 @@
 <!doctype html>
 <!--
-  Fractal Sculpture Generator — v1.0.0
+  Fractal Sculpture Generator — v1.x
   Single-file web app. Target: iPhone Safari + desktop. Export STL for
-  metal DMLS/SLM printing. Units: millimetres.
+  metal (DMLS/SLM) or plastic (FDM/SLA/SLS) printing. Units: millimetres.
 
   Deploy to GitHub Pages:
     1. Commit index.html to the branch configured as the Pages source
@@ -234,15 +234,24 @@
       </div>
 
       <div class="ctrl">
-        <label>Metal</label>
+        <label>Material</label>
         <select id="material">
-          <option value="stainless">Stainless Steel (316L)</option>
-          <option value="titanium">Titanium (Ti-6Al-4V)</option>
-          <option value="aluminum">Aluminum (AlSi10Mg)</option>
-          <option value="inconel">Inconel 718</option>
-          <option value="cocr">Cobalt-Chrome</option>
-          <option value="bronze">Bronze</option>
-          <option value="copper">Copper (CuCr1Zr)</option>
+          <optgroup label="Metals (DMLS / SLM)">
+            <option value="stainless">Stainless Steel (316L)</option>
+            <option value="titanium">Titanium (Ti-6Al-4V)</option>
+            <option value="aluminum">Aluminum (AlSi10Mg)</option>
+            <option value="inconel">Inconel 718</option>
+            <option value="cocr">Cobalt-Chrome</option>
+            <option value="bronze">Bronze</option>
+            <option value="copper">Copper (CuCr1Zr)</option>
+          </optgroup>
+          <optgroup label="Plastics (FDM / SLA / SLS)">
+            <option value="pla">PLA (FDM)</option>
+            <option value="petg">PETG (FDM)</option>
+            <option value="abs">ABS (FDM)</option>
+            <option value="nylon">Nylon PA12 (SLS)</option>
+            <option value="resin">Resin (SLA)</option>
+          </optgroup>
         </select>
       </div>
 
@@ -328,7 +337,7 @@
     </div>
     <div id="panelFooter">
       <span id="version">v0.1.0</span>
-      <span id="costReadout" title="Estimated mass and DMLS print cost for the selected metal">—</span>
+      <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
 
@@ -356,24 +365,32 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.7.1";
+const VERSION = "v1.8.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
-// Non-toxic DMLS/SLM metals.
+// Printable materials covering DMLS/SLM metal and FDM/SLA/SLS plastic.
 //   color/metalness/roughness  preview tint
 //   minWall (mm)               feeds pre-export safety gate
 //   density (g/mm³)            for mass estimate (value × 1e-3 = g/cm³)
-//   cost ($/g printed)         rough 2024 DMLS service-bureau midpoint
+//   cost ($/g printed)         rough 2024 service-bureau midpoint
 //   label/slug                 UI text and STL filename slug
+//   group                      'metal' | 'plastic' — drives <optgroup>
 const MATERIALS = {
-  stainless: { label: 'Stainless Steel (316L)', slug: 'stainless', color: 0xc0c5cc, metalness: 0.90, roughness: 0.30, minWall: 0.4, density: 7.99e-3,  cost: 1.00 },
-  titanium:  { label: 'Titanium (Ti-6Al-4V)',   slug: 'titanium',  color: 0x9ea2a4, metalness: 0.85, roughness: 0.40, minWall: 0.5, density: 4.43e-3,  cost: 5.00 },
-  aluminum:  { label: 'Aluminum (AlSi10Mg)',    slug: 'aluminum',  color: 0xcfd5da, metalness: 0.85, roughness: 0.45, minWall: 0.5, density: 2.67e-3,  cost: 2.00 },
-  inconel:   { label: 'Inconel 718',            slug: 'inconel',   color: 0xb5a692, metalness: 0.85, roughness: 0.35, minWall: 0.5, density: 8.22e-3,  cost: 7.00 },
-  cocr:      { label: 'Cobalt-Chrome',          slug: 'cocr',      color: 0xb8bcc4, metalness: 0.95, roughness: 0.25, minWall: 0.4, density: 8.40e-3,  cost: 10.00 },
-  bronze:    { label: 'Bronze',                 slug: 'bronze',    color: 0xa97142, metalness: 0.90, roughness: 0.30, minWall: 0.5, density: 8.80e-3,  cost: 3.00 },
-  copper:    { label: 'Copper (CuCr1Zr)',       slug: 'copper',    color: 0xb87333, metalness: 0.95, roughness: 0.25, minWall: 0.6, density: 8.89e-3,  cost: 7.00 },
+  // Metals — DMLS/SLM service-bureau pricing
+  stainless: { label: 'Stainless Steel (316L)', slug: 'stainless', group: 'metal',   color: 0xc0c5cc, metalness: 0.90, roughness: 0.30, minWall: 0.4, density: 7.99e-3,  cost: 1.00  },
+  titanium:  { label: 'Titanium (Ti-6Al-4V)',   slug: 'titanium',  group: 'metal',   color: 0x9ea2a4, metalness: 0.85, roughness: 0.40, minWall: 0.5, density: 4.43e-3,  cost: 5.00  },
+  aluminum:  { label: 'Aluminum (AlSi10Mg)',    slug: 'aluminum',  group: 'metal',   color: 0xcfd5da, metalness: 0.85, roughness: 0.45, minWall: 0.5, density: 2.67e-3,  cost: 2.00  },
+  inconel:   { label: 'Inconel 718',            slug: 'inconel',   group: 'metal',   color: 0xb5a692, metalness: 0.85, roughness: 0.35, minWall: 0.5, density: 8.22e-3,  cost: 7.00  },
+  cocr:      { label: 'Cobalt-Chrome',          slug: 'cocr',      group: 'metal',   color: 0xb8bcc4, metalness: 0.95, roughness: 0.25, minWall: 0.4, density: 8.40e-3,  cost: 10.00 },
+  bronze:    { label: 'Bronze',                 slug: 'bronze',    group: 'metal',   color: 0xa97142, metalness: 0.90, roughness: 0.30, minWall: 0.5, density: 8.80e-3,  cost: 3.00  },
+  copper:    { label: 'Copper (CuCr1Zr)',       slug: 'copper',    group: 'metal',   color: 0xb87333, metalness: 0.95, roughness: 0.25, minWall: 0.6, density: 8.89e-3,  cost: 7.00  },
+  // Plastics — FDM/SLA/SLS pricing.
+  pla:       { label: 'PLA (FDM)',              slug: 'pla',       group: 'plastic', color: 0xe6e8eb, metalness: 0.00, roughness: 0.55, minWall: 0.8, density: 1.24e-3,  cost: 0.10  },
+  petg:      { label: 'PETG (FDM)',             slug: 'petg',      group: 'plastic', color: 0xc8d4e0, metalness: 0.00, roughness: 0.45, minWall: 0.8, density: 1.27e-3,  cost: 0.12  },
+  abs:       { label: 'ABS (FDM)',              slug: 'abs',       group: 'plastic', color: 0xb8b8b8, metalness: 0.00, roughness: 0.60, minWall: 0.8, density: 1.04e-3,  cost: 0.15  },
+  nylon:     { label: 'Nylon PA12 (SLS)',       slug: 'nylon',     group: 'plastic', color: 0xeae3d4, metalness: 0.00, roughness: 0.70, minWall: 0.7, density: 1.01e-3,  cost: 0.50  },
+  resin:     { label: 'Resin (SLA)',            slug: 'resin',     group: 'plastic', color: 0xd6d6da, metalness: 0.00, roughness: 0.30, minWall: 0.5, density: 1.18e-3,  cost: 0.40  },
 };
 
 const DEFAULTS = {
