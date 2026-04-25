@@ -195,6 +195,46 @@
   #statusBox.busy .busy-dot { opacity: 1; }
   @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 
+  /* Printability report (Chunk C / v1.13.0). Compact card between the
+     panel header and the slider list. Single-line summary by default;
+     click the card to expand the per-check list. */
+  #printReport {
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  .report-summary {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .report-status {
+    font-weight: 600; text-transform: uppercase; flex: 0 0 auto;
+  }
+  .report-fixes {
+    color: var(--ink-dim); font-size: 10px; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #printReport.report-pass  .report-status { color: var(--accent); }
+  #printReport.report-fixed .report-status { color: #f0a040; }
+  #printReport.report-fail  .report-status { color: var(--danger); }
+  #printReport.report-idle  .report-status { color: var(--ink-dim); }
+  .report-checks {
+    list-style: none; margin: 6px 0 0 0; padding: 0;
+    display: none;
+  }
+  #printReport.expanded .report-checks { display: block; }
+  .report-checks li {
+    padding: 2px 0;
+    color: var(--ink-dim);
+    line-height: 1.35;
+  }
+  .report-checks li.pass::before  { content: "✓ "; color: var(--accent); font-weight: 700; }
+  .report-checks li.fail::before  { content: "✗ "; color: var(--danger); font-weight: 700; }
+  .report-checks li.fixed::before { content: "⚙ "; color: #f0a040; font-weight: 700; }
+
   /* Big progress overlay (Chunk A / v1.11.0). Sits on top of the canvas
      during heavy synchronous work so the user has unmissable feedback,
      not just the small panel-header dot. CSS animation runs on the
@@ -280,6 +320,13 @@
     <div id="panelHeader">
       <h1>Sculpture</h1>
       <span id="statusBox"><span class="busy-dot"></span><span id="status">ready</span></span>
+    </div>
+    <div id="printReport" class="report-idle" role="button" tabindex="0" aria-label="Printability report (click to expand)">
+      <div class="report-summary">
+        <span class="report-status">— awaiting first generation</span>
+        <span class="report-fixes"></span>
+      </div>
+      <ul class="report-checks"></ul>
     </div>
     <div id="panelBody">
       <div class="ctrl">
@@ -399,7 +446,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.12.0</span>
+      <span id="version">v1.13.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -437,7 +484,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.12.0";
+const VERSION = "v1.13.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2304,6 +2351,173 @@ function checkNegSpaceSafety(s, branches) {
   return warns;
 }
 
+// ---------- Printability analysis + auto-fix (Chunk C / v1.13.0) ----------
+// Authoritative end-of-pipeline check. Inspects the actual built mesh and
+// the active state, returns a structured report of pass/fail per criterion.
+// The fail items that are auto-fixable get clamped state values via
+// applyAutoFix; the generate() loop then rebuilds and re-analyzes until
+// either everything passes or no further fix is possible.
+function analyzePrintability(buildResult, rings, s, branches) {
+  const mat = MATERIALS[s.material] || MATERIALS.stainless;
+  const voxel = buildResult.voxel;
+  const nComp = buildResult.nComp;
+  const triCount = buildResult.triCount | 0;
+  const checks = [];
+
+  // 1. Single connected mesh — the most important printability invariant.
+  checks.push({
+    name: 'connected',
+    pass: nComp === 1,
+    autoFix: false,
+    label: nComp === 1
+      ? 'single connected mesh — no orphan pieces'
+      : `${nComp} disconnected pieces — orphans remain after Phase 1+2 repair`,
+  });
+
+  // 2. Shell wall thickness.
+  if (s.wall > 0) {
+    const ok = s.wall + 1e-6 >= mat.minWall;
+    checks.push({
+      name: 'wall',
+      pass: ok,
+      autoFix: !ok,
+      label: ok
+        ? `shell wall ${s.wall.toFixed(2)}mm meets ${mat.label} ${mat.minWall}mm minimum`
+        : `shell wall ${s.wall.toFixed(2)}mm is below ${mat.label} ${mat.minWall}mm minimum`,
+    });
+  } else {
+    checks.push({
+      name: 'wall',
+      pass: true,
+      autoFix: false,
+      label: 'solid (no shell wall — printable as a fully-solid part)',
+    });
+  }
+
+  // 3. Branch radii.
+  let minR = Infinity;
+  for (const b of branches) {
+    if (b.r0 < minR) minR = b.r0;
+    if (b.r1 < minR) minR = b.r1;
+  }
+  if (minR === Infinity) minR = mat.minWall;
+  const branchOk = minR + 1e-6 >= mat.minWall;
+  checks.push({
+    name: 'branches',
+    pass: branchOk,
+    autoFix: false,  // would require regenerating the branch graph
+    label: branchOk
+      ? `min branch radius ${minR.toFixed(2)}mm meets ${mat.minWall}mm minimum`
+      : `min branch radius ${minR.toFixed(2)}mm < ${mat.minWall}mm — increase Core thickness`,
+  });
+
+  // 4. Voxel resolution vs wall (preview-quality concern only — the 160³
+  // export uses much smaller voxels and resolves any reasonable wall
+  // cleanly). severity:'warn' so a preview-alias finding doesn't gate
+  // printability; bumping the wall would surprise the user.
+  if (s.wall > 0) {
+    const ok = voxel <= s.wall + 1e-6;
+    checks.push({
+      name: 'resolution',
+      pass: ok,
+      severity: 'warn',
+      autoFix: false,
+      label: ok
+        ? `voxel ${voxel.toFixed(2)}mm ≤ wall — preview resolves cleanly`
+        : `voxel ${voxel.toFixed(2)}mm > wall ${s.wall.toFixed(2)}mm — preview may alias (export at 160³ should still resolve)`,
+    });
+  }
+
+  // 5. Ring tube radii.
+  if (rings && rings.length > 0) {
+    let minTube = Infinity;
+    for (const r of rings) if (r.tubeR < minTube) minTube = r.tubeR;
+    const ok = minTube + 1e-6 >= mat.minWall;
+    checks.push({
+      name: 'rings',
+      pass: ok,
+      autoFix: false,
+      label: ok
+        ? `ring tubes ≥ ${mat.minWall}mm — printable interlocked rings`
+        : `ring tube ${minTube.toFixed(2)}mm < ${mat.minWall}mm`,
+    });
+  }
+
+  // 6. Tri count sanity (slicers choke above ~500K).
+  const triOk = triCount > 0 && triCount < 500000;
+  checks.push({
+    name: 'tris',
+    pass: triOk,
+    autoFix: false,
+    label: triCount === 0
+      ? 'mesh is empty'
+      : triCount < 500000
+        ? `${triCount.toLocaleString()} triangles — slicer-friendly`
+        : `${triCount.toLocaleString()} triangles — may be slow to slice`,
+  });
+
+  // 7. Material printable confirmation.
+  checks.push({
+    name: 'material',
+    pass: true,
+    autoFix: false,
+    label: `selected process: ${mat.label} (${mat.group === 'metal' ? 'DMLS/SLM' : 'FDM/SLA/SLS'})`,
+  });
+
+  // pass is gated on severity:'block' checks only; severity:'warn' items
+  // are informational and don't block printability.
+  const allPass = checks.every(c => c.pass || c.severity === 'warn');
+  return { pass: allPass, checks };
+}
+
+// Mutate state to fix auto-fixable check failures. Returns the array of
+// human-readable fix descriptions applied; empty array means no progress
+// could be made and the loop should stop.
+function applyAutoFix(state, checks, voxel) {
+  const mat = MATERIALS[state.material] || MATERIALS.stainless;
+  const fixes = [];
+  for (const c of checks) {
+    if (c.pass || !c.autoFix) continue;
+    if (c.name === 'wall' && state.wall > 0 && state.wall < mat.minWall) {
+      const before = state.wall;
+      state.wall = mat.minWall;
+      fixes.push(`wall ${before.toFixed(2)}→${state.wall.toFixed(2)}mm (${mat.label} min)`);
+    }
+  }
+  return fixes;
+}
+
+function displayPrintReport(report, fixCount) {
+  const card = document.getElementById('printReport');
+  if (!card) return;
+  const statusEl = card.querySelector('.report-status');
+  const fixesEl = card.querySelector('.report-fixes');
+  const ul = card.querySelector('.report-checks');
+  card.classList.remove('report-idle', 'report-pass', 'report-fixed', 'report-fail');
+  if (report.pass && fixCount > 0) {
+    card.classList.add('report-fixed');
+    statusEl.textContent = '✓ Printable (auto-fixed)';
+    fixesEl.textContent = `${fixCount} fix${fixCount === 1 ? '' : 'es'} applied`;
+  } else if (report.pass) {
+    card.classList.add('report-pass');
+    statusEl.textContent = '✓ Printable';
+    fixesEl.textContent = 'all checks pass';
+  } else {
+    card.classList.add('report-fail');
+    statusEl.textContent = '✗ Not printable';
+    const failed = report.checks.filter(c => !c.pass).length;
+    fixesEl.textContent = `${failed} issue${failed === 1 ? '' : 's'} unresolved`;
+  }
+  // Rebuild the checklist
+  ul.innerHTML = '';
+  for (const c of report.checks) {
+    const li = document.createElement('li');
+    li.className = c.pass ? 'pass' : 'fail';
+    li.textContent = c.label;
+    ul.appendChild(li);
+  }
+}
+
 // ---------- Symmetry (Chunk 5a) ----------
 // None: no-op. Bilateral: mirror through the X=0 plane (x → -x). Radial-N:
 // N-fold rotation around the Y axis, N ∈ [2,8]. Applied after the branch
@@ -2466,27 +2680,56 @@ async function generate(previewVoxels = 96) {
   await yieldFrame();
   if (myToken !== genToken) return;
 
-  const result = await buildBodyMesh(branches, accents, state, previewVoxels, myToken);
+  let result = await buildBodyMesh(branches, accents, state, previewVoxels, myToken);
   if (myToken !== genToken) return;
   if (!result) return;
-  const { mesh, triCount, voxel, nComp, bridges } = result;
+  let { mesh, triCount, voxel, nComp, bridges } = result;
+
+  // Rings (independent of wall thickness — same across auto-fix iterations).
+  setProgress('rings & accents…');
+  await yieldFrame();
+  if (myToken !== genToken) return;
+  const ringRng = mulberry32((state.seed >>> 0) ^ 0x7a5529c1);
+  const rawRings = generateRings(rawBranches, state, ringRng);
+  const rings = symmetrizeRings(rawRings, state);
+
+  // Printability analysis + auto-fix loop (Chunk C / v1.13.0). Inspects the
+  // built mesh against the active material's print rules and the connectivity
+  // result; if any auto-fixable issue is found, applies the fix to state,
+  // rebuilds, and re-analyzes. Up to 3 iterations. Loop exits as soon as
+  // every check passes or no further fix is possible.
+  setProgress('printability check…');
+  await yieldFrame();
+  if (myToken !== genToken) return;
+  let report = analyzePrintability(result, rings, state, branches);
+  let fixCount = 0;
+  const MAX_FIX = 3;
+  while (!report.pass && fixCount < MAX_FIX) {
+    const fixes = applyAutoFix(state, report.checks, voxel);
+    if (fixes.length === 0) break;  // nothing further is auto-fixable
+    // Sync the wall slider so the user sees their adjusted value.
+    if (bindings.wall) {
+      bindings.wall.el.value = String(state.wall.toFixed(1));
+      bindings.wall.update();
+    }
+    setProgress(`auto-fix #${fixCount+1}: ${fixes.join(', ')}…`);
+    await yieldFrame();
+    if (myToken !== genToken) return;
+    const reb = await buildBodyMesh(branches, accents, state, previewVoxels, myToken);
+    if (myToken !== genToken) return;
+    if (!reb) return;
+    result = reb;
+    ({ mesh, triCount, voxel, nComp, bridges } = reb);
+    fixCount++;
+    report = analyzePrintability(reb, rings, state, branches);
+  }
+  displayPrintReport(report, fixCount);
 
   // Mesh is ready — only NOW swap out the previous render. The user sees
   // the previous sculpture the whole time the new one is computing,
   // rather than a brief blank canvas.
   clearExport();
   if (mesh) exportGroup.add(mesh);
-
-  setProgress('rings & accents…');
-  await yieldFrame();
-  if (myToken !== genToken) return;
-
-  // Rings generated from the raw (pre-symmetry) branch set, then mirrored.
-  // This keeps ring placement deterministic w.r.t. seed and ensures every
-  // symmetric copy gets the same rings in the same relative positions.
-  const ringRng = mulberry32((state.seed >>> 0) ^ 0x7a5529c1);
-  const rawRings = generateRings(rawBranches, state, ringRng);
-  const rings = symmetrizeRings(rawRings, state);
   addRingMeshes(rings);
 
   // Mass + cost readout. Body volume comes from the preview mesh via the
@@ -2804,6 +3047,20 @@ const panel = document.getElementById('panel');
 document.getElementById('sheetHandle').addEventListener('click', () => {
   panel.classList.toggle('collapsed');
 });
+
+// Printability report card expand/collapse on click.
+const printReportEl = document.getElementById('printReport');
+if (printReportEl) {
+  printReportEl.addEventListener('click', () => {
+    printReportEl.classList.toggle('expanded');
+  });
+  printReportEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      printReportEl.classList.toggle('expanded');
+    }
+  });
+}
 
 // Prevent iOS double-tap zoom on UI buttons
 document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
