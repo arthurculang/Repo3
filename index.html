@@ -195,6 +195,45 @@
   #statusBox.busy .busy-dot { opacity: 1; }
   @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 
+  /* Big progress overlay (Chunk A / v1.11.0). Sits on top of the canvas
+     during heavy synchronous work so the user has unmissable feedback,
+     not just the small panel-header dot. CSS animation runs on the
+     compositor thread so it keeps spinning even when the main thread
+     is briefly blocked by SDF rasterization or marching cubes. */
+  #progressOverlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(11,13,16,0.55);
+    pointer-events: none; opacity: 0;
+    transition: opacity 0.18s ease;
+    z-index: 8;
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+  }
+  #progressOverlay.active { opacity: 1; }
+  #progressInner {
+    background: rgba(20,24,29,0.95);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px 22px;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    min-width: 180px; max-width: 80%;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  }
+  #progressSpinner {
+    width: 32px; height: 32px;
+    border: 3px solid #2a323b;
+    border-top-color: var(--accent);
+    border-right-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  #progressText {
+    color: var(--ink); font-size: 13px; line-height: 1.3;
+    text-align: center; font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+  }
+
   /* Drag handle only visible on mobile sheet */
   #sheetHandle { display: none; }
 
@@ -359,7 +398,8 @@
       </div>
     </div>
     <div id="panelFooter">
-      <span id="version">v0.1.0</span>
+      <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
+      <span id="version">v1.11.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -371,6 +411,12 @@
       <button class="icon-btn" id="resetBtn" aria-label="Reset">Reset</button>
     </div>
     <canvas id="canvas"></canvas>
+    <div id="progressOverlay" aria-live="polite">
+      <div id="progressInner">
+        <div id="progressSpinner"></div>
+        <div id="progressText">Working…</div>
+      </div>
+    </div>
   </main>
 </div>
 
@@ -388,7 +434,10 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.10.0";
+// Keep this in sync with the hardcoded version string in #version
+// in the panel-footer markup below — the HTML uses it before the ES
+// module finishes loading so the footer never shows a stale value.
+const VERSION = "v1.11.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1781,7 +1830,7 @@ function interiorBridgeSegments(start, end, s, rng, voxel) {
   return segs;
 }
 
-function buildBodyMesh(branches, accents, s, previewVoxels = 96) {
+async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentToken) {
   // Decorative+structural inner links are computed once up front (seeded
   // RNG, deterministic per state.seed) and passed to every retry. They
   // sit in the same post-carve slot as auto-repair bridges so they
@@ -1798,6 +1847,13 @@ function buildBodyMesh(branches, accents, s, previewVoxels = 96) {
   let nRepairs = 0;
   const MAX_RETRIES = 20;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      // Yield between repair iterations so the progress overlay paints
+      // and animates, and bail out if a newer generate() superseded us.
+      setProgress(`repairing orphans (${nRepairs} ${nRepairs === 1 ? 'vein' : 'veins'})…`);
+      await yieldFrame();
+      if (parentToken != null && parentToken !== genToken) return null;
+    }
     const postCarve = bridges.length ? innerLinks.concat(bridges) : innerLinks;
     const f = buildField(branches, accents, s, previewVoxels, postCarve);
     const raw = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
@@ -2294,15 +2350,38 @@ function formatCost(mat, volumeMM3) {
   return `${massStr}g · $${costStr}`;
 }
 
-function generate(previewVoxels = 96) {
+async function generate(previewVoxels = 96) {
+  const myToken = ++genToken;
+  setBusy(true);
+  showProgress(true, previewVoxels < 96 ? `generating @ ${previewVoxels}³…` : 'building structure…');
   setStatus(previewVoxels < 96 ? `generating @ ${previewVoxels}³…` : 'generating…');
-  clearExport();
+  await yieldFrame();
+  if (myToken !== genToken) return;
+
   const t0 = performance.now();
   const { branches: rawBranches, accents: rawAccents } = generateStructure(state);
   scaleStructureToSize(rawBranches, rawAccents, state.size);
   const { branches, accents } = applySymmetry(rawBranches, rawAccents, state);
-  const { mesh, triCount, voxel, nComp, bridges } = buildBodyMesh(branches, accents, state, previewVoxels);
+
+  setProgress('marching cubes…');
+  await yieldFrame();
+  if (myToken !== genToken) return;
+
+  const result = await buildBodyMesh(branches, accents, state, previewVoxels, myToken);
+  if (myToken !== genToken) return;
+  if (!result) return;
+  const { mesh, triCount, voxel, nComp, bridges } = result;
+
+  // Mesh is ready — only NOW swap out the previous render. The user sees
+  // the previous sculpture the whole time the new one is computing,
+  // rather than a brief blank canvas.
+  clearExport();
   if (mesh) exportGroup.add(mesh);
+
+  setProgress('rings & accents…');
+  await yieldFrame();
+  if (myToken !== genToken) return;
+
   // Rings generated from the raw (pre-symmetry) branch set, then mirrored.
   // This keeps ring placement deterministic w.r.t. seed and ensures every
   // symmetric copy gets the same rings in the same relative positions.
@@ -2332,10 +2411,14 @@ function generate(previewVoxels = 96) {
   console.log(`gen: seed=${state.seed} size=${state.size}mm${hollowTag}${negTag} sym=${state.sym}${state.sym === 'radial' ? state.radialN : ''} ${branches.length}br ${accents.length}ac ${rings.length}rg ${triCount|0}tri voxel=${voxel.toFixed(2)}mm components=${nComp} bridges=${bridges} ${dt}ms`);
   const warn = nComp > 1 ? ` · ⚠ ${nComp} shells` : '';
   setStatus(`seed ${state.seed} · ${triCount|0} tris · ${rings.length} rings${warn}`);
-  // Only release the busy state when no further regen is pending — during
-  // continuous slider drag the fast pass finishes before the full pass
-  // schedules; keeping busy on through both prevents spinner flicker.
-  if (!fastScheduled && !fullTimer) setBusy(false);
+  // Only release busy + progress state when (a) we're still the freshest
+  // generate (no newer one took over) and (b) no further regen is pending.
+  // During continuous slider drag the fast pass finishes before the full
+  // pass schedules; keeping busy on through both prevents spinner flicker.
+  if (myToken === genToken && !fastScheduled && !fullTimer) {
+    setBusy(false);
+    showProgress(false);
+  }
 }
 
 function frameCamera() {
@@ -2356,6 +2439,29 @@ function frameCamera() {
 function setStatus(msg) { document.getElementById('status').textContent = msg; }
 function setBusy(on) { document.getElementById('statusBox').classList.toggle('busy', !!on); }
 
+// Big progress overlay — visible by default during async generate phases.
+function setProgress(text) {
+  const el = document.getElementById('progressText');
+  if (el && text != null) el.textContent = text;
+}
+function showProgress(on, text) {
+  const overlay = document.getElementById('progressOverlay');
+  if (text != null) setProgress(text);
+  if (overlay) overlay.classList.toggle('active', !!on);
+}
+
+// Yield to the browser so the overlay can paint between blocking phases.
+// setTimeout(0) is more reliable than rAF when the previous frame already
+// fired — both patterns are used here for redundancy.
+function yieldFrame() { return new Promise(r => setTimeout(r, 0)); }
+
+// Generation token. Each generate() invocation increments this and stores
+// its own copy; at every yield point it checks whether a newer generate
+// has started and bails if so. Prevents two stale async generates from
+// stepping on each other's exportGroup updates during continuous slider
+// drag.
+let genToken = 0;
+
 // ---------- STL export (Chunk 5b) ----------
 // Rebuilds the body mesh at a higher voxel resolution (EXPORT_VOXELS),
 // runs the print-safety gate, then writes the binary STL. Progress is
@@ -2373,6 +2479,7 @@ async function downloadSTL() {
   document.body.appendChild(a);
   let highResGroup = null;
   setBusy(true);
+  showProgress(true, `exporting: building ${EXPORT_VOXELS}³ field…`);
   try {
     setStatus(`exporting: building ${EXPORT_VOXELS}³ field…`);
     await nextFrame();
@@ -2383,6 +2490,7 @@ async function downloadSTL() {
     const f = buildField(branches, accents, state, EXPORT_VOXELS);
 
     setStatus('exporting: marching cubes…');
+    setProgress('exporting: marching cubes…');
     await nextFrame();
     let geom = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
     if (geom.getAttribute('position').count === 0) {
@@ -2395,6 +2503,7 @@ async function downloadSTL() {
     const bodyMesh = new THREE.Mesh(geom, material);
 
     setStatus('exporting: safety check…');
+    setProgress('exporting: safety check…');
     await nextFrame();
     const warns = checkPrintSafety(branches, f.voxel, f, state.material, state.wall)
       .concat(checkNegSpaceSafety(state, branches));
@@ -2404,6 +2513,7 @@ async function downloadSTL() {
     }
 
     setStatus('exporting: writing STL…');
+    setProgress('exporting: writing STL…');
     await nextFrame();
     highResGroup = new THREE.Group();
     highResGroup.add(bodyMesh);
@@ -2437,6 +2547,7 @@ async function downloadSTL() {
       for (const child of highResGroup.children) if (child.geometry) child.geometry.dispose();
     }
     setBusy(false);
+    showProgress(false);
   }
 }
 
@@ -2613,8 +2724,10 @@ canvas.addEventListener('webglcontextrestored', () => {
   generate();
 }, false);
 
-// Initial render
+// Initial render. The overlay is lit synchronously so users see feedback
+// the moment the page paints, even before generate() yields its first frame.
 refreshUIFromState();
+showProgress(true, 'preparing first creature…');
 generate();
 </script>
 </body>
