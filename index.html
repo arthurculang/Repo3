@@ -399,7 +399,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.11.0</span>
+      <span id="version">v1.12.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -437,7 +437,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.11.0";
+const VERSION = "v1.12.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1756,6 +1756,72 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
   return { field, nx, ny, nz, ox, oy, oz, voxel };
 }
 
+// Component centroids + sizes (Chunk B / v1.12.0). Averages vertex
+// positions per component and returns the centroid of each, plus the
+// vertex count (used as a cheap mass proxy). Centroids are guaranteed
+// to lie inside their component for any non-degenerate convex-ish
+// geometry — and for our typical sculptures they're well inside the
+// body, which is exactly where the snake-vein endpoints want to be.
+function componentCentroidsAndSizes(geom, vertComp, nComp) {
+  const pos = geom.getAttribute('position').array;
+  const V = geom.getAttribute('position').count;
+  const cx = new Float32Array(nComp);
+  const cy = new Float32Array(nComp);
+  const cz = new Float32Array(nComp);
+  const counts = new Int32Array(nComp);
+  for (let i = 0; i < V; i++) {
+    const c = vertComp[i];
+    cx[c] += pos[i*3];
+    cy[c] += pos[i*3+1];
+    cz[c] += pos[i*3+2];
+    counts[c]++;
+  }
+  const centroids = new Array(nComp);
+  for (let i = 0; i < nComp; i++) {
+    const k = counts[i] || 1;
+    centroids[i] = { x: cx[i]/k, y: cy[i]/k, z: cz[i]/k };
+  }
+  return { centroids, counts };
+}
+
+// Snake-vein path (Chunk B / v1.12.0). Linear from `start` to `end`,
+// perturbed perpendicular to the direction by two sinusoidal envelopes
+// at different frequencies (2–4 and 3–5 cycles), each gated by sin(πt)
+// so the wiggle peaks at mid-path and goes to zero at the endpoints.
+// Result: a snaking 3D tendril that connects two interior points
+// without going outside the implied bounding region of either.
+function snakeVeinPath(start, end, rng) {
+  const dxe = end.x - start.x, dye = end.y - start.y, dze = end.z - start.z;
+  const len = Math.sqrt(dxe*dxe + dye*dye + dze*dze) || 1;
+  const dirX = dxe / len, dirY = dye / len, dirZ = dze / len;
+  // Build orthogonal frame around the direction.
+  const _t = new THREE.Vector3(dirX, dirY, dirZ);
+  const u = new THREE.Vector3(), v = new THREE.Vector3();
+  buildFrame(_t, u, v);
+  const amp = len * 0.12;                     // 12% of total span
+  const n1 = 2 + rng() * 2;                   // 2–4 cycles on u
+  const n2 = 3 + rng() * 2;                   // 3–5 cycles on v
+  const ph1 = rng() * Math.PI * 2;
+  const ph2 = rng() * Math.PI * 2;
+  const M = 50;
+  const pts = new Array(M + 1);
+  for (let i = 0; i <= M; i++) {
+    const t = i / M;
+    const lx = start.x + dxe * t;
+    const ly = start.y + dye * t;
+    const lz = start.z + dze * t;
+    const env = Math.sin(t * Math.PI);
+    const a = amp * env * Math.sin(2*Math.PI * n1 * t + ph1);
+    const b = amp * env * Math.cos(2*Math.PI * n2 * t + ph2);
+    pts[i] = {
+      x: lx + u.x * a + v.x * b,
+      y: ly + u.y * a + v.y * b,
+      z: lz + u.z * a + v.z * b,
+    };
+  }
+  return pts;
+}
+
 // Interior repair vein (Chunk v1.9.2). Builds a polyline from `start` to
 // `end` that dips toward origin (the body's deep interior) at mid-path,
 // smooths it with Catmull-Rom, and returns it as a list of cone-capsule
@@ -1838,64 +1904,97 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   const linkRng = mulberry32((s.seed >>> 0) ^ 0x4e54c0de);
   const innerLinks = generateInnerLinks(branches, s, linkRng);
   const bridgeRng = mulberry32((s.seed >>> 0) ^ 0x9d7e2c8a);
-  // Comprehensive disconnect-repair loop. Builds the mesh, runs union-find,
-  // and if any orphan shells remain it routes an interior repair vein
-  // between the largest component and the nearest stray, then rebuilds
-  // and re-checks. Loops until components == 1 or the safety cap fires.
-  // 20 iterations is well past anything seen in practice (typical: 0–2).
+  const snakeRng  = mulberry32((s.seed >>> 0) ^ 0x5c69e3a1);
   const bridges = [];
   let nRepairs = 0;
-  const MAX_RETRIES = 20;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      // Yield between repair iterations so the progress overlay paints
-      // and animates, and bail out if a newer generate() superseded us.
-      setProgress(`repairing orphans (${nRepairs} ${nRepairs === 1 ? 'vein' : 'veins'})…`);
-      await yieldFrame();
-      if (parentToken != null && parentToken !== genToken) return null;
-    }
+  let f, geom, comp;
+
+  // Helper: rebuild the field with current bridges, run MC, dedupe verts,
+  // and re-check connectivity. Updates f/geom/comp in the closure.
+  const rebuild = () => {
     const postCarve = bridges.length ? innerLinks.concat(bridges) : innerLinks;
-    const f = buildField(branches, accents, s, previewVoxels, postCarve);
+    f = buildField(branches, accents, s, previewVoxels, postCarve);
     const raw = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
     const rawVerts = raw.getAttribute('position').count;
-    if (rawVerts === 0) {
-      raw.dispose();
-      return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
-    }
-    const geom = mergeVertices(raw, 1e-4);
+    if (rawVerts === 0) { raw.dispose(); geom = null; comp = { nComp: 0, vertComp: null }; return; }
+    geom = mergeVertices(raw, 1e-4);
     raw.dispose();
-    const comp = countComponents(geom);
-    if (comp.nComp <= 1) {
-      geom.computeVertexNormals();
-      const mesh = new THREE.Mesh(geom, material);
-      const triCount = geom.getIndex().count / 3;
-      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs };
-    }
-    if (attempt === MAX_RETRIES) {
-      console.warn(`buildBodyMesh: hit MAX_RETRIES (${MAX_RETRIES}) with ${comp.nComp} components remaining (seed=${s.seed})`);
-      geom.computeVertexNormals();
-      const mesh = new THREE.Mesh(geom, material);
-      const triCount = geom.getIndex().count / 3;
-      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs };
-    }
+    comp = countComponents(geom);
+  };
+
+  // ----- Phase 1: nearest-pair → origin-pulled vein (v1.9.2). Cheap
+  // attempts that fix most disconnects. 20 iterations is well past
+  // anything seen in practice (typical: 0–2).
+  rebuild();
+  if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
+  const PHASE1_RETRIES = 20;
+  for (let attempt = 0; comp.nComp > 1 && attempt < PHASE1_RETRIES; attempt++) {
+    setProgress(`repairing orphans (${nRepairs} ${nRepairs === 1 ? 'vein' : 'veins'})…`);
+    await yieldFrame();
+    if (parentToken != null && parentToken !== genToken) return null;
     const br = findBridge(geom, comp.vertComp, comp.nComp);
-    if (!br) {
-      console.warn(`buildBodyMesh: findBridge returned null with ${comp.nComp} components (seed=${s.seed})`);
-      geom.computeVertexNormals();
-      const mesh = new THREE.Mesh(geom, material);
-      const triCount = geom.getIndex().count / 3;
-      return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs };
-    }
+    if (!br) break;  // findBridge failure → fall through to Phase 2
     geom.dispose();
-    // Generate an interior repair vein and append all its sub-segments to
-    // the bridges list. Next iteration's postCarve includes the new vein,
-    // and union-find should report one fewer component.
     const startV = new THREE.Vector3(br.ax, br.ay, br.az);
     const endV   = new THREE.Vector3(br.bx, br.by, br.bz);
     const segs = interiorBridgeSegments(startV, endV, s, bridgeRng, f.voxel);
     for (const seg of segs) bridges.push(seg);
     nRepairs++;
+    rebuild();
+    if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
   }
+
+  // ----- Phase 2 (Chunk B / v1.12.0): centroid-to-largest snake veins.
+  // Orthogonal repair if Phase 1 didn't converge. For each component:
+  // compute its mass-weighted centroid (vertex average); the largest
+  // component by vertex count is "main"; every other component connects
+  // its centroid to main's centroid via a snaking polyline. Centroids
+  // are guaranteed inside their own component → both endpoints are
+  // interior by construction, making the path-through-interior trivial.
+  // Vein radius = max(2·voxel, 2·material.minWall, 1mm) so the
+  // connection cannot alias out at preview or export resolution.
+  const PHASE2_RETRIES = 4;
+  for (let p2 = 0; comp.nComp > 1 && p2 < PHASE2_RETRIES; p2++) {
+    setProgress(`final orphan repair (${nRepairs} veins)…`);
+    await yieldFrame();
+    if (parentToken != null && parentToken !== genToken) return null;
+    const { centroids, counts } = componentCentroidsAndSizes(geom, comp.vertComp, comp.nComp);
+    let largestC = 0;
+    for (let i = 1; i < comp.nComp; i++) if (counts[i] > counts[largestC]) largestC = i;
+    const tgt = centroids[largestC];
+    const mat = MATERIALS[s.material] || MATERIALS.stainless;
+    const veinR = Math.max(f.voxel * 2.0, mat.minWall * 2.0, 1.0);
+    for (let c = 0; c < comp.nComp; c++) {
+      if (c === largestC) continue;
+      const src = centroids[c];
+      const pts = snakeVeinPath(src, tgt, snakeRng);
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i+1];
+        const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+        const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+        bridges.push({
+          start: new THREE.Vector3(a.x, a.y, a.z),
+          end:   new THREE.Vector3(b.x, b.y, b.z),
+          r0: veinR, r1: veinR,
+          depth: 0, parent: null,
+          tangent: new THREE.Vector3(dx/len, dy/len, dz/len),
+          wobble: 0,
+        });
+      }
+      nRepairs++;
+    }
+    geom.dispose();
+    rebuild();
+    if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
+  }
+
+  if (comp.nComp > 1) {
+    console.warn(`buildBodyMesh: still ${comp.nComp} components after Phase 1 + Phase 2 (seed=${s.seed})`);
+  }
+  geom.computeVertexNormals();
+  const mesh = new THREE.Mesh(geom, material);
+  const triCount = geom.getIndex().count / 3;
+  return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs };
 }
 
 // Union-find on the welded index buffer. Every triangle's three verts
