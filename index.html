@@ -266,6 +266,11 @@
       </div>
 
       <div class="ctrl">
+        <label>Inner links <span class="val" id="innerLinksVal">5</span></label>
+        <input type="range" id="innerLinks" min="0" max="12" step="1" value="5">
+      </div>
+
+      <div class="ctrl">
         <label>Negative space</label>
         <select id="negStyle">
           <option value="none" selected>None</option>
@@ -365,7 +370,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
-const VERSION = "v1.8.1";
+const VERSION = "v1.9.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -414,6 +419,7 @@ const DEFAULTS = {
   negStyle: 'none',   // 'none' | 'helix' | 'colony'
   negStrands: 3,      // 1..6 helix strands or colony paths
   negDensity: 0.5,    // 0..1 — tunes wrap radius / turns / path count
+  innerLinks: 5,      // 0..12 always-on meandering material links between branch tips
 };
 const state = { ...DEFAULTS };
 
@@ -1354,6 +1360,101 @@ function generateNegPaths(branches, s, rng) {
   return [];
 }
 
+// ---------- Inner links (Chunk v1.9.0) ----------
+// Decorative + structural meandering material struts between random pairs
+// of branch tips, routed through the interior. Returns a flat list of
+// cone-capsule segments (same shape as branches) suitable for direct
+// rasterization through buildField's postCarve slot — each segment carries
+// its own wobble for organic radius modulation, and adjacent segments
+// share endpoint radii so the strut reads as a continuous tube.
+//
+// Always added (regardless of connectivity) so the inner cavity has a
+// network of organic struts visible through any neg-space carving. They
+// also opportunistically reconnect any thin branch that the neg-space
+// carve would otherwise have severed — the auto-repair bridges then only
+// fire for residual disconnects.
+function generateInnerLinks(branches, s, rng) {
+  const N = Math.max(0, Math.min(12, s.innerLinks | 0));
+  if (N === 0) return [];
+  // Prefer off-trunk tips so links emerge from "branch-like" anchors;
+  // fall back to root branches if the graph is too shallow.
+  let tips = branches.filter(b => b.depth > 0);
+  if (tips.length < 2) tips = branches;
+  if (tips.length < 2) return [];
+
+  const mat = MATERIALS[s.material] || MATERIALS.stainless;
+  // Strut radius scales with size so links read at the sculpture's scale.
+  // Floor at 1.5 × minWall keeps each strut printable in the active alloy.
+  const baseR = Math.max(mat.minWall * 1.5, s.size / 50);
+  const out = [];
+
+  for (let k = 0; k < N; k++) {
+    const iA = Math.floor(rng() * tips.length);
+    let iB = Math.floor(rng() * tips.length);
+    if (iB === iA) iB = (iB + 1) % tips.length;
+    const A = tips[iA].end, B = tips[iB].end;
+
+    // Meandering waypoints with offset toward the interior. Wander scales
+    // with link length so longer links curve more visibly.
+    const dist = A.distanceTo(B);
+    const wander = dist * 0.30;
+    const nWay = 5 + Math.floor(rng() * 4);   // 5..8 waypoints
+    const way = [{ x: A.x, y: A.y, z: A.z }];
+    for (let j = 1; j < nWay - 1; j++) {
+      const t = j / (nWay - 1);
+      way.push({
+        x: A.x + (B.x - A.x) * t + (rng() - 0.5) * 2 * wander,
+        y: A.y + (B.y - A.y) * t + (rng() - 0.5) * 2 * wander,
+        z: A.z + (B.z - A.z) * t + (rng() - 0.5) * 2 * wander,
+      });
+    }
+    way.push({ x: B.x, y: B.y, z: B.z });
+
+    // Catmull-Rom smoothing through the waypoints (endpoint duplicated so
+    // first and last segments have well-defined tangents).
+    const ctrl = [way[0], ...way, way[way.length - 1]];
+    const samplesPerSeg = 6;
+    const pts = [];
+    for (let i = 0; i < way.length - 1; i++) {
+      const p0 = ctrl[i], p1 = ctrl[i+1], p2 = ctrl[i+2], p3 = ctrl[i+3];
+      const steps = i === way.length - 2 ? samplesPerSeg + 1 : samplesPerSeg;
+      for (let j = 0; j < steps; j++) {
+        const t = j / samplesPerSeg;
+        const t2 = t * t, t3 = t2 * t;
+        const a = -0.5*t3 + t2 - 0.5*t;
+        const b =  1.5*t3 - 2.5*t2 + 1;
+        const c = -1.5*t3 + 2*t2 + 0.5*t;
+        const d =  0.5*t3 - 0.5*t2;
+        pts.push({
+          x: a*p0.x + b*p1.x + c*p2.x + d*p3.x,
+          y: a*p0.y + b*p1.y + c*p2.y + d*p3.y,
+          z: a*p0.z + b*p1.z + c*p2.z + d*p3.z,
+        });
+      }
+    }
+
+    // Per-vertex radius with seeded jitter, then per-segment uses adjacent
+    // radii so the strut tapers smoothly along its length. Floor at minWall.
+    const ptsR = pts.map(() => Math.max(mat.minWall, baseR * (0.7 + rng() * 0.6)));
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i+1];
+      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z;
+      const len = Math.sqrt(dx*dx + dy*dy + dz*dz) || 1;
+      out.push({
+        start: new THREE.Vector3(a.x, a.y, a.z),
+        end:   new THREE.Vector3(b.x, b.y, b.z),
+        r0: ptsR[i],
+        r1: ptsR[i+1],
+        depth: 0,
+        parent: null,
+        tangent: new THREE.Vector3(dx/len, dy/len, dz/len),
+        wobble: rng() * Math.PI * 2,
+      });
+    }
+  }
+  return out;
+}
+
 function carveNegPaths(field, nx, ny, nz, ox, oy, oz, voxel, paths) {
   const stride = nx * ny;
   for (const path of paths) {
@@ -1589,15 +1690,19 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
 }
 
 function buildBodyMesh(branches, accents, s, previewVoxels = 96) {
-  // Try up to 3 auto-bridges to collapse stray shells into the main body.
-  // Every retry prepends an extra cone-capsule between the main component
-  // and the nearest stray vertex, then rebuilds the field from scratch.
+  // Decorative+structural inner links are computed once up front (seeded
+  // RNG, deterministic per state.seed) and passed to every retry. They
+  // sit in the same post-carve slot as auto-repair bridges so they
+  // survive any neg-space tunnels.
+  const linkRng = mulberry32((s.seed >>> 0) ^ 0x4e54c0de);
+  const innerLinks = generateInnerLinks(branches, s, linkRng);
   const bridges = [];
   const MAX_RETRIES = 3;
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    // Bridges are passed to the postCarve slot so they're rasterized after
-    // hollow / drain / neg-space carving — a carve pass can't sever them.
-    const f = buildField(branches, accents, s, previewVoxels, bridges);
+    // postCarve = inner-links + auto-repair bridges, rasterized after
+    // hollow / drain / neg-space carving so no carve can sever them.
+    const postCarve = bridges.length ? innerLinks.concat(bridges) : innerLinks;
+    const f = buildField(branches, accents, s, previewVoxels, postCarve);
     const raw = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
     const rawVerts = raw.getAttribute('position').count;
     if (rawVerts === 0) {
@@ -2271,6 +2376,7 @@ const bindings = {
   neg: bindSlider('neg', 'neg', v => v.toFixed(1)),
   negStrands: bindSlider('negStrands', 'negStrands', v => v),
   negDensity: bindSlider('negDensity', 'negDensity', v => v.toFixed(2)),
+  innerLinks: bindSlider('innerLinks', 'innerLinks', v => v),
   sym: bindSelect('sym', 'sym', onSymChange),
   negStyle: bindSelect('negStyle', 'negStyle', onNegChange),
 };
