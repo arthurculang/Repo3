@@ -1,8 +1,11 @@
 <!doctype html>
 <!--
-  Fractal Sculpture Generator — v1.x
-  Single-file web app. Target: iPhone Safari + desktop. Export STL for
-  metal (DMLS/SLM) or plastic (FDM/SLA/SLS) printing. Units: millimetres.
+  Radiolaria — v1.x
+  Single-file web app that generates radially-symmetric organic
+  sculptures (named after the real microscopic sea organisms whose
+  intricate mineral skeletons inspired the aesthetic). Target: iPhone
+  Safari + desktop. Export STL for metal (DMLS/SLM) or plastic
+  (FDM/SLA/SLS) printing. Units: millimetres.
 
   Deploy to GitHub Pages:
     1. Commit index.html to the branch configured as the Pages source
@@ -32,7 +35,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="color-scheme" content="dark">
-<title>Fractal Sculpture</title>
+<title>Radiolaria</title>
 <style>
   :root {
     --bg: #0b0d10;
@@ -321,7 +324,7 @@
   <aside id="panel" aria-label="Controls">
     <div id="sheetHandle" aria-label="Toggle controls" role="button" tabindex="0"></div>
     <div id="panelHeader">
-      <h1>Sculpture</h1>
+      <h1>Radiolaria</h1>
       <span id="statusBox"><span class="busy-dot"></span><span id="status">ready</span></span>
     </div>
     <div id="printReport" class="report-idle expanded" role="button" tabindex="0" aria-label="Printability report (click to collapse)">
@@ -449,7 +452,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.17.0</span>
+      <span id="version">v1.17.1</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -487,7 +490,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.17.0";
+const VERSION = "v1.17.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2972,7 +2975,7 @@ async function downloadSTL() {
     const url = URL.createObjectURL(blob);
     const matSlug = (MATERIALS[state.material] || MATERIALS.stainless).slug;
     a.href = url;
-    a.download = `sculpture_${matSlug}_seed${state.seed}_${VERSION}.stl`;
+    a.download = `radiolaria_${matSlug}_seed${state.seed}_${VERSION}.stl`;
     a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 
