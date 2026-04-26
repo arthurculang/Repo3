@@ -198,6 +198,23 @@
   #statusBox.busy .busy-dot { opacity: 1; }
   @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 
+  /* Parameter-configuration field: hyphen-separated encoded state string,
+     monospace, copyable. The label has an inline copy button. */
+  #params {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: -0.01em;
+    padding: 6px 8px;
+  }
+  .copy-btn {
+    background: transparent; border: none; color: var(--ink-dim);
+    cursor: pointer; padding: 0 4px; margin-left: 6px;
+    font-size: 14px; line-height: 1;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .copy-btn:hover, .copy-btn:focus { color: var(--ink); outline: none; }
+  .copy-btn.copied { color: var(--accent); }
+
   /* Printability report (Chunk C / v1.13.0). Compact card between the
      panel header and the slider list. Single-line summary by default;
      click the card to expand the per-check list. */
@@ -464,10 +481,20 @@
         <label>Min negative space (mm) <span class="val" id="negVal">1.5</span></label>
         <input type="range" id="neg" min="0.5" max="5" step="0.1" value="1.5">
       </div>
+
+      <div class="ctrl">
+        <label>
+          Parameter configuration
+          <button class="copy-btn" id="paramsCopyBtn" type="button" title="Copy to clipboard" aria-label="Copy">⧉</button>
+        </label>
+        <input type="text" id="params" spellcheck="false" autocomplete="off" autocapitalize="off"
+               placeholder="paste a saved configuration to apply"
+               title="Two-way: shows the current configuration; paste a saved string here to apply it">
+      </div>
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.18.3</span>
+      <span id="version">v1.19.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -505,7 +532,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.18.3";
+const VERSION = "v1.19.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -560,6 +587,93 @@ const DEFAULTS = {
   innerLinks: 2,      // 0..12 always-on meandering material links between branch tips
 };
 const state = { ...DEFAULTS };
+
+// ---------- Parameter-configuration codec (Chunk v1.19.0) ----------
+// Encodes the entire user-tunable state into a single hyphen-separated
+// string and decodes it back. Two-way: read the field to copy current
+// settings; paste a saved string to restore them. Schema-versioned so
+// future state additions don't silently misinterpret old strings.
+//   Format: <schema>-<seed>-<material>-<size>-<wall>-<complexity>-
+//           <branchCount>-<branchAngle>-<taper>-<trunk>-<smooth>-
+//           <poly>-<rings>-<ringGap>-<sym>-<radialN>-<neg>-
+//           <innerLinks>-<negStyle>-<negStrands>-<negDensity>
+const PARAM_SCHEMA = 1;
+const MATERIAL_KEYS = ['stainless','titanium','aluminum','inconel','cocr','bronze','copper','pla','petg','abs','nylon','resin'];
+const SYM_KEYS = ['none','bilateral','radial'];
+const NEGSTYLE_KEYS = ['none','helix','colony'];
+
+function encodeParams(s) {
+  const m  = MATERIAL_KEYS.indexOf(s.material);
+  const sy = SYM_KEYS.indexOf(s.sym);
+  const ns = NEGSTYLE_KEYS.indexOf(s.negStyle);
+  return [
+    PARAM_SCHEMA,
+    s.seed,
+    m < 0 ? 0 : m,
+    s.size,
+    s.wall.toFixed(2),
+    s.complexity,
+    s.branchCount,
+    s.branchAngle,
+    s.taper.toFixed(2),
+    s.trunk.toFixed(1),
+    s.smooth.toFixed(2),
+    s.poly.toFixed(2),
+    s.rings,
+    s.ringGap.toFixed(2),
+    sy < 0 ? 0 : sy,
+    s.radialN,
+    s.neg.toFixed(1),
+    s.innerLinks,
+    ns < 0 ? 0 : ns,
+    s.negStrands,
+    s.negDensity.toFixed(2),
+  ].join('-');
+}
+
+function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+function decodeParams(str) {
+  const parts = String(str || '').trim().split('-');
+  if (parts.length < 21) throw new Error('config string has too few fields');
+  const schema = parseInt(parts[0], 10);
+  if (schema !== PARAM_SCHEMA) throw new Error('unsupported config schema: ' + schema);
+  const matIdx = clamp(parseInt(parts[2], 10) || 0, 0, MATERIAL_KEYS.length - 1);
+  const symIdx = clamp(parseInt(parts[14], 10) || 0, 0, SYM_KEYS.length - 1);
+  const nsIdx  = clamp(parseInt(parts[18], 10) || 0, 0, NEGSTYLE_KEYS.length - 1);
+  // Each numeric field is also clamped to its slider's permitted range so
+  // a malicious or stale string can't push the generator into NaN territory.
+  return {
+    seed:        clamp(parseInt(parts[1],  10) || 0, 0, 4294967295),
+    material:    MATERIAL_KEYS[matIdx],
+    size:        clamp(parseInt(parts[3],  10) || 80, 40, 200),
+    wall:        clamp(parseFloat(parts[4]) || 0, 0, 5),
+    complexity:  clamp(parseInt(parts[5],  10) || 4, 1, 7),
+    branchCount: clamp(parseInt(parts[6],  10) || 3, 1, 5),
+    branchAngle: clamp(parseInt(parts[7],  10) || 35, 10, 80),
+    taper:       clamp(parseFloat(parts[8])  || 0.6, 0.4, 0.95),
+    trunk:       clamp(parseFloat(parts[9])  || 6, 2, 14),
+    smooth:      clamp(parseFloat(parts[10]) || 0.25, 0, 1),
+    poly:        clamp(parseFloat(parts[11]) || 0.4, 0, 1),
+    rings:       clamp(parseInt(parts[12], 10) || 0, 0, 6),
+    ringGap:     clamp(parseFloat(parts[13]) || 0.7, 0.5, 2.5),
+    sym:         SYM_KEYS[symIdx],
+    radialN:     clamp(parseInt(parts[15], 10) || 5, 2, 8),
+    neg:         clamp(parseFloat(parts[16]) || 1.5, 0.5, 5),
+    innerLinks:  clamp(parseInt(parts[17], 10) || 0, 0, 12),
+    negStyle:    NEGSTYLE_KEYS[nsIdx],
+    negStrands:  clamp(parseInt(parts[19], 10) || 4, 1, 6),
+    negDensity:  clamp(parseFloat(parts[20]) || 0.7, 0, 1),
+  };
+}
+
+function updateParamsField() {
+  const el = document.getElementById('params');
+  if (!el) return;
+  // Don't clobber the field while the user is actively editing it.
+  if (document.activeElement === el) return;
+  el.value = encodeParams(state);
+}
 
 // ---------- Three.js scene ----------
 const canvas = document.getElementById('canvas');
@@ -2981,7 +3095,7 @@ async function downloadSTL() {
     const url = URL.createObjectURL(blob);
     const matSlug = (MATERIALS[state.material] || MATERIALS.stainless).slug;
     a.href = url;
-    a.download = `radiolaria_${matSlug}_seed${state.seed}_${state.size}mm_${VERSION}.stl`;
+    a.download = `radiolaria_${matSlug}_seed${state.seed}_${state.size}mm_${encodeParams(state)}_${VERSION}.stl`;
     a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 
@@ -3071,7 +3185,47 @@ materialEl.addEventListener('change', () => {
     bindings.wall.update();
     scheduleRegen();
   }
+  updateParamsField();
 });
+
+// Parameter-configuration field: pasting a saved string applies it to
+// every slider/control. Decoding happens on `change` (when the field
+// loses focus or the user presses Enter); on `blur` we resync the
+// field from current state in case the input was invalid.
+const paramsEl = document.getElementById('params');
+const paramsCopyBtn = document.getElementById('paramsCopyBtn');
+if (paramsEl) {
+  paramsEl.addEventListener('change', (e) => {
+    const text = e.target.value;
+    try {
+      const decoded = decodeParams(text);
+      Object.assign(state, decoded);
+      refreshUIFromState();
+      scheduleRegen();
+    } catch (err) {
+      console.warn('parameter configuration: ' + err.message);
+      e.target.value = encodeParams(state);
+    }
+  });
+  // On blur, always resync the field so partial edits don't get stuck.
+  paramsEl.addEventListener('blur', () => updateParamsField());
+  // Convenience: clicking the field selects all so a tap on iOS gives
+  // the user the standard copy menu.
+  paramsEl.addEventListener('focus', (e) => e.target.select());
+}
+if (paramsCopyBtn) {
+  paramsCopyBtn.addEventListener('click', async () => {
+    const text = encodeParams(state);
+    try {
+      await navigator.clipboard.writeText(text);
+      paramsCopyBtn.classList.add('copied');
+      setTimeout(() => paramsCopyBtn.classList.remove('copied'), 700);
+    } catch (e) {
+      // Fallback: select the field's text so the user can ⌘C / Ctrl-C.
+      if (paramsEl) { paramsEl.focus(); paramsEl.select(); }
+    }
+  });
+}
 
 function refreshUIFromState() {
   for (const k of Object.keys(bindings)) {
@@ -3084,6 +3238,7 @@ function refreshUIFromState() {
   onNegChange();
   materialEl.value = state.material;
   applyMaterial(state.material);
+  updateParamsField();
 }
 
 // Dual-phase regen (Chunk 6). Fast 64³ preview fires at most every 30ms
@@ -3093,6 +3248,9 @@ function refreshUIFromState() {
 // same seed+state, so the only visible difference is surface resolution.
 let fastScheduled = false, fullTimer = null;
 function scheduleRegen() {
+  // Every slider input funnels through here, so this is the right place
+  // to keep the parameter-configuration field in sync with state.
+  updateParamsField();
   // Light up the spinner immediately so the user sees feedback even though
   // the actual generate() will block the main thread for ~50–500ms. The
   // rAF wrap ensures the browser gets one paint cycle to render the busy
