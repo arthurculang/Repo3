@@ -467,7 +467,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.18.2</span>
+      <span id="version">v1.18.3</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -505,7 +505,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.18.2";
+const VERSION = "v1.18.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2981,7 +2981,7 @@ async function downloadSTL() {
     const url = URL.createObjectURL(blob);
     const matSlug = (MATERIALS[state.material] || MATERIALS.stainless).slug;
     a.href = url;
-    a.download = `radiolaria_${matSlug}_seed${state.seed}_${VERSION}.stl`;
+    a.download = `radiolaria_${matSlug}_seed${state.seed}_${state.size}mm_${VERSION}.stl`;
     a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 
