@@ -467,7 +467,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.18.1</span>
+      <span id="version">v1.18.2</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -505,7 +505,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.18.1";
+const VERSION = "v1.18.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2849,6 +2849,11 @@ async function generate(previewVoxels = 96) {
   if (mesh) exportGroup.add(mesh);
   addRingMeshes(rings);
 
+  // Cache the build result so downloadSTL can run its safety check
+  // against the actual built field, and so the export-time pipeline
+  // can serialize this exact mesh (no recomputation, no divergence).
+  lastBuildResult = { fieldInfo: result.fieldInfo, voxel: result.voxel, branches, rings };
+
   // Mass + cost readout. Body volume comes from the preview mesh via the
   // divergence trick; ring volumes via exact torus formula. Preview uses
   // the 96³ (or 64³ during drag) field so numbers are approximate —
@@ -2921,6 +2926,11 @@ function yieldFrame() { return new Promise(r => setTimeout(r, 0)); }
 // drag.
 let genToken = 0;
 
+// Latest preview's fieldInfo, kept around so downloadSTL can re-run the
+// flood-fill safety check against the actual built field without having
+// to recompute it. Populated at the end of every successful generate().
+let lastBuildResult = null;
+
 // ---------- STL export (Chunk 5b) ----------
 // Rebuilds the body mesh at a higher voxel resolution (EXPORT_VOXELS),
 // runs the print-safety gate, then writes the binary STL. Progress is
@@ -2936,61 +2946,37 @@ const nextFrame = () => new Promise(r => requestAnimationFrame(r));
 async function downloadSTL() {
   const a = document.createElement('a');
   document.body.appendChild(a);
-  let highResGroup = null;
   setBusy(true);
-  showProgress(true, `exporting: building ${EXPORT_VOXELS}³ field…`);
+  showProgress(true, 'exporting STL…');
   try {
-    setStatus(`exporting: building ${EXPORT_VOXELS}³ field…`);
+    setStatus('exporting STL…');
     await nextFrame();
 
-    const { branches: rawB, accents: rawA } = generateStructure(state);
-    scaleStructureToSize(rawB, rawA, state.size);
-    const { branches, accents } = applySymmetry(rawB, rawA, state);
-
-    setStatus('exporting: marching cubes + repair…');
-    setProgress('exporting: marching cubes + repair…');
-    await nextFrame();
-
-    // BUG FIX (v1.18.1): use the SAME pipeline as the live preview so the
-    // exported STL inherits Phase 1 + Phase 2 orphan repair, inner links,
-    // hollow + drain — everything. The previous version called buildField
-    // and marchingCubes directly, which skipped every repair pass and
-    // produced a halo of disconnected fragments wherever a helix tube
-    // had severed a thin branch. parentToken=null because the export
-    // is a one-shot user gesture, not part of the regen-token race.
-    const result = await buildBodyMesh(branches, accents, state, EXPORT_VOXELS, null);
-    if (!result || !result.mesh) {
-      setStatus('export failed: empty mesh');
+    // WYSIWYG export (v1.18.2): serialize whatever's currently in
+    // exportGroup — i.e. the exact body + rings the user is looking at.
+    // No rebuild, no double-compute, no parallel pipeline that could
+    // diverge from the preview. The Save-As-Is contract is what makes
+    // "what you see is what you get" actually true.
+    if (exportGroup.children.length === 0) {
+      setStatus('export failed: nothing to export');
       a.remove();
       return;
     }
-    const bodyMesh = result.mesh;
 
-    setStatus('exporting: safety check…');
-    setProgress('exporting: safety check…');
-    await nextFrame();
-    const warns = checkPrintSafety(branches, result.voxel, result.fieldInfo, state.material, state.wall)
-      .concat(checkNegSpaceSafety(state, branches));
+    // Run the print-safety checks against the cached fieldInfo from the
+    // most recent preview build, so the export still logs warnings if
+    // anything's off. The Printability card already shows the same info,
+    // but the console log gives a verifiable record at export time.
+    const warns = lastBuildResult
+      ? checkPrintSafety(lastBuildResult.branches, lastBuildResult.voxel, lastBuildResult.fieldInfo, state.material, state.wall)
+          .concat(checkNegSpaceSafety(state, lastBuildResult.branches))
+      : [];
     if (warns.length) {
       console.warn('print-safety warnings:');
       for (const w of warns) console.warn('  ·', w);
     }
 
-    setStatus('exporting: writing STL…');
-    setProgress('exporting: writing STL…');
-    await nextFrame();
-    highResGroup = new THREE.Group();
-    highResGroup.add(bodyMesh);
-    const ringRng = mulberry32((state.seed >>> 0) ^ 0x7a5529c1);
-    const rings = symmetrizeRings(generateRings(rawB, state, ringRng), state);
-    for (const r of rings) {
-      const rg = new THREE.TorusGeometry(r.innerR + r.tubeR, r.tubeR, 10, 32);
-      const rm = new THREE.Mesh(rg, material);
-      rm.position.copy(r.center);
-      rm.quaternion.setFromUnitVectors(_ringZ, r.axis);
-      highResGroup.add(rm);
-    }
-    const stl = exporter.parse(highResGroup, { binary: true });
+    const stl = exporter.parse(exportGroup, { binary: true });
     const blob = new Blob([stl], { type: 'model/stl' });
     const url = URL.createObjectURL(blob);
     const matSlug = (MATERIALS[state.material] || MATERIALS.stainless).slug;
@@ -3000,16 +2986,12 @@ async function downloadSTL() {
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 
     const warnLabel = warns.length ? ` · ⚠ ${warns.length}` : '';
-    setStatus(`exported seed ${state.seed} @ ${EXPORT_VOXELS}³${warnLabel}`);
+    setStatus(`exported seed ${state.seed}${warnLabel}`);
   } catch (e) {
     console.error(e);
     setStatus('export failed');
     a.remove();
   } finally {
-    // Free the high-res geometry so iPhone doesn't hold two copies in memory.
-    if (highResGroup) {
-      for (const child of highResGroup.children) if (child.geometry) child.geometry.dispose();
-    }
     setBusy(false);
     showProgress(false);
   }
