@@ -216,10 +216,22 @@
   .report-status {
     font-weight: 600; text-transform: uppercase; flex: 0 0 auto;
   }
+  .report-summary-right {
+    display: inline-flex; align-items: center; gap: 8px;
+    min-width: 0;
+  }
   .report-fixes {
     color: var(--ink-dim); font-size: 10px; text-align: right;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .report-toggle {
+    display: inline-block;
+    flex-shrink: 0;
+    color: var(--ink-dim);
+    font-size: 12px;
+    transition: transform 0.2s ease;
+  }
+  #printReport.expanded .report-toggle { transform: rotate(180deg); }
   #printReport.report-pass  .report-status { color: var(--accent); }
   #printReport.report-fixed .report-status { color: #f0a040; }
   #printReport.report-fail  .report-status { color: var(--danger); }
@@ -327,10 +339,13 @@
       <h1>Radiolaria</h1>
       <span id="statusBox"><span class="busy-dot"></span><span id="status">ready</span></span>
     </div>
-    <div id="printReport" class="report-idle expanded" role="button" tabindex="0" aria-label="Printability report (click to collapse)">
+    <div id="printReport" class="report-idle" role="button" tabindex="0" aria-label="Printability report" aria-expanded="false">
       <div class="report-summary">
         <span class="report-status">— awaiting first generation</span>
-        <span class="report-fixes"></span>
+        <span class="report-summary-right">
+          <span class="report-fixes"></span>
+          <span class="report-toggle" aria-hidden="true">&#x25BE;</span>
+        </span>
       </div>
       <ul class="report-checks"></ul>
     </div>
@@ -452,7 +467,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.17.1</span>
+      <span id="version">v1.18.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -490,7 +505,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.17.1";
+const VERSION = "v1.18.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -3150,16 +3165,20 @@ document.getElementById('sheetHandle').addEventListener('click', () => {
   panel.classList.toggle('collapsed');
 });
 
-// Printability report card expand/collapse on click.
+// Printability report card expand/collapse on click. The chevron
+// icon rotates 180° via the .expanded class; aria-expanded is kept
+// in sync so screen readers announce the current state.
 const printReportEl = document.getElementById('printReport');
+function togglePrintReport() {
+  const expanded = printReportEl.classList.toggle('expanded');
+  printReportEl.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+}
 if (printReportEl) {
-  printReportEl.addEventListener('click', () => {
-    printReportEl.classList.toggle('expanded');
-  });
+  printReportEl.addEventListener('click', togglePrintReport);
   printReportEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      printReportEl.classList.toggle('expanded');
+      togglePrintReport();
     }
   });
 }
