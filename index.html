@@ -467,7 +467,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.18.0</span>
+      <span id="version">v1.18.1</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -505,7 +505,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.18.0";
+const VERSION = "v1.18.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2057,7 +2057,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     for (const seg of segs) bridges.push(seg);
     nRepairs++;
     rebuild();
-    if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
+    if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs, fieldInfo: f };
     if (onPhase) await onPhase(
       `Phase 1 vein ${attempt+1} added — ${comp.nComp} ${comp.nComp === 1 ? 'piece' : 'pieces'} now`,
       makePreviewMesh(geom)
@@ -2112,7 +2112,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     }
     geom.dispose();
     rebuild();
-    if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs };
+    if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs, fieldInfo: f };
     if (onPhase) await onPhase(
       `Phase 2 round ${p2+1}: ${veinsThisRound} snake ${veinsThisRound === 1 ? 'vein' : 'veins'} added — ${comp.nComp} ${comp.nComp === 1 ? 'piece' : 'pieces'} now`,
       makePreviewMesh(geom)
@@ -2125,7 +2125,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   geom.computeVertexNormals();
   const mesh = new THREE.Mesh(geom, material);
   const triCount = geom.getIndex().count / 3;
-  return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs };
+  return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs, fieldInfo: f };
 }
 
 // Union-find on the welded index buffer. Every triangle's three verts
@@ -2946,25 +2946,30 @@ async function downloadSTL() {
     const { branches: rawB, accents: rawA } = generateStructure(state);
     scaleStructureToSize(rawB, rawA, state.size);
     const { branches, accents } = applySymmetry(rawB, rawA, state);
-    const f = buildField(branches, accents, state, EXPORT_VOXELS);
 
-    setStatus('exporting: marching cubes…');
-    setProgress('exporting: marching cubes…');
+    setStatus('exporting: marching cubes + repair…');
+    setProgress('exporting: marching cubes + repair…');
     await nextFrame();
-    let geom = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
-    if (geom.getAttribute('position').count === 0) {
+
+    // BUG FIX (v1.18.1): use the SAME pipeline as the live preview so the
+    // exported STL inherits Phase 1 + Phase 2 orphan repair, inner links,
+    // hollow + drain — everything. The previous version called buildField
+    // and marchingCubes directly, which skipped every repair pass and
+    // produced a halo of disconnected fragments wherever a helix tube
+    // had severed a thin branch. parentToken=null because the export
+    // is a one-shot user gesture, not part of the regen-token race.
+    const result = await buildBodyMesh(branches, accents, state, EXPORT_VOXELS, null);
+    if (!result || !result.mesh) {
       setStatus('export failed: empty mesh');
       a.remove();
       return;
     }
-    geom = mergeVertices(geom, 1e-4);
-    geom.computeVertexNormals();
-    const bodyMesh = new THREE.Mesh(geom, material);
+    const bodyMesh = result.mesh;
 
     setStatus('exporting: safety check…');
     setProgress('exporting: safety check…');
     await nextFrame();
-    const warns = checkPrintSafety(branches, f.voxel, f, state.material, state.wall)
+    const warns = checkPrintSafety(branches, result.voxel, result.fieldInfo, state.material, state.wall)
       .concat(checkNegSpaceSafety(state, branches));
     if (warns.length) {
       console.warn('print-safety warnings:');
