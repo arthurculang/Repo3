@@ -600,7 +600,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.23.1</span>
+        <span id="version">v1.23.2</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -652,7 +652,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.23.1";
+const VERSION = "v1.23.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2514,24 +2514,40 @@ function applyVertexTexture(geom, s) {
       // Outer-hull-only (v1.22.1). Skipping interior vertices keeps
       // tunnel diameters intact — bumps stay on the silhouette.
       if (!isOuter[v]) continue;
-      // Three octaves of one-sided gradient noise — same recipe as
-      // v1.21.3, but the SIGN convention is flipped. In SDF domain a
-      // negative delta pushed the iso outward; here positive delta
-      // moves the vertex along its outward-pointing normal. Same
-      // visual result, opposite sign.
+      // Five octaves of one-sided gradient noise (v1.23.2 — chunk A
+      // added octaves 4 and 5 for finer surface detail). Frequencies in
+      // mm⁻¹; corresponding feature sizes:
+      //   octave 1: 0.18 → ~5.5mm  (broad lumps)
+      //   octave 2: 0.55 → ~1.8mm  (medium bumps)
+      //   octave 3: 1.40 → ~0.7mm  (fine bumps; near MC resolution)
+      //   octave 4: 3.00 → ~0.33mm (sub-mm grain; needs subdivision ≥1)
+      //   octave 5: 7.00 → ~0.14mm (right at lost-wax brass casting limit)
+      // Sign is flipped vs SDF domain: positive delta = outward along
+      // the vertex normal. Weight halving keeps the sum's expected
+      // amplitude bounded (geometric series → ~2× the leading weight).
       const n1 = Math.max(0, noise(wx * 0.18, wy * 0.18, wz * 0.18));
       const n2 = Math.max(0, noise(wx * 0.55, wy * 0.55, wz * 0.55));
       const n3 = Math.max(0, noise(wx * 1.40, wy * 1.40, wz * 1.40));
-      const stacked = 1.0 * n1 + 0.5 * n2 + 0.25 * n3;
+      const n4 = Math.max(0, noise(wx * 3.00, wy * 3.00, wz * 3.00));
+      const n5 = Math.max(0, noise(wx * 7.00, wy * 7.00, wz * 7.00));
+      const stacked = 1.0 * n1 + 0.5 * n2 + 0.25 * n3
+                    + 0.125 * n4 + 0.0625 * n5;
       delta = ampOut * stacked;             // OUTWARD along normal
     } else if (region === REGION_CORAL) {
       const nv = noise(wx * 0.40, wy * 0.40, wz * 0.40);
       if (nv > 0.45) {
+        // Pinprick pit. Quadratic threshold response so pits are
+        // sharp at the centre and feather at the edges.
         const overshoot = nv - 0.45;
         delta = -ampIn * 4.0 * overshoot * overshoot;
       } else {
-        const r = noise(wx * 1.10, wy * 1.10, wz * 1.10);
-        delta = -ampIn * 0.25 * Math.abs(r);
+        // Background roughness — two-octave sum (v1.23.2 added the
+        // ~0.3mm octave) so the smooth-ish coral matrix has
+        // sub-millimetre grain rather than reading as flat at high
+        // mesh density.
+        const r1 = noise(wx * 1.10, wy * 1.10, wz * 1.10);
+        const r2 = noise(wx * 3.50, wy * 3.50, wz * 3.50);
+        delta = -ampIn * (0.25 * Math.abs(r1) + 0.10 * Math.abs(r2));
       }
     }
 
@@ -3842,6 +3858,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.23.2', date: '2026-04-27', n: 'Two extra Romanesco octaves + finer Coral roughness — sub-mm surface detail.' },
   { v: 'v1.23.1', date: '2026-04-27', n: 'Default texture detail raised to High (16×).' },
   { v: 'v1.23.0', date: '2026-04-27', n: 'Texture-detail dropdown — midpoint subdivision after MC. Decouples texture density from morphology.' },
   { v: 'v1.22.4', date: '2026-04-27', n: 'Quality dropdown shows approximate vox/mm at the current size.' },
