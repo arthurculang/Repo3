@@ -539,7 +539,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.22.0</span>
+      <span id="version">v1.22.1</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -579,7 +579,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.22.0";
+const VERSION = "v1.22.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2186,7 +2186,7 @@ function classifyRegion(noise, x, y, z) {
   return REGION_SMOOTH;
 }
 
-// Per-region surface displacement (v1.22.0 rewrite — moved from SDF
+// Per-region surface displacement (v1.22.1 rewrite — moved from SDF
 // domain to mesh domain). Walks every vertex of the post-MC indexed
 // geometry, classifies its region from world position, and translates
 // it along its existing surface normal.
@@ -2208,6 +2208,66 @@ function classifyRegion(noise, x, y, z) {
 //           creating self-intersections at sharp concavities.
 //   ampIn:  inward (coral pits). Pitting thins the hollow wall;
 //           capped against (wall − minWall − safety) for print safety.
+// Outer-hull mask (v1.22.1). Returns Uint8Array of length V where 1 =
+// vertex sits on the outermost surface in its angular direction, 0 =
+// interior surface (tunnel wall, deep concavity). Used to gate outward
+// Romanesco bumps so they don't constrict carved tunnels — bumps inside
+// a tunnel grow into the open tunnel space along the wall normal,
+// narrowing the tunnel even though they don't fill it.
+//
+// HEURISTIC — angular max-radius binning. Take the centroid of all
+// vertices, bin each vertex by its (theta, phi) direction from centroid
+// into a coarse spherical grid, record the max radius observed per
+// bin. A vertex is "outer" if its radius is within OUTER_FRAC of the
+// bin's max. Tunnel walls in a given direction are at smaller radii
+// than the surrounding outer surface in that direction, so they fall
+// below the threshold and get tagged interior.
+//
+// Caveat: deep concavities also fall below threshold, so Romanesco is
+// suppressed there too. For radiolaria-style star/spike shapes that's
+// fine — concavities are usually broad and shallow.
+function findOuterHullVertices(geom) {
+  const positions = geom.getAttribute('position').array;
+  const V = geom.getAttribute('position').count;
+  let cx = 0, cy = 0, cz = 0;
+  for (let i = 0; i < V; i++) {
+    cx += positions[i*3]; cy += positions[i*3+1]; cz += positions[i*3+2];
+  }
+  cx /= V; cy /= V; cz /= V;
+
+  const NB_T = 48, NB_P = 24;            // ~1152 angular bins
+  const maxR = new Float32Array(NB_T * NB_P);
+  const radii = new Float32Array(V);
+  const bins = new Int32Array(V);
+  const TWO_PI = Math.PI * 2;
+  for (let i = 0; i < V; i++) {
+    const dx = positions[i*3]   - cx;
+    const dy = positions[i*3+1] - cy;
+    const dz = positions[i*3+2] - cz;
+    const r = Math.hypot(dx, dy, dz);
+    radii[i] = r;
+    if (r < 1e-6) { bins[i] = -1; continue; }
+    const theta = Math.atan2(dy, dx) + Math.PI;             // [0, 2π]
+    const phi = Math.acos(Math.max(-1, Math.min(1, dz / r))); // [0, π]
+    let tIdx = Math.floor(theta / TWO_PI * NB_T);
+    let pIdx = Math.floor(phi   / Math.PI * NB_P);
+    if (tIdx >= NB_T) tIdx = NB_T - 1;
+    if (pIdx >= NB_P) pIdx = NB_P - 1;
+    const bin = tIdx * NB_P + pIdx;
+    bins[i] = bin;
+    if (r > maxR[bin]) maxR[bin] = r;
+  }
+
+  const OUTER_FRAC = 0.78;
+  const isOuter = new Uint8Array(V);
+  for (let i = 0; i < V; i++) {
+    const b = bins[i];
+    if (b < 0) continue;
+    if (radii[i] >= maxR[b] * OUTER_FRAC) isOuter[i] = 1;
+  }
+  return isOuter;
+}
+
 function applyVertexTexture(geom, s) {
   if (s.texture !== 'organic') return;
   const posAttr = geom.getAttribute('position');
@@ -2218,6 +2278,13 @@ function applyVertexTexture(geom, s) {
   const V = posAttr.count;
   const idx = geom.getIndex();
   if (!idx) return;
+
+  // Gate outward Romanesco bumps to outer-hull vertices only — see
+  // findOuterHullVertices() for the rationale. Coral pits stay
+  // unrestricted: inward motion along a tunnel-wall normal pushes the
+  // vertex AWAY from the tunnel into body material, slightly widening
+  // the tunnel rather than constricting it, so coral can run anywhere.
+  const isOuter = findOuterHullVertices(geom);
 
   // Mean edge length over the indexed triangle list — used as the
   // outward-displacement clamp so bumps can't grow taller than a
@@ -2257,6 +2324,9 @@ function applyVertexTexture(geom, s) {
 
     let delta = 0;
     if (region === REGION_ROMANESCO) {
+      // Outer-hull-only (v1.22.1). Skipping interior vertices keeps
+      // tunnel diameters intact — bumps stay on the silhouette.
+      if (!isOuter[v]) continue;
       // Three octaves of one-sided gradient noise — same recipe as
       // v1.21.3, but the SIGN convention is flipped. In SDF domain a
       // negative delta pushed the iso outward; here positive delta
@@ -2560,7 +2630,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     console.warn(`buildBodyMesh: still ${comp.nComp} components after Phase 1 + Phase 2 (seed=${s.seed})`);
   }
   geom.computeVertexNormals();
-  // Surface texture is applied in mesh domain (v1.22.0+) — operates on
+  // Surface texture is applied in mesh domain (v1.22.1+) — operates on
   // vertex positions along their existing normals so it can't fill
   // negative-space tunnels the way the v1.21.x SDF-domain pass did.
   // No-ops for s.texture === 'smooth'.
@@ -3518,7 +3588,7 @@ materialEl.addEventListener('change', () => {
 
 // Surface-texture dropdown (Chunk v1.21.0). 'smooth' is the v1.20-and-earlier
 // behaviour; 'organic' enables the variegated romanesco/coral displacement
-// pass. As of v1.22.0 the actual displacement is applied in mesh domain
+// pass. As of v1.22.1 the actual displacement is applied in mesh domain
 // inside buildBodyMesh via applyVertexTexture() — the earlier SDF-domain
 // approach filled in carved negative-space tunnels.
 const textureEl = document.getElementById('texture');
