@@ -536,6 +536,15 @@
       </div>
 
       <div class="ctrl">
+        <label>Texture detail</label>
+        <select id="textureDetail">
+          <option value="off">Off (1×)</option>
+          <option value="medium" selected>Medium (4×)</option>
+          <option value="high">High (16×)</option>
+        </select>
+      </div>
+
+      <div class="ctrl">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
       </div>
@@ -591,7 +600,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.22.4</span>
+        <span id="version">v1.23.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -643,7 +652,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.22.4";
+const VERSION = "v1.23.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -704,7 +713,13 @@ const DEFAULTS = {
   quality: 'standard', // 'standard' | 'high' | 'ultra' — preview voxel
                        // resolution (96³/128³/160³). Higher values resolve
                        // finer texture octaves at the cost of regen time.
-                       // STL export always renders at 160³ regardless.
+  textureDetail: 'medium', // 'off' | 'medium' | 'high' — midpoint
+                           // subdivision passes applied AFTER MC but
+                           // BEFORE the texture displacement pass. 0/1/2
+                           // levels = 1×/4×/16× vertex multiplier. Lets
+                           // texture render at finer-than-MC resolution
+                           // without changing morphology. STL export
+                           // includes the subdivided mesh (WYSIWYG).
 };
 const state = { ...DEFAULTS };
 
@@ -733,6 +748,8 @@ const NEGSTYLE_KEYS = ['none','helix','colony'];
 const TEXTURE_KEYS = ['smooth','organic'];
 const QUALITY_KEYS = ['standard','high','ultra'];
 const QUALITY_VOXELS = { standard: 96, high: 128, ultra: 160 };
+const TEXDETAIL_KEYS = ['off','medium','high'];
+const TEXDETAIL_LEVELS = { off: 0, medium: 1, high: 2 };
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
@@ -742,6 +759,7 @@ function paramFields(s) {
   const ns = NEGSTYLE_KEYS.indexOf(s.negStyle);
   const tx = TEXTURE_KEYS.indexOf(s.texture);
   const ql = QUALITY_KEYS.indexOf(s.quality);
+  const td = TEXDETAIL_KEYS.indexOf(s.textureDetail);
   return [
     m < 0 ? 0 : m,
     s.size,
@@ -768,6 +786,9 @@ function paramFields(s) {
     // ↓ added in v1.22.2. Append-only; old strings without this slot
     // decode cleanly with quality defaulting to 'standard'.
     ql < 0 ? 0 : ql,
+    // ↓ added in v1.23.0. Append-only; defaults to 'medium' for older
+    // strings so previously-saved configs render with subdivision on.
+    td < 0 ? 1 : td,
   ];
 }
 
@@ -792,6 +813,12 @@ function parseParamSlots(slots) {
   const qlIdx = slots.length > 20
     ? clamp(parseInt(slots[20], 10) || 0, 0, QUALITY_KEYS.length - 1)
     : 0;
+  // Texture detail: new in v1.23.0. Defaults to 'medium' for older
+  // strings — subdivision improves texture without changing morphology,
+  // so older Organic-textured configs simply render with crisper bumps.
+  const tdIdx = slots.length > 21
+    ? clamp(parseInt(slots[21], 10) || 1, 0, TEXDETAIL_KEYS.length - 1)
+    : 1;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -814,6 +841,7 @@ function parseParamSlots(slots) {
     negDensity:  clamp(parseFloat(slots[18]) || 0.7, 0, 1),
     texture:     TEXTURE_KEYS[txIdx],
     quality:     QUALITY_KEYS[qlIdx],
+    textureDetail: TEXDETAIL_KEYS[tdIdx],
   };
 }
 
@@ -2265,6 +2293,83 @@ function classifyRegion(noise, x, y, z) {
   return REGION_SMOOTH;
 }
 
+// Midpoint mesh subdivision (v1.23.0). Each pass inserts a vertex at
+// the midpoint of every edge and splits each triangle (a, b, c) into
+// four sub-triangles: (a, mab, mca), (mab, b, mbc), (mca, mbc, c),
+// (mab, mbc, mca). Adjacent triangles share midpoints via an edge map
+// so the mesh stays watertight.
+//
+// PURPOSE: decouple texture-mesh density from MC-mesh density. The MC
+// pass alone defines the morphology (silhouette, tendrils, tunnels);
+// subdivision adds vertex density on top of that fixed surface so the
+// texture pass has more places to displace into. Midpoint subdivision
+// is INTERPOLATING (new verts lie exactly on parent triangles), so the
+// silhouette doesn't drift — only resolution increases. Pure Loop or
+// Catmull-Clark would smooth the surface and shift the morphology,
+// which is exactly what we want to avoid.
+//
+// COST per level: ~4× vertex count, 4× triangle count. Two levels on
+// top of an Ultra MC pass (~150K verts) gives ~2.4M verts / 4.8M tris.
+function subdivideMidpoint(geom, levels) {
+  if (levels <= 0) return;
+  for (let lvl = 0; lvl < levels; lvl++) {
+    const posAttr = geom.getAttribute('position');
+    const idxAttr = geom.getIndex();
+    if (!posAttr || !idxAttr) return;
+    const positions = posAttr.array;
+    const ix = idxAttr.array;
+    const Vold = posAttr.count;
+    const Told = ix.length / 3;
+
+    // Pre-size the new position array: old verts + at most 1 midpoint
+    // per shared edge (3 per triangle, but each is shared by 2 tris on
+    // a closed mesh → 1.5 per triangle on average, ceil to 2 for safety).
+    const newPositions = new Float32Array((Vold + Told * 2) * 3);
+    newPositions.set(positions, 0);
+    let nextVert = Vold;
+
+    // Edge → midpoint vertex index map. Key encodes ordered (lo, hi).
+    // Vold * Vold can blow past 2^53 only when Vold > ~94M — well above
+    // anything we'll subdivide.
+    const edgeMap = new Map();
+    function midpoint(a, b) {
+      const lo = a < b ? a : b;
+      const hi = a < b ? b : a;
+      const key = lo * Vold + hi;
+      let m = edgeMap.get(key);
+      if (m !== undefined) return m;
+      m = nextVert++;
+      const ai = a * 3, bi = b * 3, mi = m * 3;
+      newPositions[mi]     = (positions[ai]     + positions[bi])     * 0.5;
+      newPositions[mi + 1] = (positions[ai + 1] + positions[bi + 1]) * 0.5;
+      newPositions[mi + 2] = (positions[ai + 2] + positions[bi + 2]) * 0.5;
+      edgeMap.set(key, m);
+      return m;
+    }
+
+    const newIndices = new Uint32Array(Told * 4 * 3);
+    let ni = 0;
+    for (let t = 0; t < Told; t++) {
+      const a = ix[t * 3], b = ix[t * 3 + 1], c = ix[t * 3 + 2];
+      const mab = midpoint(a, b);
+      const mbc = midpoint(b, c);
+      const mca = midpoint(c, a);
+      newIndices[ni++] = a;   newIndices[ni++] = mab; newIndices[ni++] = mca;
+      newIndices[ni++] = mab; newIndices[ni++] = b;   newIndices[ni++] = mbc;
+      newIndices[ni++] = mca; newIndices[ni++] = mbc; newIndices[ni++] = c;
+      newIndices[ni++] = mab; newIndices[ni++] = mbc; newIndices[ni++] = mca;
+    }
+
+    // Trim the position buffer to the actually-allocated vertex count
+    // (estimate above was upper-bound; real count is ~Vold + edges).
+    const finalPositions = newPositions.subarray(0, nextVert * 3);
+    geom.setAttribute('position', new THREE.BufferAttribute(finalPositions, 3));
+    geom.setIndex(new THREE.BufferAttribute(newIndices, 1));
+    geom.deleteAttribute('normal');  // stale; texture pass will recompute
+  }
+  geom.computeVertexNormals();
+}
+
 // Per-region surface displacement (v1.22.0 rewrite — moved from SDF
 // domain to mesh domain). Walks every vertex of the post-MC indexed
 // geometry, classifies its region from world position, and translates
@@ -2709,6 +2814,15 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     console.warn(`buildBodyMesh: still ${comp.nComp} components after Phase 1 + Phase 2 (seed=${s.seed})`);
   }
   geom.computeVertexNormals();
+  // Subdivide the mesh BEFORE the texture pass (v1.23.0). Decouples
+  // texture-mesh density from MC-mesh density, so the user can crank
+  // texture detail without remeshing morphology. Skip entirely for
+  // smooth texture — subdivision without displacement just bloats the
+  // STL with no visual gain.
+  if (s.texture === 'organic') {
+    const subLevels = TEXDETAIL_LEVELS[s.textureDetail] || 0;
+    if (subLevels > 0) subdivideMidpoint(geom, subLevels);
+  }
   // Surface texture is applied in mesh domain (v1.22.0+) — operates on
   // vertex positions along their existing normals so it can't fill
   // negative-space tunnels the way the v1.21.x SDF-domain pass did.
@@ -3690,6 +3804,19 @@ if (qualityEl) {
   });
 }
 
+// Texture-detail dropdown (v1.23.0). Adds 0/1/2 levels of midpoint
+// subdivision before the texture displacement pass so the texture can
+// render at higher resolution than MC alone supports — without changing
+// the morphology (subdivision is interpolating; new verts lie on the
+// parent triangles). Skipped entirely for smooth texture.
+const textureDetailEl = document.getElementById('textureDetail');
+if (textureDetailEl) {
+  textureDetailEl.addEventListener('change', () => {
+    state.textureDetail = textureDetailEl.value;
+    scheduleRegen();
+  });
+}
+
 // Refresh the quality option labels with approximate voxels-per-mm at
 // the current state.size (v1.22.4). Helps the user reason about feature
 // resolution without doing the math. Computed against state.size
@@ -3712,6 +3839,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.23.0', date: '2026-04-27', n: 'Texture-detail dropdown — midpoint subdivision after MC. Decouples texture density from morphology.' },
   { v: 'v1.22.4', date: '2026-04-27', n: 'Quality dropdown shows approximate vox/mm at the current size.' },
   { v: 'v1.22.3', date: '2026-04-27', n: 'Version-log link in panel footer with back-populated history.' },
   { v: 'v1.22.2', date: '2026-04-27', n: 'Preview-quality dropdown — Standard/High/Ultra (96³/128³/160³). Resolves finer texture octaves.' },
@@ -3893,6 +4021,7 @@ function refreshUIFromState() {
   applyMaterial(state.material);
   if (textureEl) textureEl.value = state.texture;
   if (qualityEl) qualityEl.value = state.quality;
+  if (textureDetailEl) textureDetailEl.value = state.textureDetail;
   updateQualityLabels();
   updateAllFields();
 }
