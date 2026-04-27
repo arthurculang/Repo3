@@ -525,13 +525,13 @@
         <input type="range" id="radialN" min="2" max="8" step="1" value="5">
       </div>
       <div class="ctrl">
-        <label>Min negative space (mm) <span class="val" id="negVal">1.5</span></label>
-        <input type="range" id="neg" min="0.5" max="5" step="0.1" value="1.5">
+        <label>Min negative space (mm) <span class="val" id="negVal">3.7</span></label>
+        <input type="range" id="neg" min="0.5" max="5" step="0.1" value="3.7">
       </div>
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.20.3</span>
+      <span id="version">v1.20.4</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -571,7 +571,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.20.3";
+const VERSION = "v1.20.4";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -612,7 +612,7 @@ const DEFAULTS = {
   ringGap: 0.7,
   sym: 'radial',
   radialN: 5,
-  neg: 1.5,
+  neg: 3.7,
   material: 'stainless',
   size: 80,  // target max bounding-box dimension (mm)
   wall: 1.0, // default hollow shell with 1mm wall — above every material's
@@ -703,7 +703,7 @@ function parseParamSlots(slots) {
     ringGap:     clamp(parseFloat(slots[11]) || 0.7, 0.5, 2.5),
     sym:         SYM_KEYS[symIdx],
     radialN:     clamp(parseInt(slots[13], 10) || 5, 2, 8),
-    neg:         clamp(parseFloat(slots[14]) || 1.5, 0.5, 5),
+    neg:         clamp(parseFloat(slots[14]) || 3.7, 0.5, 5),
     innerLinks:  clamp(parseInt(slots[15], 10) || 0, 0, 12),
     negStyle:    NEGSTYLE_KEYS[nsIdx],
     negStrands:  clamp(parseInt(slots[17], 10) || 4, 1, 6),
