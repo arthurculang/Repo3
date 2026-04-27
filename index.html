@@ -591,7 +591,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.22.3</span>
+        <span id="version">v1.22.4</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -643,7 +643,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.22.3";
+const VERSION = "v1.22.4";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -765,7 +765,7 @@ function paramFields(s) {
     // ↓ added in v1.21.0. Append-only; old strings without this slot
     // decode cleanly with texture defaulting to 'smooth' below.
     tx < 0 ? 0 : tx,
-    // ↓ added in v1.22.3. Append-only; old strings without this slot
+    // ↓ added in v1.22.2. Append-only; old strings without this slot
     // decode cleanly with quality defaulting to 'standard'.
     ql < 0 ? 0 : ql,
   ];
@@ -788,7 +788,7 @@ function parseParamSlots(slots) {
   const txIdx = slots.length > 19
     ? clamp(parseInt(slots[19], 10) || 0, 0, TEXTURE_KEYS.length - 1)
     : 0;
-  // Quality: new in v1.22.3. Defaults to 'standard' for older strings.
+  // Quality: new in v1.22.2. Defaults to 'standard' for older strings.
   const qlIdx = slots.length > 20
     ? clamp(parseInt(slots[20], 10) || 0, 0, QUALITY_KEYS.length - 1)
     : 0;
@@ -2265,7 +2265,7 @@ function classifyRegion(noise, x, y, z) {
   return REGION_SMOOTH;
 }
 
-// Per-region surface displacement (v1.22.3 rewrite — moved from SDF
+// Per-region surface displacement (v1.22.0 rewrite — moved from SDF
 // domain to mesh domain). Walks every vertex of the post-MC indexed
 // geometry, classifies its region from world position, and translates
 // it along its existing surface normal.
@@ -2287,7 +2287,7 @@ function classifyRegion(noise, x, y, z) {
 //           creating self-intersections at sharp concavities.
 //   ampIn:  inward (coral pits). Pitting thins the hollow wall;
 //           capped against (wall − minWall − safety) for print safety.
-// Outer-hull mask (v1.22.3). Returns Uint8Array of length V where 1 =
+// Outer-hull mask (v1.22.1). Returns Uint8Array of length V where 1 =
 // vertex sits on the outermost surface in its angular direction, 0 =
 // interior surface (tunnel wall, deep concavity). Used to gate outward
 // Romanesco bumps so they don't constrict carved tunnels — bumps inside
@@ -2403,7 +2403,7 @@ function applyVertexTexture(geom, s) {
 
     let delta = 0;
     if (region === REGION_ROMANESCO) {
-      // Outer-hull-only (v1.22.3). Skipping interior vertices keeps
+      // Outer-hull-only (v1.22.1). Skipping interior vertices keeps
       // tunnel diameters intact — bumps stay on the silhouette.
       if (!isOuter[v]) continue;
       // Three octaves of one-sided gradient noise — same recipe as
@@ -2709,7 +2709,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     console.warn(`buildBodyMesh: still ${comp.nComp} components after Phase 1 + Phase 2 (seed=${s.seed})`);
   }
   geom.computeVertexNormals();
-  // Surface texture is applied in mesh domain (v1.22.3+) — operates on
+  // Surface texture is applied in mesh domain (v1.22.0+) — operates on
   // vertex positions along their existing normals so it can't fill
   // negative-space tunnels the way the v1.21.x SDF-domain pass did.
   // No-ops for s.texture === 'smooth'.
@@ -3667,7 +3667,7 @@ materialEl.addEventListener('change', () => {
 
 // Surface-texture dropdown (Chunk v1.21.0). 'smooth' is the v1.20-and-earlier
 // behaviour; 'organic' enables the variegated romanesco/coral displacement
-// pass. As of v1.22.3 the actual displacement is applied in mesh domain
+// pass. As of v1.22.0 the actual displacement is applied in mesh domain
 // inside buildBodyMesh via applyVertexTexture() — the earlier SDF-domain
 // approach filled in carved negative-space tunnels.
 const textureEl = document.getElementById('texture');
@@ -3678,7 +3678,7 @@ if (textureEl) {
   });
 }
 
-// Quality dropdown (Chunk v1.22.3). Maps to QUALITY_VOXELS for the
+// Quality dropdown (Chunk v1.22.2). Maps to QUALITY_VOXELS for the
 // post-settle preview resolution. Higher values resolve finer texture
 // octaves (mid + high-freq Romanesco) at the cost of regen time. STL
 // export always uses EXPORT_VOXELS (160³) regardless.
@@ -3690,12 +3690,31 @@ if (qualityEl) {
   });
 }
 
+// Refresh the quality option labels with approximate voxels-per-mm at
+// the current state.size (v1.22.4). Helps the user reason about feature
+// resolution without doing the math. Computed against state.size
+// (unpadded) — the actual grid is built around the padded bbox so the
+// on-surface density is ~10-15% lower, but state.size is the most
+// intuitive denominator for the label.
+function updateQualityLabels() {
+  if (!qualityEl) return;
+  const size = Math.max(1, state.size || 80);
+  for (const opt of qualityEl.options) {
+    const tv = QUALITY_VOXELS[opt.value];
+    if (!tv) continue;
+    const tier = opt.value.charAt(0).toUpperCase() + opt.value.slice(1);
+    const vpm = (tv / size).toFixed(2);
+    opt.textContent = `${tier} (${tv}³, ~${vpm} vox/mm)`;
+  }
+}
+
 // Version log (Chunk v1.22.3). Back-populated from git history. Newest
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.22.4', date: '2026-04-27', n: 'Quality dropdown shows approximate vox/mm at the current size.' },
   { v: 'v1.22.3', date: '2026-04-27', n: 'Version-log link in panel footer with back-populated history.' },
-  { v: 'v1.22.3', date: '2026-04-27', n: 'Preview-quality dropdown — Standard/High/Ultra (96³/128³/160³). Resolves finer texture octaves.' },
+  { v: 'v1.22.2', date: '2026-04-27', n: 'Preview-quality dropdown — Standard/High/Ultra (96³/128³/160³). Resolves finer texture octaves.' },
   { v: 'v1.22.1', date: '2026-04-27', n: 'Organic texture: Romanesco bumps gated to outer hull only — no longer constrict carved tunnels.' },
   { v: 'v1.22.0', date: '2026-04-27', n: 'Organic texture moved from SDF domain to mesh domain — fixes tunnel-fill bug entirely.' },
   { v: 'v1.21.5', date: '2026-04-27', n: 'Reverted v1.21.4 — texture was filling carved tunnels.' },
@@ -3874,6 +3893,7 @@ function refreshUIFromState() {
   applyMaterial(state.material);
   if (textureEl) textureEl.value = state.texture;
   if (qualityEl) qualityEl.value = state.quality;
+  updateQualityLabels();
   updateAllFields();
 }
 
@@ -3887,6 +3907,9 @@ function scheduleRegen() {
   // Every slider input funnels through here, so this is the right place
   // to keep the encoded-config fields in sync with state.
   updateAllFields();
+  // Quality dropdown labels show approximate vox/mm; recompute since
+  // state.size may have changed (cheap — three textContent writes).
+  updateQualityLabels();
   // Light up the spinner immediately so the user sees feedback even though
   // the actual generate() will block the main thread for ~50–500ms. The
   // rAF wrap ensures the browser gets one paint cycle to render the busy
@@ -3902,7 +3925,7 @@ function scheduleRegen() {
   if (fullTimer) clearTimeout(fullTimer);
   fullTimer = setTimeout(() => {
     fullTimer = null;
-    // Quality knob controls the post-settle preview voxel count (v1.22.3).
+    // Quality knob controls the post-settle preview voxel count (v1.22.2).
     // Drag preview stays at 64 above so dragging is always responsive.
     requestAnimationFrame(() => generate(QUALITY_VOXELS[state.quality] || 96));
   }, 300);
