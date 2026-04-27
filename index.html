@@ -477,6 +477,14 @@
       </div>
 
       <div class="ctrl">
+        <label>Surface texture</label>
+        <select id="texture">
+          <option value="smooth" selected>Smooth</option>
+          <option value="organic">Organic (variegated)</option>
+        </select>
+      </div>
+
+      <div class="ctrl">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
       </div>
@@ -531,7 +539,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.20.4</span>
+      <span id="version">v1.21.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -571,7 +579,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.20.4";
+const VERSION = "v1.21.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -624,6 +632,10 @@ const DEFAULTS = {
                       // Higher default for a more skeletal look with
                       // larger tunnels exposing the interior veins.
   innerLinks: 2,      // 0..12 always-on meandering material links between branch tips
+  texture: 'smooth',  // 'smooth' | 'organic' — surface character. Smooth
+                      // matches every pre-v1.21 sculpture exactly; organic
+                      // adds region-variegated romanesco + coral textures
+                      // (chunks B + C) layered on top of the SDF surface.
 };
 const state = { ...DEFAULTS };
 
@@ -649,6 +661,7 @@ const SCHEMA_PARAMS = 2;
 const MATERIAL_KEYS = ['stainless','titanium','aluminum','inconel','cocr','bronze','copper','pla','petg','abs','nylon','resin'];
 const SYM_KEYS = ['none','bilateral','radial'];
 const NEGSTYLE_KEYS = ['none','helix','colony'];
+const TEXTURE_KEYS = ['smooth','organic'];
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
@@ -656,6 +669,7 @@ function paramFields(s) {
   const m  = MATERIAL_KEYS.indexOf(s.material);
   const sy = SYM_KEYS.indexOf(s.sym);
   const ns = NEGSTYLE_KEYS.indexOf(s.negStyle);
+  const tx = TEXTURE_KEYS.indexOf(s.texture);
   return [
     m < 0 ? 0 : m,
     s.size,
@@ -676,6 +690,9 @@ function paramFields(s) {
     ns < 0 ? 0 : ns,
     s.negStrands,
     s.negDensity.toFixed(2),
+    // ↓ added in v1.21.0. Append-only; old strings without this slot
+    // decode cleanly with texture defaulting to 'smooth' below.
+    tx < 0 ? 0 : tx,
   ];
 }
 
@@ -683,11 +700,19 @@ function encodeFull(s)         { return [SCHEMA_FULL,   s.seed, ...paramFields(s
 function encodeParamsNoSeed(s) { return [SCHEMA_PARAMS,         ...paramFields(s)].join('-'); }
 
 function parseParamSlots(slots) {
-  // slots is an array of 19 string fields in the same order as paramFields().
+  // slots is an array of >= 19 string fields in the same order as paramFields().
+  // Pre-v1.21 strings have exactly 19 slots; v1.21+ append a 20th texture slot.
+  // Future single-field additions should follow the same append-and-default
+  // pattern so old config strings keep parsing without a schema bump.
   if (slots.length < 19) throw new Error('config string has too few fields');
   const matIdx = clamp(parseInt(slots[0],  10) || 0, 0, MATERIAL_KEYS.length - 1);
   const symIdx = clamp(parseInt(slots[12], 10) || 0, 0, SYM_KEYS.length - 1);
   const nsIdx  = clamp(parseInt(slots[16], 10) || 0, 0, NEGSTYLE_KEYS.length - 1);
+  // Texture: new in v1.21.0. If the slot is missing the string was generated
+  // before this update; default to 'smooth' which matches pre-v1.21 behaviour.
+  const txIdx = slots.length > 19
+    ? clamp(parseInt(slots[19], 10) || 0, 0, TEXTURE_KEYS.length - 1)
+    : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -708,6 +733,7 @@ function parseParamSlots(slots) {
     negStyle:    NEGSTYLE_KEYS[nsIdx],
     negStrands:  clamp(parseInt(slots[17], 10) || 4, 1, 6),
     negDensity:  clamp(parseFloat(slots[18]) || 0.7, 0, 1),
+    texture:     TEXTURE_KEYS[txIdx],
   };
 }
 
@@ -2077,7 +2103,21 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
     }
   }
 
+  // Surface-texture displacement (Chunk v1.21.0): final per-voxel pass
+  // that perturbs the SDF near the iso-surface to add organic surface
+  // character (romanesco / coral / smooth bands) when state.texture is
+  // 'organic'. No-op for 'smooth'. Real implementation lands in chunks B + C.
+  applyTextureDisplacement(field, nx, ny, nz, ox, oy, oz, voxel, s);
+
   return { field, nx, ny, nz, ox, oy, oz, voxel };
+}
+
+// Placeholder for chunks B + C. v1.21.0 chunk A wires the dropdown,
+// state, and codec; B implements seeded 3D noise + region classifier;
+// C implements the romanesco + coral displacements that read those.
+function applyTextureDisplacement(field, nx, ny, nz, ox, oy, oz, voxel, s) {
+  if (s.texture !== 'organic') return;
+  // Intentionally empty until chunk B lands.
 }
 
 // Component centroids + sizes (Chunk B / v1.12.0). Averages vertex
@@ -3300,6 +3340,19 @@ materialEl.addEventListener('change', () => {
   updateAllFields();
 });
 
+// Surface-texture dropdown (Chunk v1.21.0). 'smooth' is the v1.20-and-earlier
+// behaviour; 'organic' enables the variegated romanesco/coral displacement
+// pass implemented across chunks B + C of this feature. The handler just
+// updates state and triggers a regen — the actual displacement is applied
+// inside buildField via applyTextureDisplacement().
+const textureEl = document.getElementById('texture');
+if (textureEl) {
+  textureEl.addEventListener('change', () => {
+    state.texture = textureEl.value;
+    scheduleRegen();
+  });
+}
+
 // Three encoded-config fields (Chunk v1.20.0). Each has the same
 // behaviour: live-update on state change (handled in updateAllFields);
 // paste/Enter applies the value via the appropriate decoder; the
@@ -3401,6 +3454,7 @@ function refreshUIFromState() {
   onNegChange();
   materialEl.value = state.material;
   applyMaterial(state.material);
+  if (textureEl) textureEl.value = state.texture;
   updateAllFields();
 }
 
