@@ -539,8 +539,8 @@
         <label>Texture detail</label>
         <select id="textureDetail">
           <option value="off">Off (1×)</option>
-          <option value="medium" selected>Medium (4×)</option>
-          <option value="high">High (16×)</option>
+          <option value="medium">Medium (4×)</option>
+          <option value="high" selected>High (16×)</option>
         </select>
       </div>
 
@@ -600,7 +600,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.23.0</span>
+        <span id="version">v1.23.1</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -652,7 +652,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.23.0";
+const VERSION = "v1.23.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -713,13 +713,14 @@ const DEFAULTS = {
   quality: 'standard', // 'standard' | 'high' | 'ultra' — preview voxel
                        // resolution (96³/128³/160³). Higher values resolve
                        // finer texture octaves at the cost of regen time.
-  textureDetail: 'medium', // 'off' | 'medium' | 'high' — midpoint
-                           // subdivision passes applied AFTER MC but
-                           // BEFORE the texture displacement pass. 0/1/2
-                           // levels = 1×/4×/16× vertex multiplier. Lets
-                           // texture render at finer-than-MC resolution
-                           // without changing morphology. STL export
-                           // includes the subdivided mesh (WYSIWYG).
+  textureDetail: 'high', // 'off' | 'medium' | 'high' — midpoint
+                         // subdivision passes applied AFTER MC but
+                         // BEFORE the texture displacement pass. 0/1/2
+                         // levels = 1×/4×/16× vertex multiplier. Lets
+                         // texture render at finer-than-MC resolution
+                         // without changing morphology. STL export
+                         // includes the subdivided mesh (WYSIWYG).
+                         // Default bumped to 'high' in v1.23.1.
 };
 const state = { ...DEFAULTS };
 
@@ -786,9 +787,10 @@ function paramFields(s) {
     // ↓ added in v1.22.2. Append-only; old strings without this slot
     // decode cleanly with quality defaulting to 'standard'.
     ql < 0 ? 0 : ql,
-    // ↓ added in v1.23.0. Append-only; defaults to 'medium' for older
-    // strings so previously-saved configs render with subdivision on.
-    td < 0 ? 1 : td,
+    // ↓ added in v1.23.0. Append-only; defaults to 'high' (level 2)
+    // for older strings so previously-saved configs render with
+    // subdivision on. Default raised from 'medium' to 'high' in v1.23.1.
+    td < 0 ? 2 : td,
   ];
 }
 
@@ -813,12 +815,13 @@ function parseParamSlots(slots) {
   const qlIdx = slots.length > 20
     ? clamp(parseInt(slots[20], 10) || 0, 0, QUALITY_KEYS.length - 1)
     : 0;
-  // Texture detail: new in v1.23.0. Defaults to 'medium' for older
-  // strings — subdivision improves texture without changing morphology,
-  // so older Organic-textured configs simply render with crisper bumps.
+  // Texture detail: new in v1.23.0. Defaults to 'high' (level 2) for
+  // older strings — subdivision improves texture without changing
+  // morphology, so older Organic-textured configs simply render with
+  // crisper bumps. Default raised from 'medium' to 'high' in v1.23.1.
   const tdIdx = slots.length > 21
-    ? clamp(parseInt(slots[21], 10) || 1, 0, TEXDETAIL_KEYS.length - 1)
-    : 1;
+    ? clamp(parseInt(slots[21], 10) || 2, 0, TEXDETAIL_KEYS.length - 1)
+    : 2;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -3839,6 +3842,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.23.1', date: '2026-04-27', n: 'Default texture detail raised to High (16×).' },
   { v: 'v1.23.0', date: '2026-04-27', n: 'Texture-detail dropdown — midpoint subdivision after MC. Decouples texture density from morphology.' },
   { v: 'v1.22.4', date: '2026-04-27', n: 'Quality dropdown shows approximate vox/mm at the current size.' },
   { v: 'v1.22.3', date: '2026-04-27', n: 'Version-log link in panel footer with back-populated history.' },
