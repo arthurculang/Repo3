@@ -485,6 +485,15 @@
       </div>
 
       <div class="ctrl">
+        <label>Preview quality</label>
+        <select id="quality">
+          <option value="standard" selected>Standard (96³)</option>
+          <option value="high">High (128³)</option>
+          <option value="ultra">Ultra (160³)</option>
+        </select>
+      </div>
+
+      <div class="ctrl">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
       </div>
@@ -539,7 +548,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.22.1</span>
+      <span id="version">v1.22.2</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -579,7 +588,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.22.1";
+const VERSION = "v1.22.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -637,6 +646,10 @@ const DEFAULTS = {
                       // layered on top of the SDF surface (default since
                       // v1.21.3). Smooth matches every pre-v1.21 sculpture
                       // exactly.
+  quality: 'standard', // 'standard' | 'high' | 'ultra' — preview voxel
+                       // resolution (96³/128³/160³). Higher values resolve
+                       // finer texture octaves at the cost of regen time.
+                       // STL export always renders at 160³ regardless.
 };
 const state = { ...DEFAULTS };
 
@@ -663,6 +676,8 @@ const MATERIAL_KEYS = ['stainless','titanium','aluminum','inconel','cocr','bronz
 const SYM_KEYS = ['none','bilateral','radial'];
 const NEGSTYLE_KEYS = ['none','helix','colony'];
 const TEXTURE_KEYS = ['smooth','organic'];
+const QUALITY_KEYS = ['standard','high','ultra'];
+const QUALITY_VOXELS = { standard: 96, high: 128, ultra: 160 };
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
@@ -671,6 +686,7 @@ function paramFields(s) {
   const sy = SYM_KEYS.indexOf(s.sym);
   const ns = NEGSTYLE_KEYS.indexOf(s.negStyle);
   const tx = TEXTURE_KEYS.indexOf(s.texture);
+  const ql = QUALITY_KEYS.indexOf(s.quality);
   return [
     m < 0 ? 0 : m,
     s.size,
@@ -694,6 +710,9 @@ function paramFields(s) {
     // ↓ added in v1.21.0. Append-only; old strings without this slot
     // decode cleanly with texture defaulting to 'smooth' below.
     tx < 0 ? 0 : tx,
+    // ↓ added in v1.22.2. Append-only; old strings without this slot
+    // decode cleanly with quality defaulting to 'standard'.
+    ql < 0 ? 0 : ql,
   ];
 }
 
@@ -713,6 +732,10 @@ function parseParamSlots(slots) {
   // before this update; default to 'smooth' which matches pre-v1.21 behaviour.
   const txIdx = slots.length > 19
     ? clamp(parseInt(slots[19], 10) || 0, 0, TEXTURE_KEYS.length - 1)
+    : 0;
+  // Quality: new in v1.22.2. Defaults to 'standard' for older strings.
+  const qlIdx = slots.length > 20
+    ? clamp(parseInt(slots[20], 10) || 0, 0, QUALITY_KEYS.length - 1)
     : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
@@ -735,6 +758,7 @@ function parseParamSlots(slots) {
     negStrands:  clamp(parseInt(slots[17], 10) || 4, 1, 6),
     negDensity:  clamp(parseFloat(slots[18]) || 0.7, 0, 1),
     texture:     TEXTURE_KEYS[txIdx],
+    quality:     QUALITY_KEYS[qlIdx],
   };
 }
 
@@ -2186,7 +2210,7 @@ function classifyRegion(noise, x, y, z) {
   return REGION_SMOOTH;
 }
 
-// Per-region surface displacement (v1.22.1 rewrite — moved from SDF
+// Per-region surface displacement (v1.22.2 rewrite — moved from SDF
 // domain to mesh domain). Walks every vertex of the post-MC indexed
 // geometry, classifies its region from world position, and translates
 // it along its existing surface normal.
@@ -2208,7 +2232,7 @@ function classifyRegion(noise, x, y, z) {
 //           creating self-intersections at sharp concavities.
 //   ampIn:  inward (coral pits). Pitting thins the hollow wall;
 //           capped against (wall − minWall − safety) for print safety.
-// Outer-hull mask (v1.22.1). Returns Uint8Array of length V where 1 =
+// Outer-hull mask (v1.22.2). Returns Uint8Array of length V where 1 =
 // vertex sits on the outermost surface in its angular direction, 0 =
 // interior surface (tunnel wall, deep concavity). Used to gate outward
 // Romanesco bumps so they don't constrict carved tunnels — bumps inside
@@ -2324,7 +2348,7 @@ function applyVertexTexture(geom, s) {
 
     let delta = 0;
     if (region === REGION_ROMANESCO) {
-      // Outer-hull-only (v1.22.1). Skipping interior vertices keeps
+      // Outer-hull-only (v1.22.2). Skipping interior vertices keeps
       // tunnel diameters intact — bumps stay on the silhouette.
       if (!isOuter[v]) continue;
       // Three octaves of one-sided gradient noise — same recipe as
@@ -2630,7 +2654,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     console.warn(`buildBodyMesh: still ${comp.nComp} components after Phase 1 + Phase 2 (seed=${s.seed})`);
   }
   geom.computeVertexNormals();
-  // Surface texture is applied in mesh domain (v1.22.1+) — operates on
+  // Surface texture is applied in mesh domain (v1.22.2+) — operates on
   // vertex positions along their existing normals so it can't fill
   // negative-space tunnels the way the v1.21.x SDF-domain pass did.
   // No-ops for s.texture === 'smooth'.
@@ -3588,13 +3612,25 @@ materialEl.addEventListener('change', () => {
 
 // Surface-texture dropdown (Chunk v1.21.0). 'smooth' is the v1.20-and-earlier
 // behaviour; 'organic' enables the variegated romanesco/coral displacement
-// pass. As of v1.22.1 the actual displacement is applied in mesh domain
+// pass. As of v1.22.2 the actual displacement is applied in mesh domain
 // inside buildBodyMesh via applyVertexTexture() — the earlier SDF-domain
 // approach filled in carved negative-space tunnels.
 const textureEl = document.getElementById('texture');
 if (textureEl) {
   textureEl.addEventListener('change', () => {
     state.texture = textureEl.value;
+    scheduleRegen();
+  });
+}
+
+// Quality dropdown (Chunk v1.22.2). Maps to QUALITY_VOXELS for the
+// post-settle preview resolution. Higher values resolve finer texture
+// octaves (mid + high-freq Romanesco) at the cost of regen time. STL
+// export always uses EXPORT_VOXELS (160³) regardless.
+const qualityEl = document.getElementById('quality');
+if (qualityEl) {
+  qualityEl.addEventListener('change', () => {
+    state.quality = qualityEl.value;
     scheduleRegen();
   });
 }
@@ -3701,6 +3737,7 @@ function refreshUIFromState() {
   materialEl.value = state.material;
   applyMaterial(state.material);
   if (textureEl) textureEl.value = state.texture;
+  if (qualityEl) qualityEl.value = state.quality;
   updateAllFields();
 }
 
@@ -3729,7 +3766,9 @@ function scheduleRegen() {
   if (fullTimer) clearTimeout(fullTimer);
   fullTimer = setTimeout(() => {
     fullTimer = null;
-    requestAnimationFrame(() => generate(96));
+    // Quality knob controls the post-settle preview voxel count (v1.22.2).
+    // Drag preview stays at 64 above so dragging is always responsive.
+    requestAnimationFrame(() => generate(QUALITY_VOXELS[state.quality] || 96));
   }, 300);
 }
 
@@ -3806,14 +3845,14 @@ canvas.addEventListener('webglcontextlost', e => {
 canvas.addEventListener('webglcontextrestored', () => {
   console.log('webgl context restored — rebuilding geometry');
   setStatus('gl restored');
-  generate();
+  generate(QUALITY_VOXELS[state.quality] || 96);
 }, false);
 
 // Initial render. The overlay is lit synchronously so users see feedback
 // the moment the page paints, even before generate() yields its first frame.
 refreshUIFromState();
 showProgress(true, 'preparing first creature…');
-generate();
+generate(QUALITY_VOXELS[state.quality] || 96);
 </script>
 </body>
 </html>
