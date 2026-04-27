@@ -539,7 +539,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.21.5</span>
+      <span id="version">v1.22.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -579,7 +579,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.21.5";
+const VERSION = "v1.22.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2104,12 +2104,6 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
     }
   }
 
-  // Surface-texture displacement (Chunk v1.21.0): final per-voxel pass
-  // that perturbs the SDF near the iso-surface to add organic surface
-  // character (romanesco / coral / smooth bands) when state.texture is
-  // 'organic'. No-op for 'smooth'. Real implementation lands in chunks B + C.
-  applyTextureDisplacement(field, nx, ny, nz, ox, oy, oz, voxel, s);
-
   return { field, nx, ny, nz, ox, oy, oz, voxel };
 }
 
@@ -2192,89 +2186,109 @@ function classifyRegion(noise, x, y, z) {
   return REGION_SMOOTH;
 }
 
-// Per-region surface displacement (Chunk C / v1.21.2; amplitudes split
-// in v1.21.3). Walks every voxel near the iso-surface, picks the
-// surface type via classifyRegion, and adds a region-specific delta
-// to the SDF value.
+// Per-region surface displacement (v1.22.0 rewrite — moved from SDF
+// domain to mesh domain). Walks every vertex of the post-MC indexed
+// geometry, classifies its region from world position, and translates
+// it along its existing surface normal.
 //
-// CRITICAL split (v1.21.3): we use TWO different amplitude caps —
-//   ampOut: the maximum OUTWARD displacement, used by Romanesco.
-//           Pushing the surface outward thickens the body locally; it
-//           cannot thin a hollow wall, so the cap is purely about
-//           visual scale, not print safety. Floor at 2 × voxel so the
-//           bumps are reliably resolved by marching cubes at any
-//           preview resolution.
-//   ampIn:  the maximum INWARD displacement, used by coral pits.
-//           Pitting inward thins the wall on hollow bodies; capped
-//           against (wall − material.minWall − safety) so the printed
-//           shell never drops below its alloy minimum.
+// WHY MESH-DOMAIN, NOT SDF-DOMAIN: the v1.21.x implementation modified
+// the SDF field before marching cubes. That worked for outer-hull
+// surfaces but couldn't distinguish them from the inner walls of
+// negative-space tunnels. Pushing the iso outward in the SDF expanded
+// tunnel walls inward, filling carved pathways. In mesh domain the
+// vertex normal already encodes the local outward direction (it points
+// away from body material), so the same delta moves an outer-hull
+// vertex into open exterior air and a tunnel-wall vertex into the
+// tunnel — two pixels along separate normals, never colliding with
+// each other across the wall.
 //
-// At default settings (size 80mm, wall 1mm, voxel ≈ 0.83mm, stainless):
-//   ampOut = max(voxel × 2.0, 1.7)    = 1.7mm  → Romanesco bumps
-//                                        clearly visible (~2 voxels)
-//   ampIn  = min(ampOut, 1 − 0.4 − 0.1) = 0.5mm → coral pits stay
-//                                        within the wall safety
-//
-// Earlier versions (v1.21.2) used a single amp capped at wall × 0.5,
-// which at default settings clamped to 0.5mm = sub-voxel = invisible.
-function applyTextureDisplacement(field, nx, ny, nz, ox, oy, oz, voxel, s) {
+// AMPLITUDE SPLIT (carried over from v1.21.3):
+//   ampOut: outward (Romanesco bumps). Pushing into open air thickens
+//           the body locally; capped only by mean edge length to avoid
+//           creating self-intersections at sharp concavities.
+//   ampIn:  inward (coral pits). Pitting thins the hollow wall;
+//           capped against (wall − minWall − safety) for print safety.
+function applyVertexTexture(geom, s) {
   if (s.texture !== 'organic') return;
-  const noise = getTextureNoise(s.seed >>> 0);
-  const minWall = (MATERIALS[s.material] || MATERIALS.stainless).minWall;
+  const posAttr = geom.getAttribute('position');
+  const nrmAttr = geom.getAttribute('normal');
+  if (!posAttr || !nrmAttr) return;
+  const positions = posAttr.array;
+  const normals = nrmAttr.array;
+  const V = posAttr.count;
+  const idx = geom.getIndex();
+  if (!idx) return;
 
-  const ampOut = Math.max(voxel * 2.0, 1.7);
+  // Mean edge length over the indexed triangle list — used as the
+  // outward-displacement clamp so bumps can't grow taller than a
+  // typical edge (which would create folded geometry).
+  const ix = idx.array;
+  let edgeSum = 0, edgeN = 0;
+  const sampleStep = Math.max(3, Math.floor(ix.length / 9000));
+  for (let i = 0; i < ix.length; i += sampleStep * 3) {
+    const a = ix[i], b = ix[i+1], c = ix[i+2];
+    const ax = positions[a*3], ay = positions[a*3+1], az = positions[a*3+2];
+    const bx = positions[b*3], by = positions[b*3+1], bz = positions[b*3+2];
+    const cx = positions[c*3], cy = positions[c*3+1], cz = positions[c*3+2];
+    edgeSum += Math.hypot(bx-ax, by-ay, bz-az);
+    edgeSum += Math.hypot(cx-bx, cy-by, cz-bz);
+    edgeSum += Math.hypot(ax-cx, ay-cy, az-cz);
+    edgeN += 3;
+  }
+  const meanEdge = edgeN > 0 ? edgeSum / edgeN : 1.0;
+
+  const minWall = (MATERIALS[s.material] || MATERIALS.stainless).minWall;
+  const noise = getTextureNoise(s.seed >>> 0);
+
+  // Outward cap: ~1.5× mean edge keeps bumps proud of the surface
+  // while staying short enough that adjacent vertices won't fold past
+  // each other. Floor at 1.5mm so the texture reads even at coarse
+  // preview resolution.
+  const ampOut = Math.max(meanEdge * 1.5, 1.5);
   const ampIn = s.wall > 0
     ? Math.max(0.4, Math.min(ampOut, s.wall - minWall - 0.1))
     : ampOut;
 
-  const stride = nx * ny;
-  for (let zi = 0; zi < nz; zi++) {
-    const wz = oz + zi * voxel;
-    for (let yi = 0; yi < ny; yi++) {
-      const wy = oy + yi * voxel;
-      const rowBase = zi * stride + yi * nx;
-      for (let xi = 0; xi < nx; xi++) {
-        const wx = ox + xi * voxel;
-        const idx = rowBase + xi;
-        const f = field[idx];
-        // Only displace within a thin band around the iso. Voxels deep
-        // inside or far outside don't affect MC's surface extraction.
-        if (f > 6 || f < -6) continue;
+  for (let v = 0; v < V; v++) {
+    const i = v * 3;
+    const wx = positions[i], wy = positions[i+1], wz = positions[i+2];
+    const region = classifyRegion(noise, wx, wy, wz);
+    if (region === REGION_SMOOTH) continue;
 
-        const region = classifyRegion(noise, wx, wy, wz);
-        if (region === REGION_SMOOTH) continue;
-
-        let delta = 0;
-        if (region === REGION_ROMANESCO) {
-          // Three octaves of one-sided gradient noise create
-          // self-similar conical bumps — the broccoli signature: bumps
-          // with smaller bumps with even smaller bumps. Linear (not
-          // squared) so peaks reach far enough above the surface to
-          // read at 96³ preview voxel resolution. Multiplied weights
-          // sum to ~1.75 so the typical bump is ~70% of ampOut.
-          const n1 = Math.max(0, noise(wx * 0.18, wy * 0.18, wz * 0.18));
-          const n2 = Math.max(0, noise(wx * 0.55, wy * 0.55, wz * 0.55));
-          const n3 = Math.max(0, noise(wx * 1.40, wy * 1.40, wz * 1.40));
-          const stacked = 1.0 * n1 + 0.5 * n2 + 0.25 * n3;
-          delta = -ampOut * stacked;            // OUTWARD — uses ampOut
-        } else if (region === REGION_CORAL) {
-          // Coral character: a low base roughness across the whole
-          // region, plus pinprick voids where a high-frequency noise
-          // exceeds threshold. Inward displacement → uses ampIn.
-          const nv = noise(wx * 0.40, wy * 0.40, wz * 0.40);
-          if (nv > 0.45) {
-            const overshoot = nv - 0.45;
-            delta = ampIn * 4.0 * overshoot * overshoot;
-          } else {
-            const r = noise(wx * 1.10, wy * 1.10, wz * 1.10);
-            delta = ampIn * 0.25 * Math.abs(r);
-          }
-        }
-
-        field[idx] = f + delta;
+    let delta = 0;
+    if (region === REGION_ROMANESCO) {
+      // Three octaves of one-sided gradient noise — same recipe as
+      // v1.21.3, but the SIGN convention is flipped. In SDF domain a
+      // negative delta pushed the iso outward; here positive delta
+      // moves the vertex along its outward-pointing normal. Same
+      // visual result, opposite sign.
+      const n1 = Math.max(0, noise(wx * 0.18, wy * 0.18, wz * 0.18));
+      const n2 = Math.max(0, noise(wx * 0.55, wy * 0.55, wz * 0.55));
+      const n3 = Math.max(0, noise(wx * 1.40, wy * 1.40, wz * 1.40));
+      const stacked = 1.0 * n1 + 0.5 * n2 + 0.25 * n3;
+      delta = ampOut * stacked;             // OUTWARD along normal
+    } else if (region === REGION_CORAL) {
+      const nv = noise(wx * 0.40, wy * 0.40, wz * 0.40);
+      if (nv > 0.45) {
+        const overshoot = nv - 0.45;
+        delta = -ampIn * 4.0 * overshoot * overshoot;
+      } else {
+        const r = noise(wx * 1.10, wy * 1.10, wz * 1.10);
+        delta = -ampIn * 0.25 * Math.abs(r);
       }
     }
+
+    if (delta !== 0) {
+      positions[i]   += normals[i]   * delta;
+      positions[i+1] += normals[i+1] * delta;
+      positions[i+2] += normals[i+2] * delta;
+    }
   }
+  posAttr.needsUpdate = true;
+  // Recompute normals so lighting tracks the new surface; without this
+  // the shaded preview keeps the old smooth normals and the texture
+  // reads as flat-shaded faceting rather than organic relief.
+  geom.computeVertexNormals();
 }
 
 // Component centroids + sizes (Chunk B / v1.12.0). Averages vertex
@@ -2546,6 +2560,11 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     console.warn(`buildBodyMesh: still ${comp.nComp} components after Phase 1 + Phase 2 (seed=${s.seed})`);
   }
   geom.computeVertexNormals();
+  // Surface texture is applied in mesh domain (v1.22.0+) — operates on
+  // vertex positions along their existing normals so it can't fill
+  // negative-space tunnels the way the v1.21.x SDF-domain pass did.
+  // No-ops for s.texture === 'smooth'.
+  applyVertexTexture(geom, s);
   const mesh = new THREE.Mesh(geom, material);
   const triCount = geom.getIndex().count / 3;
   return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs, fieldInfo: f };
@@ -3499,9 +3518,9 @@ materialEl.addEventListener('change', () => {
 
 // Surface-texture dropdown (Chunk v1.21.0). 'smooth' is the v1.20-and-earlier
 // behaviour; 'organic' enables the variegated romanesco/coral displacement
-// pass implemented across chunks B + C of this feature. The handler just
-// updates state and triggers a regen — the actual displacement is applied
-// inside buildField via applyTextureDisplacement().
+// pass. As of v1.22.0 the actual displacement is applied in mesh domain
+// inside buildBodyMesh via applyVertexTexture() — the earlier SDF-domain
+// approach filled in carved negative-space tunnels.
 const textureEl = document.getElementById('texture');
 if (textureEl) {
   textureEl.addEventListener('change', () => {
