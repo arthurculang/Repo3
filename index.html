@@ -539,7 +539,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.21.3</span>
+      <span id="version">v1.21.4</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -579,7 +579,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.21.3";
+const VERSION = "v1.21.4";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2183,12 +2183,20 @@ const REGION_SMOOTH    = 0;
 const REGION_ROMANESCO = 1;
 const REGION_CORAL     = 2;
 function classifyRegion(noise, x, y, z) {
-  const lowF  = 1 / 30;
-  const highF = 1 / 12;
+  // Larger patches (50mm base, 18mm modulation) so a single region is
+  // big enough to cover whole branch segments — small patches in
+  // sparse branching geometry mostly land in air and produce no
+  // visible texture.
+  const lowF  = 1 / 50;
+  const highF = 1 / 18;
   const v = noise(x * lowF,  y * lowF,  z * lowF) +
             0.3 * noise(x * highF, y * highF, z * highF);
-  if (v >  0.30) return REGION_ROMANESCO;
-  if (v < -0.30) return REGION_CORAL;
+  // Tighter smooth band (±0.10 vs ±0.30 in v1.21.1–.3) puts most of
+  // the surface inside a textured region. Resulting coverage is
+  // roughly 25% smooth / 38% romanesco / 37% coral — texture visible
+  // wherever the body lands, with smooth bands as breathing space.
+  if (v >  0.10) return REGION_ROMANESCO;
+  if (v < -0.10) return REGION_CORAL;
   return REGION_SMOOTH;
 }
 
@@ -2222,7 +2230,9 @@ function applyTextureDisplacement(field, nx, ny, nz, ox, oy, oz, voxel, s) {
   const noise = getTextureNoise(s.seed >>> 0);
   const minWall = (MATERIALS[s.material] || MATERIALS.stainless).minWall;
 
-  const ampOut = Math.max(voxel * 2.0, 1.7);
+  // ampOut bumped in v1.21.4: branch-wobble already produces ~0.9mm of
+  // natural surface variation, so texture below ~2.5mm gets lost in it.
+  const ampOut = Math.max(voxel * 3.0, 2.5);
   const ampIn = s.wall > 0
     ? Math.max(0.4, Math.min(ampOut, s.wall - minWall - 0.1))
     : ampOut;
@@ -2250,12 +2260,14 @@ function applyTextureDisplacement(field, nx, ny, nz, ox, oy, oz, voxel, s) {
           // self-similar conical bumps — the broccoli signature: bumps
           // with smaller bumps with even smaller bumps. Linear (not
           // squared) so peaks reach far enough above the surface to
-          // read at 96³ preview voxel resolution. Multiplied weights
-          // sum to ~1.75 so the typical bump is ~70% of ampOut.
-          const n1 = Math.max(0, noise(wx * 0.18, wy * 0.18, wz * 0.18));
-          const n2 = Math.max(0, noise(wx * 0.55, wy * 0.55, wz * 0.55));
-          const n3 = Math.max(0, noise(wx * 1.40, wy * 1.40, wz * 1.40));
-          const stacked = 1.0 * n1 + 0.5 * n2 + 0.25 * n3;
+          // read at 96³ preview voxel resolution. Frequencies tuned to
+          // wavelengths well above the Nyquist limit (2 × voxel) so the
+          // bumps are reliably resolved by MC; n3 dropped from v1.21.3's
+          // 1.40 (sub-voxel, invisible) to 0.85 (~1.4mm wavelength).
+          const n1 = Math.max(0, noise(wx * 0.30, wy * 0.30, wz * 0.30));
+          const n2 = Math.max(0, noise(wx * 0.60, wy * 0.60, wz * 0.60));
+          const n3 = Math.max(0, noise(wx * 0.85, wy * 0.85, wz * 0.85));
+          const stacked = 1.0 * n1 + 0.55 * n2 + 0.3 * n3;
           delta = -ampOut * stacked;            // OUTWARD — uses ampOut
         } else if (region === REGION_CORAL) {
           // Coral character: a low base roughness across the whole
