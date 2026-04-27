@@ -64,7 +64,7 @@
   #app {
     position: fixed; inset: 0;
     display: grid;
-    grid-template-columns: var(--panel-w) 1fr;
+    grid-template-columns: var(--panel-w) 6px 1fr;
     grid-template-rows: 1fr;
   }
 
@@ -198,22 +198,37 @@
   #statusBox.busy .busy-dot { opacity: 1; }
   @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 
-  /* Parameter-configuration field: hyphen-separated encoded state string,
-     monospace, copyable. The label has an inline copy button. */
-  #params {
+  /* Encoded-state fields (params / seed / fullConfig): hyphen-separated
+     monospace tokens; selecting/focus auto-selects-all for easy copy. */
+  #params, #fullConfig {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 11px;
     letter-spacing: -0.01em;
     padding: 6px 8px;
   }
-  .copy-btn {
+  /* Inline label-row buttons: small text-only triggers next to a field
+     label that perform copy or clear. The label is flex so they sit at
+     the right edge of the row. */
+  .ctrl > label { gap: 6px; }
+  .field-btn {
     background: transparent; border: none; color: var(--ink-dim);
-    cursor: pointer; padding: 0 4px; margin-left: 6px;
-    font-size: 14px; line-height: 1;
+    cursor: pointer; padding: 0 4px; line-height: 1;
+    font-size: 13px; margin-left: auto;
     -webkit-tap-highlight-color: transparent;
   }
-  .copy-btn:hover, .copy-btn:focus { color: var(--ink); outline: none; }
-  .copy-btn.copied { color: var(--accent); }
+  .field-btn + .field-btn { margin-left: 0; }
+  .field-btn:hover, .field-btn:focus { color: var(--ink); outline: none; }
+  .field-btn.copied { color: var(--accent); }
+
+  /* Draggable divider between panel and stage (Chunk v1.20.0). */
+  #divider {
+    background: var(--border);
+    cursor: col-resize;
+    transition: background 120ms ease;
+    touch-action: none;
+    user-select: none;
+  }
+  #divider:hover, #divider.dragging { background: var(--accent); }
 
   /* Printability report (Chunk C / v1.13.0). Compact card between the
      panel header and the slider list. Single-line summary by default;
@@ -323,6 +338,9 @@
        by max-height). Without explicit grid-row assignments the panel
        lands in row 1 and devours the viewport. */
     #stage { grid-row: 1; }
+    /* Divider is desktop-only — the row-based mobile layout doesn't
+       benefit from it and it'd just steal a few pixels of canvas. */
+    #divider { display: none; }
     #panel {
       grid-row: 2;
       border-right: none;
@@ -368,11 +386,37 @@
     </div>
     <div id="panelBody">
       <div class="ctrl">
-        <label>Seed <span class="val" id="seedVal">—</span></label>
+        <label>
+          Parameter configuration
+          <button class="field-btn" id="paramsCopyBtn" type="button" title="Copy" aria-label="Copy parameter configuration">⧉</button>
+          <button class="field-btn" id="paramsClearBtn" type="button" title="Clear" aria-label="Clear field">✕</button>
+        </label>
+        <input type="text" id="params" spellcheck="false" autocomplete="off" autocapitalize="off"
+               placeholder="paste a parameter configuration to apply"
+               title="Encoded slider values (no seed). Two-way: read live or paste to apply.">
+      </div>
+
+      <div class="ctrl">
+        <label>
+          Seed <span class="val" id="seedVal">—</span>
+          <button class="field-btn" id="seedCopyBtn" type="button" title="Copy" aria-label="Copy seed">⧉</button>
+          <button class="field-btn" id="seedClearBtn" type="button" title="Clear" aria-label="Clear seed">✕</button>
+        </label>
         <div class="row">
           <input type="number" id="seed" min="0" max="4294967295" step="1" value="1">
           <button class="dice" id="seedDice" title="Randomize seed" aria-label="Randomize seed">&#9861;</button>
         </div>
+      </div>
+
+      <div class="ctrl">
+        <label>
+          Full configuration
+          <button class="field-btn" id="fullCopyBtn" type="button" title="Copy" aria-label="Copy full configuration">⧉</button>
+          <button class="field-btn" id="fullClearBtn" type="button" title="Clear" aria-label="Clear field">✕</button>
+        </label>
+        <input type="text" id="fullConfig" spellcheck="false" autocomplete="off" autocapitalize="off"
+               placeholder="paste a full configuration (seed + parameters) to apply"
+               title="Encoded seed + slider values. Pasting restores the entire creature.">
       </div>
 
       <div class="ctrl">
@@ -481,23 +525,15 @@
         <label>Min negative space (mm) <span class="val" id="negVal">1.5</span></label>
         <input type="range" id="neg" min="0.5" max="5" step="0.1" value="1.5">
       </div>
-
-      <div class="ctrl">
-        <label>
-          Parameter configuration
-          <button class="copy-btn" id="paramsCopyBtn" type="button" title="Copy to clipboard" aria-label="Copy">⧉</button>
-        </label>
-        <input type="text" id="params" spellcheck="false" autocomplete="off" autocapitalize="off"
-               placeholder="paste a saved configuration to apply"
-               title="Two-way: shows the current configuration; paste a saved string here to apply it">
-      </div>
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.19.0</span>
+      <span id="version">v1.20.0</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
+
+  <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize controls panel"></div>
 
   <main id="stage">
     <div id="topbar">
@@ -532,7 +568,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.19.0";
+const VERSION = "v1.20.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -588,27 +624,36 @@ const DEFAULTS = {
 };
 const state = { ...DEFAULTS };
 
-// ---------- Parameter-configuration codec (Chunk v1.19.0) ----------
-// Encodes the entire user-tunable state into a single hyphen-separated
-// string and decodes it back. Two-way: read the field to copy current
-// settings; paste a saved string to restore them. Schema-versioned so
+// ---------- Configuration codecs (Chunk v1.19.0, split in v1.20.0) ----------
+// Two encodings live side by side so the user can copy/paste the seed,
+// the parameters, or both as one combined token.
+//
+//   SCHEMA_FULL = 1: full state, includes seed at slot 1.
+//     1-<seed>-<material>-<size>-<wall>-<complexity>-<branchCount>-
+//     <branchAngle>-<taper>-<trunk>-<smooth>-<poly>-<rings>-<ringGap>-
+//     <sym>-<radialN>-<neg>-<innerLinks>-<negStyle>-<negStrands>-<negDensity>
+//
+//   SCHEMA_PARAMS = 2: parameters only — same fields except seed.
+//     2-<material>-<size>-<wall>-<complexity>-<branchCount>-<branchAngle>-
+//     <taper>-<trunk>-<smooth>-<poly>-<rings>-<ringGap>-<sym>-<radialN>-
+//     <neg>-<innerLinks>-<negStyle>-<negStrands>-<negDensity>
+//
+// Both are clamp-validated on decode so a stale or hand-edited string
+// can't push the generator into NaN territory. Schema-versioned so
 // future state additions don't silently misinterpret old strings.
-//   Format: <schema>-<seed>-<material>-<size>-<wall>-<complexity>-
-//           <branchCount>-<branchAngle>-<taper>-<trunk>-<smooth>-
-//           <poly>-<rings>-<ringGap>-<sym>-<radialN>-<neg>-
-//           <innerLinks>-<negStyle>-<negStrands>-<negDensity>
-const PARAM_SCHEMA = 1;
+const SCHEMA_FULL = 1;
+const SCHEMA_PARAMS = 2;
 const MATERIAL_KEYS = ['stainless','titanium','aluminum','inconel','cocr','bronze','copper','pla','petg','abs','nylon','resin'];
 const SYM_KEYS = ['none','bilateral','radial'];
 const NEGSTYLE_KEYS = ['none','helix','colony'];
 
-function encodeParams(s) {
+function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+function paramFields(s) {
   const m  = MATERIAL_KEYS.indexOf(s.material);
   const sy = SYM_KEYS.indexOf(s.sym);
   const ns = NEGSTYLE_KEYS.indexOf(s.negStyle);
   return [
-    PARAM_SCHEMA,
-    s.seed,
     m < 0 ? 0 : m,
     s.size,
     s.wall.toFixed(2),
@@ -628,51 +673,69 @@ function encodeParams(s) {
     ns < 0 ? 0 : ns,
     s.negStrands,
     s.negDensity.toFixed(2),
-  ].join('-');
+  ];
 }
 
-function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+function encodeFull(s)         { return [SCHEMA_FULL,   s.seed, ...paramFields(s)].join('-'); }
+function encodeParamsNoSeed(s) { return [SCHEMA_PARAMS,         ...paramFields(s)].join('-'); }
 
-function decodeParams(str) {
-  const parts = String(str || '').trim().split('-');
-  if (parts.length < 21) throw new Error('config string has too few fields');
-  const schema = parseInt(parts[0], 10);
-  if (schema !== PARAM_SCHEMA) throw new Error('unsupported config schema: ' + schema);
-  const matIdx = clamp(parseInt(parts[2], 10) || 0, 0, MATERIAL_KEYS.length - 1);
-  const symIdx = clamp(parseInt(parts[14], 10) || 0, 0, SYM_KEYS.length - 1);
-  const nsIdx  = clamp(parseInt(parts[18], 10) || 0, 0, NEGSTYLE_KEYS.length - 1);
-  // Each numeric field is also clamped to its slider's permitted range so
-  // a malicious or stale string can't push the generator into NaN territory.
+function parseParamSlots(slots) {
+  // slots is an array of 19 string fields in the same order as paramFields().
+  if (slots.length < 19) throw new Error('config string has too few fields');
+  const matIdx = clamp(parseInt(slots[0],  10) || 0, 0, MATERIAL_KEYS.length - 1);
+  const symIdx = clamp(parseInt(slots[12], 10) || 0, 0, SYM_KEYS.length - 1);
+  const nsIdx  = clamp(parseInt(slots[16], 10) || 0, 0, NEGSTYLE_KEYS.length - 1);
   return {
-    seed:        clamp(parseInt(parts[1],  10) || 0, 0, 4294967295),
     material:    MATERIAL_KEYS[matIdx],
-    size:        clamp(parseInt(parts[3],  10) || 80, 40, 200),
-    wall:        clamp(parseFloat(parts[4]) || 0, 0, 5),
-    complexity:  clamp(parseInt(parts[5],  10) || 4, 1, 7),
-    branchCount: clamp(parseInt(parts[6],  10) || 3, 1, 5),
-    branchAngle: clamp(parseInt(parts[7],  10) || 35, 10, 80),
-    taper:       clamp(parseFloat(parts[8])  || 0.6, 0.4, 0.95),
-    trunk:       clamp(parseFloat(parts[9])  || 6, 2, 14),
-    smooth:      clamp(parseFloat(parts[10]) || 0.25, 0, 1),
-    poly:        clamp(parseFloat(parts[11]) || 0.4, 0, 1),
-    rings:       clamp(parseInt(parts[12], 10) || 0, 0, 6),
-    ringGap:     clamp(parseFloat(parts[13]) || 0.7, 0.5, 2.5),
+    size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
+    wall:        clamp(parseFloat(slots[2]) || 0, 0, 5),
+    complexity:  clamp(parseInt(slots[3],  10) || 4, 1, 7),
+    branchCount: clamp(parseInt(slots[4],  10) || 3, 1, 5),
+    branchAngle: clamp(parseInt(slots[5],  10) || 35, 10, 80),
+    taper:       clamp(parseFloat(slots[6])  || 0.6, 0.4, 0.95),
+    trunk:       clamp(parseFloat(slots[7])  || 6, 2, 14),
+    smooth:      clamp(parseFloat(slots[8])  || 0.25, 0, 1),
+    poly:        clamp(parseFloat(slots[9])  || 0.4, 0, 1),
+    rings:       clamp(parseInt(slots[10], 10) || 0, 0, 6),
+    ringGap:     clamp(parseFloat(slots[11]) || 0.7, 0.5, 2.5),
     sym:         SYM_KEYS[symIdx],
-    radialN:     clamp(parseInt(parts[15], 10) || 5, 2, 8),
-    neg:         clamp(parseFloat(parts[16]) || 1.5, 0.5, 5),
-    innerLinks:  clamp(parseInt(parts[17], 10) || 0, 0, 12),
+    radialN:     clamp(parseInt(slots[13], 10) || 5, 2, 8),
+    neg:         clamp(parseFloat(slots[14]) || 1.5, 0.5, 5),
+    innerLinks:  clamp(parseInt(slots[15], 10) || 0, 0, 12),
     negStyle:    NEGSTYLE_KEYS[nsIdx],
-    negStrands:  clamp(parseInt(parts[19], 10) || 4, 1, 6),
-    negDensity:  clamp(parseFloat(parts[20]) || 0.7, 0, 1),
+    negStrands:  clamp(parseInt(slots[17], 10) || 4, 1, 6),
+    negDensity:  clamp(parseFloat(slots[18]) || 0.7, 0, 1),
   };
 }
 
-function updateParamsField() {
-  const el = document.getElementById('params');
-  if (!el) return;
-  // Don't clobber the field while the user is actively editing it.
-  if (document.activeElement === el) return;
-  el.value = encodeParams(state);
+function decodeFull(str) {
+  const parts = String(str || '').trim().split('-');
+  const schema = parseInt(parts[0], 10);
+  if (schema !== SCHEMA_FULL) throw new Error('expected full-config schema ' + SCHEMA_FULL + ', got ' + schema);
+  if (parts.length < 21) throw new Error('full-config string has too few fields');
+  return {
+    seed: clamp(parseInt(parts[1], 10) || 0, 0, 4294967295),
+    ...parseParamSlots(parts.slice(2)),
+  };
+}
+
+function decodeParamsNoSeed(str) {
+  const parts = String(str || '').trim().split('-');
+  const schema = parseInt(parts[0], 10);
+  if (schema !== SCHEMA_PARAMS) throw new Error('expected params schema ' + SCHEMA_PARAMS + ', got ' + schema);
+  return parseParamSlots(parts.slice(1));
+}
+
+// Refresh the read-only side of all three encoded fields. Skip whichever
+// field currently has focus so we don't clobber the user's edit.
+function updateAllFields() {
+  const focused = document.activeElement;
+  const params = document.getElementById('params');
+  const seed   = document.getElementById('seed');
+  const full   = document.getElementById('fullConfig');
+  if (params && focused !== params) params.value = encodeParamsNoSeed(state);
+  if (seed   && focused !== seed)   seed.value   = String(state.seed);
+  if (full   && focused !== full)   full.value   = encodeFull(state);
 }
 
 // ---------- Three.js scene ----------
@@ -860,6 +923,39 @@ function resize() {
 new ResizeObserver(resize).observe(canvas);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
 resize();
+
+// Divider drag (Chunk v1.20.0): on desktop layouts the user can drag
+// the vertical separator between the panel and the stage to resize the
+// panel column. Width is clamped so the panel can't collapse to nothing
+// or eat the entire canvas. The CSS variable --panel-w drives the grid
+// template, and the ResizeObserver above auto-syncs the WebGL canvas.
+(function setupDivider() {
+  const divider = document.getElementById('divider');
+  if (!divider) return;
+  const root = document.documentElement;
+  let dragging = false;
+  divider.addEventListener('pointerdown', (e) => {
+    if (window.matchMedia('(max-width: 720px)').matches) return;  // mobile = no resize
+    dragging = true;
+    divider.classList.add('dragging');
+    divider.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  divider.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const w = Math.max(220, Math.min(window.innerWidth - 200, e.clientX));
+    root.style.setProperty('--panel-w', w + 'px');
+  });
+  function endDrag(e) {
+    if (!dragging) return;
+    dragging = false;
+    divider.classList.remove('dragging');
+    try { divider.releasePointerCapture(e.pointerId); } catch (_) {}
+    resize();  // belt + suspenders; ResizeObserver should also fire
+  }
+  divider.addEventListener('pointerup', endDrag);
+  divider.addEventListener('pointercancel', endDrag);
+})();
 
 // ---------- Render loop ----------
 function tick() {
@@ -3095,7 +3191,7 @@ async function downloadSTL() {
     const url = URL.createObjectURL(blob);
     const matSlug = (MATERIALS[state.material] || MATERIALS.stainless).slug;
     a.href = url;
-    a.download = `radiolaria_${matSlug}_seed${state.seed}_${state.size}mm_${encodeParams(state)}_${VERSION}.stl`;
+    a.download = `radiolaria_${matSlug}_seed${state.seed}_${state.size}mm_${encodeFull(state)}_${VERSION}.stl`;
     a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 
@@ -3185,47 +3281,89 @@ materialEl.addEventListener('change', () => {
     bindings.wall.update();
     scheduleRegen();
   }
-  updateParamsField();
+  updateAllFields();
 });
 
-// Parameter-configuration field: pasting a saved string applies it to
-// every slider/control. Decoding happens on `change` (when the field
-// loses focus or the user presses Enter); on `blur` we resync the
-// field from current state in case the input was invalid.
-const paramsEl = document.getElementById('params');
-const paramsCopyBtn = document.getElementById('paramsCopyBtn');
-if (paramsEl) {
-  paramsEl.addEventListener('change', (e) => {
-    const text = e.target.value;
-    try {
-      const decoded = decodeParams(text);
-      Object.assign(state, decoded);
-      refreshUIFromState();
-      scheduleRegen();
-    } catch (err) {
-      console.warn('parameter configuration: ' + err.message);
-      e.target.value = encodeParams(state);
-    }
-  });
-  // On blur, always resync the field so partial edits don't get stuck.
-  paramsEl.addEventListener('blur', () => updateParamsField());
-  // Convenience: clicking the field selects all so a tap on iOS gives
-  // the user the standard copy menu.
-  paramsEl.addEventListener('focus', (e) => e.target.select());
+// Three encoded-config fields (Chunk v1.20.0). Each has the same
+// behaviour: live-update on state change (handled in updateAllFields);
+// paste/Enter applies the value via the appropriate decoder; the
+// inline copy and clear buttons either copy current state to the
+// clipboard or empty the field so a paste can land cleanly.
+function setupConfigField(fieldId, copyId, clearId, encodeFn, applyFn) {
+  const field = document.getElementById(fieldId);
+  const copyBtn = document.getElementById(copyId);
+  const clearBtn = document.getElementById(clearId);
+  if (!field) return;
+  // applyFn is optional — passed null for fields that already have their
+  // own change handler (e.g. the seed input is bound by bindings.seed and
+  // doesn't need a second listener stepping on it).
+  if (applyFn) {
+    field.addEventListener('change', (e) => {
+      const text = e.target.value.trim();
+      if (text === '') { e.target.value = encodeFn(state); return; }
+      try {
+        applyFn(text);
+      } catch (err) {
+        console.warn(fieldId + ': ' + err.message);
+        e.target.value = encodeFn(state);
+      }
+    });
+    field.addEventListener('blur', () => {
+      if (document.activeElement !== field) field.value = encodeFn(state);
+    });
+  }
+  field.addEventListener('focus', (e) => e.target.select());
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      const text = encodeFn(state);
+      field.value = text;
+      try {
+        await navigator.clipboard.writeText(text);
+        copyBtn.classList.add('copied');
+        setTimeout(() => copyBtn.classList.remove('copied'), 700);
+      } catch (e) {
+        field.focus(); field.select();
+      }
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      field.value = '';
+      field.focus();
+    });
+  }
 }
-if (paramsCopyBtn) {
-  paramsCopyBtn.addEventListener('click', async () => {
-    const text = encodeParams(state);
-    try {
-      await navigator.clipboard.writeText(text);
-      paramsCopyBtn.classList.add('copied');
-      setTimeout(() => paramsCopyBtn.classList.remove('copied'), 700);
-    } catch (e) {
-      // Fallback: select the field's text so the user can ⌘C / Ctrl-C.
-      if (paramsEl) { paramsEl.focus(); paramsEl.select(); }
-    }
-  });
+
+// Apply functions: each merges the decoded fields into state, refreshes
+// every slider/control to reflect the new values, and kicks off a regen.
+function applyParamsNoSeed(text) {
+  const decoded = decodeParamsNoSeed(text);
+  Object.assign(state, decoded);            // keeps current state.seed
+  refreshUIFromState();
+  scheduleRegen();
 }
+function applyFullConfig(text) {
+  const decoded = decodeFull(text);
+  Object.assign(state, decoded);            // includes seed
+  refreshUIFromState();
+  scheduleRegen();
+}
+function applySeedOnly(text) {
+  const n = clamp(parseInt(text, 10) || 0, 0, 4294967295);
+  if (Number.isNaN(n)) throw new Error('not a valid seed');
+  state.seed = n;
+  refreshUIFromState();
+  scheduleRegen();
+}
+
+setupConfigField('params',     'paramsCopyBtn', 'paramsClearBtn', encodeParamsNoSeed, applyParamsNoSeed);
+setupConfigField('fullConfig', 'fullCopyBtn',   'fullClearBtn',   encodeFull,         applyFullConfig);
+// Seed has its own existing binding (bindings.seed) that handles the
+// change event; here we only wire up the copy + clear buttons. The
+// applyFn is null so we don't add a duplicate change listener.
+setupConfigField('seed',       'seedCopyBtn',   'seedClearBtn',
+                 (s) => String(s.seed),
+                 null);
 
 function refreshUIFromState() {
   for (const k of Object.keys(bindings)) {
@@ -3238,7 +3376,7 @@ function refreshUIFromState() {
   onNegChange();
   materialEl.value = state.material;
   applyMaterial(state.material);
-  updateParamsField();
+  updateAllFields();
 }
 
 // Dual-phase regen (Chunk 6). Fast 64³ preview fires at most every 30ms
@@ -3249,8 +3387,8 @@ function refreshUIFromState() {
 let fastScheduled = false, fullTimer = null;
 function scheduleRegen() {
   // Every slider input funnels through here, so this is the right place
-  // to keep the parameter-configuration field in sync with state.
-  updateParamsField();
+  // to keep the encoded-config fields in sync with state.
+  updateAllFields();
   // Light up the spinner immediately so the user sees feedback even though
   // the actual generate() will block the main thread for ~50–500ms. The
   // rAF wrap ensures the browser gets one paint cycle to render the busy
