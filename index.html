@@ -539,7 +539,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.21.0</span>
+      <span id="version">v1.21.1</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -579,7 +579,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.21.0";
+const VERSION = "v1.21.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2112,12 +2112,92 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
   return { field, nx, ny, nz, ox, oy, oz, voxel };
 }
 
-// Placeholder for chunks B + C. v1.21.0 chunk A wires the dropdown,
-// state, and codec; B implements seeded 3D noise + region classifier;
-// C implements the romanesco + coral displacements that read those.
+// ---------- Surface-texture noise + region classifier (Chunk B / v1.21.1) ----------
+// Seeded 3D gradient noise (Perlin-style). Builds a permutation table from
+// state.seed once and caches it; querying noise(x,y,z) is then ~30 floating
+// point ops per call. Output is roughly in [-1, 1].
+const TX_GRAD3 = [
+  [1,1,0],[-1,1,0],[1,-1,0],[-1,-1,0],
+  [1,0,1],[-1,0,1],[1,0,-1],[-1,0,-1],
+  [0,1,1],[0,-1,1],[0,1,-1],[0,-1,-1],
+];
+
+function makeNoise3D(seed) {
+  const base = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) base[i] = i;
+  const rng = mulberry32((seed >>> 0) ^ 0xa1b2c3d4);
+  for (let i = 255; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const t = base[i]; base[i] = base[j]; base[j] = t;
+  }
+  // Doubled so we can index without wraparound checks.
+  const perm = new Uint8Array(512);
+  for (let i = 0; i < 512; i++) perm[i] = base[i & 255];
+
+  function fade(t) { return t*t*t*(t*(t*6 - 15) + 10); }
+  function lerp(t, a, b) { return a + t*(b - a); }
+  function dot(g, x, y, z) { return g[0]*x + g[1]*y + g[2]*z; }
+
+  return function noise(x, y, z) {
+    const X = Math.floor(x) & 255;
+    const Y = Math.floor(y) & 255;
+    const Z = Math.floor(z) & 255;
+    x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+    const u = fade(x), v = fade(y), w = fade(z);
+    const A  = perm[X]   + Y, AA = perm[A]   + Z, AB = perm[A+1] + Z;
+    const B  = perm[X+1] + Y, BA = perm[B]   + Z, BB = perm[B+1] + Z;
+    return lerp(w,
+      lerp(v,
+        lerp(u, dot(TX_GRAD3[perm[AA]   % 12], x,   y,   z),
+                dot(TX_GRAD3[perm[BA]   % 12], x-1, y,   z)),
+        lerp(u, dot(TX_GRAD3[perm[AB]   % 12], x,   y-1, z),
+                dot(TX_GRAD3[perm[BB]   % 12], x-1, y-1, z))),
+      lerp(v,
+        lerp(u, dot(TX_GRAD3[perm[AA+1] % 12], x,   y,   z-1),
+                dot(TX_GRAD3[perm[BA+1] % 12], x-1, y,   z-1)),
+        lerp(u, dot(TX_GRAD3[perm[AB+1] % 12], x,   y-1, z-1),
+                dot(TX_GRAD3[perm[BB+1] % 12], x-1, y-1, z-1))));
+  };
+}
+
+// Cache one noise instance per seed so we don't rebuild the permutation
+// table on every voxel iteration. Reset in classifyRegion when seed changes.
+let _txNoise = null;
+let _txNoiseSeed = NaN;
+function getTextureNoise(seed) {
+  if (_txNoiseSeed !== seed) {
+    _txNoise = makeNoise3D(seed);
+    _txNoiseSeed = seed;
+  }
+  return _txNoise;
+}
+
+// Region classifier — returns one of three integer codes for the surface
+// type at world-space point (x, y, z). Two-octave sum: a slow base
+// (~30 mm patches at default size) sets the dominant region, and a faster
+// modulation (~12 mm) breaks up uniform fields so adjacent regions feel
+// intermittent rather than mathematically periodic. Thresholds give roughly
+// 30/30/40% romanesco / coral / smooth coverage.
+const REGION_SMOOTH    = 0;
+const REGION_ROMANESCO = 1;
+const REGION_CORAL     = 2;
+function classifyRegion(noise, x, y, z) {
+  const lowF  = 1 / 30;
+  const highF = 1 / 12;
+  const v = noise(x * lowF,  y * lowF,  z * lowF) +
+            0.3 * noise(x * highF, y * highF, z * highF);
+  if (v >  0.30) return REGION_ROMANESCO;
+  if (v < -0.30) return REGION_CORAL;
+  return REGION_SMOOTH;
+}
+
+// Placeholder for chunk C. v1.21.0 chunk A wires the dropdown, state, and
+// codec; v1.21.1 chunk B added 3D noise + classifyRegion above; chunk C
+// will use those to apply per-region surface displacements (romanesco
+// self-similar bumps + coral pinprick voids) inside this function.
 function applyTextureDisplacement(field, nx, ny, nz, ox, oy, oz, voxel, s) {
   if (s.texture !== 'organic') return;
-  // Intentionally empty until chunk B lands.
+  // Intentionally empty until chunk C lands.
 }
 
 // Component centroids + sizes (Chunk B / v1.12.0). Averages vertex
