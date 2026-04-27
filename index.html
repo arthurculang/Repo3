@@ -48,6 +48,7 @@
     --danger: #ff6b6b;
     --border: #242a31;
     --panel-w: 320px;
+    --panel-h: 40vh;
     --safe-top: env(safe-area-inset-top, 0px);
     --safe-bot: env(safe-area-inset-bottom, 0px);
   }
@@ -229,6 +230,9 @@
     user-select: none;
   }
   #divider:hover, #divider.dragging { background: var(--accent); }
+  /* Suppress the panel's max-height transition while the divider is
+     actively being dragged so the sheet tracks the pointer instantly. */
+  #panel.resizing { transition: none !important; }
 
   /* Printability report (Chunk C / v1.13.0). Compact card between the
      panel header and the slider list. Single-line summary by default;
@@ -331,21 +335,20 @@
   @media (max-width: 720px) {
     #app {
       grid-template-columns: 1fr;
-      grid-template-rows: 1fr auto;
+      /* Three rows: canvas (greedy), divider (6px), panel (var height). */
+      grid-template-rows: 1fr 6px auto;
     }
     /* HTML order is panel→stage, but on mobile we want canvas on top
-       (greedy 1fr row) and panel as a bottom sheet (auto row, capped
-       by max-height). Without explicit grid-row assignments the panel
-       lands in row 1 and devours the viewport. */
-    #stage { grid-row: 1; }
-    /* Divider is desktop-only — the row-based mobile layout doesn't
-       benefit from it and it'd just steal a few pixels of canvas. */
-    #divider { display: none; }
+       (greedy 1fr row) and panel as a bottom sheet (capped by --panel-h).
+       Without explicit grid-row assignments the panel lands in row 1
+       and devours the viewport. */
+    #stage  { grid-row: 1; }
+    #divider { grid-row: 2; cursor: row-resize; }
     #panel {
-      grid-row: 2;
+      grid-row: 3;
       border-right: none;
       border-top: 1px solid var(--border);
-      max-height: 40vh;
+      max-height: var(--panel-h);
       min-height: 44px;
       transition: max-height 220ms ease;
       padding-top: 0;
@@ -528,7 +531,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.20.0</span>
+      <span id="version">v1.20.1</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -568,7 +571,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.20.0";
+const VERSION = "v1.20.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -924,32 +927,45 @@ new ResizeObserver(resize).observe(canvas);
 window.addEventListener('orientationchange', () => setTimeout(resize, 120));
 resize();
 
-// Divider drag (Chunk v1.20.0): on desktop layouts the user can drag
-// the vertical separator between the panel and the stage to resize the
-// panel column. Width is clamped so the panel can't collapse to nothing
-// or eat the entire canvas. The CSS variable --panel-w drives the grid
-// template, and the ResizeObserver above auto-syncs the WebGL canvas.
+// Divider drag (Chunk v1.20.x): the vertical-on-desktop / horizontal-on-
+// mobile separator between the canvas and the panel is draggable in
+// both layouts. Desktop drag updates --panel-w (column width); mobile
+// drag updates --panel-h (panel sheet height). Both axes are clamped so
+// neither side can be collapsed to nothing or grow to fill the screen.
+// The ResizeObserver on canvas auto-syncs the WebGL viewport on either.
 (function setupDivider() {
   const divider = document.getElementById('divider');
   if (!divider) return;
   const root = document.documentElement;
+  const isMobile = () => window.matchMedia('(max-width: 720px)').matches;
   let dragging = false;
   divider.addEventListener('pointerdown', (e) => {
-    if (window.matchMedia('(max-width: 720px)').matches) return;  // mobile = no resize
     dragging = true;
     divider.classList.add('dragging');
+    const panelEl = document.getElementById('panel');
+    if (panelEl) panelEl.classList.add('resizing');
     divider.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
   divider.addEventListener('pointermove', (e) => {
     if (!dragging) return;
-    const w = Math.max(220, Math.min(window.innerWidth - 200, e.clientX));
-    root.style.setProperty('--panel-w', w + 'px');
+    if (isMobile()) {
+      // Panel hangs off the bottom edge: its height = (viewport height -
+      // pointer Y). Clamp so canvas keeps at least 150px and panel
+      // keeps at least 80px.
+      const h = Math.max(80, Math.min(window.innerHeight - 150, window.innerHeight - e.clientY));
+      root.style.setProperty('--panel-h', h + 'px');
+    } else {
+      const w = Math.max(220, Math.min(window.innerWidth - 200, e.clientX));
+      root.style.setProperty('--panel-w', w + 'px');
+    }
   });
   function endDrag(e) {
     if (!dragging) return;
     dragging = false;
     divider.classList.remove('dragging');
+    const panelEl = document.getElementById('panel');
+    if (panelEl) panelEl.classList.remove('resizing');
     try { divider.releasePointerCapture(e.pointerId); } catch (_) {}
     resize();  // belt + suspenders; ResizeObserver should also fire
   }
