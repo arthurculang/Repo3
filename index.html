@@ -531,7 +531,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.20.2</span>
+      <span id="version">v1.20.3</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -571,7 +571,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.20.2";
+const VERSION = "v1.20.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -3314,18 +3314,27 @@ function setupConfigField(fieldId, copyId, clearId, encodeFn, applyFn) {
   // own change handler (e.g. the seed input is bound by bindings.seed and
   // doesn't need a second listener stepping on it).
   if (applyFn) {
-    field.addEventListener('change', (e) => {
-      const text = e.target.value.trim();
-      if (text === '') { e.target.value = encodeFn(state); return; }
+    const tryApply = (text) => {
+      const t = String(text || '').trim();
+      if (!t) { field.value = encodeFn(state); return; }
       try {
-        applyFn(text);
+        applyFn(t);
       } catch (err) {
         console.warn(fieldId + ': ' + err.message);
-        e.target.value = encodeFn(state);
+        field.value = encodeFn(state);
       }
-    });
+    };
+    field.addEventListener('change', (e) => tryApply(e.target.value));
     field.addEventListener('blur', () => {
       if (document.activeElement !== field) field.value = encodeFn(state);
+    });
+    // Apply on paste too. The native `change` event only fires on Enter
+    // or blur, so without this the user would paste a config and stare
+    // at an unchanged sculpture until they tabbed out. setTimeout(0)
+    // waits one tick for the pasted text to land in field.value before
+    // we read it.
+    field.addEventListener('paste', () => {
+      setTimeout(() => tryApply(field.value), 0);
     });
   }
   field.addEventListener('focus', (e) => e.target.select());
