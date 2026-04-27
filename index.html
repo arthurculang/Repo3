@@ -390,6 +390,17 @@
     <div id="panelBody">
       <div class="ctrl">
         <label>
+          Full configuration
+          <button class="field-btn" id="fullCopyBtn" type="button" title="Copy" aria-label="Copy full configuration">⧉</button>
+          <button class="field-btn" id="fullClearBtn" type="button" title="Clear" aria-label="Clear field">✕</button>
+        </label>
+        <input type="text" id="fullConfig" spellcheck="false" autocomplete="off" autocapitalize="off"
+               placeholder="paste a full configuration (seed + parameters) to apply"
+               title="Encoded seed + slider values. Pasting restores the entire creature.">
+      </div>
+
+      <div class="ctrl">
+        <label>
           Parameter configuration
           <button class="field-btn" id="paramsCopyBtn" type="button" title="Copy" aria-label="Copy parameter configuration">⧉</button>
           <button class="field-btn" id="paramsClearBtn" type="button" title="Clear" aria-label="Clear field">✕</button>
@@ -409,17 +420,6 @@
           <input type="number" id="seed" min="0" max="4294967295" step="1" value="1">
           <button class="dice" id="seedDice" title="Randomize seed" aria-label="Randomize seed">&#9861;</button>
         </div>
-      </div>
-
-      <div class="ctrl">
-        <label>
-          Full configuration
-          <button class="field-btn" id="fullCopyBtn" type="button" title="Copy" aria-label="Copy full configuration">⧉</button>
-          <button class="field-btn" id="fullClearBtn" type="button" title="Clear" aria-label="Clear field">✕</button>
-        </label>
-        <input type="text" id="fullConfig" spellcheck="false" autocomplete="off" autocapitalize="off"
-               placeholder="paste a full configuration (seed + parameters) to apply"
-               title="Encoded seed + slider values. Pasting restores the entire creature.">
       </div>
 
       <div class="ctrl">
@@ -531,7 +531,7 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.20.1</span>
+      <span id="version">v1.20.2</span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
@@ -571,7 +571,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.20.1";
+const VERSION = "v1.20.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
