@@ -179,6 +179,48 @@
     background: var(--panel);
   }
   #version { font-variant-numeric: tabular-nums; }
+  #versionLogLink {
+    margin-left: 6px; color: var(--ink-dim); cursor: pointer;
+    text-decoration: underline; background: none; border: none;
+    padding: 0; font: inherit; letter-spacing: inherit;
+  }
+  #versionLogLink:hover { color: var(--ink); }
+  #versionLogModal {
+    position: fixed; inset: 0; z-index: 9999;
+    background: rgba(0,0,0,0.55);
+    display: none; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  #versionLogModal.open { display: flex; }
+  #versionLogPanel {
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--border); border-radius: 8px;
+    width: min(640px, 100%); max-height: 80vh;
+    display: flex; flex-direction: column;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+  }
+  #versionLogHeader {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    font-weight: 600; font-size: 14px;
+  }
+  #versionLogClose {
+    background: none; border: none; color: var(--ink-dim);
+    cursor: pointer; font-size: 18px; line-height: 1; padding: 4px 8px;
+  }
+  #versionLogClose:hover { color: var(--ink); }
+  #versionLogList {
+    overflow-y: auto; padding: 8px 16px 16px; font-size: 12px;
+    line-height: 1.45;
+  }
+  .vlog-entry {
+    display: grid; grid-template-columns: 64px 84px 1fr; gap: 10px;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+  }
+  .vlog-entry:last-child { border-bottom: none; }
+  .vlog-v { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .vlog-d { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+  .vlog-n { color: var(--ink); }
   #status { color: var(--ink-dim); }
 
   /* Busy spinner — shown while a generation or export is running.
@@ -548,10 +590,23 @@
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
-      <span id="version">v1.22.2</span>
+      <span>
+        <span id="version">v1.22.3</span>
+        <button id="versionLogLink" type="button" title="Show version log">log</button>
+      </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
     </div>
   </aside>
+
+  <div id="versionLogModal" role="dialog" aria-modal="true" aria-label="Version log">
+    <div id="versionLogPanel">
+      <div id="versionLogHeader">
+        <span>Version log</span>
+        <button id="versionLogClose" type="button" aria-label="Close">×</button>
+      </div>
+      <div id="versionLogList"></div>
+    </div>
+  </div>
 
   <div id="divider" role="separator" aria-orientation="vertical" aria-label="Resize controls panel"></div>
 
@@ -588,7 +643,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.22.2";
+const VERSION = "v1.22.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -710,7 +765,7 @@ function paramFields(s) {
     // ↓ added in v1.21.0. Append-only; old strings without this slot
     // decode cleanly with texture defaulting to 'smooth' below.
     tx < 0 ? 0 : tx,
-    // ↓ added in v1.22.2. Append-only; old strings without this slot
+    // ↓ added in v1.22.3. Append-only; old strings without this slot
     // decode cleanly with quality defaulting to 'standard'.
     ql < 0 ? 0 : ql,
   ];
@@ -733,7 +788,7 @@ function parseParamSlots(slots) {
   const txIdx = slots.length > 19
     ? clamp(parseInt(slots[19], 10) || 0, 0, TEXTURE_KEYS.length - 1)
     : 0;
-  // Quality: new in v1.22.2. Defaults to 'standard' for older strings.
+  // Quality: new in v1.22.3. Defaults to 'standard' for older strings.
   const qlIdx = slots.length > 20
     ? clamp(parseInt(slots[20], 10) || 0, 0, QUALITY_KEYS.length - 1)
     : 0;
@@ -2210,7 +2265,7 @@ function classifyRegion(noise, x, y, z) {
   return REGION_SMOOTH;
 }
 
-// Per-region surface displacement (v1.22.2 rewrite — moved from SDF
+// Per-region surface displacement (v1.22.3 rewrite — moved from SDF
 // domain to mesh domain). Walks every vertex of the post-MC indexed
 // geometry, classifies its region from world position, and translates
 // it along its existing surface normal.
@@ -2232,7 +2287,7 @@ function classifyRegion(noise, x, y, z) {
 //           creating self-intersections at sharp concavities.
 //   ampIn:  inward (coral pits). Pitting thins the hollow wall;
 //           capped against (wall − minWall − safety) for print safety.
-// Outer-hull mask (v1.22.2). Returns Uint8Array of length V where 1 =
+// Outer-hull mask (v1.22.3). Returns Uint8Array of length V where 1 =
 // vertex sits on the outermost surface in its angular direction, 0 =
 // interior surface (tunnel wall, deep concavity). Used to gate outward
 // Romanesco bumps so they don't constrict carved tunnels — bumps inside
@@ -2348,7 +2403,7 @@ function applyVertexTexture(geom, s) {
 
     let delta = 0;
     if (region === REGION_ROMANESCO) {
-      // Outer-hull-only (v1.22.2). Skipping interior vertices keeps
+      // Outer-hull-only (v1.22.3). Skipping interior vertices keeps
       // tunnel diameters intact — bumps stay on the silhouette.
       if (!isOuter[v]) continue;
       // Three octaves of one-sided gradient noise — same recipe as
@@ -2654,7 +2709,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     console.warn(`buildBodyMesh: still ${comp.nComp} components after Phase 1 + Phase 2 (seed=${s.seed})`);
   }
   geom.computeVertexNormals();
-  // Surface texture is applied in mesh domain (v1.22.2+) — operates on
+  // Surface texture is applied in mesh domain (v1.22.3+) — operates on
   // vertex positions along their existing normals so it can't fill
   // negative-space tunnels the way the v1.21.x SDF-domain pass did.
   // No-ops for s.texture === 'smooth'.
@@ -3612,7 +3667,7 @@ materialEl.addEventListener('change', () => {
 
 // Surface-texture dropdown (Chunk v1.21.0). 'smooth' is the v1.20-and-earlier
 // behaviour; 'organic' enables the variegated romanesco/coral displacement
-// pass. As of v1.22.2 the actual displacement is applied in mesh domain
+// pass. As of v1.22.3 the actual displacement is applied in mesh domain
 // inside buildBodyMesh via applyVertexTexture() — the earlier SDF-domain
 // approach filled in carved negative-space tunnels.
 const textureEl = document.getElementById('texture');
@@ -3623,7 +3678,7 @@ if (textureEl) {
   });
 }
 
-// Quality dropdown (Chunk v1.22.2). Maps to QUALITY_VOXELS for the
+// Quality dropdown (Chunk v1.22.3). Maps to QUALITY_VOXELS for the
 // post-settle preview resolution. Higher values resolve finer texture
 // octaves (mid + high-freq Romanesco) at the cost of regen time. STL
 // export always uses EXPORT_VOXELS (160³) regardless.
@@ -3634,6 +3689,87 @@ if (qualityEl) {
     scheduleRegen();
   });
 }
+
+// Version log (Chunk v1.22.3). Back-populated from git history. Newest
+// at top. Each note is one short line — the full commit body lives in
+// git, this is just the user-visible changelog.
+const VERSION_LOG = [
+  { v: 'v1.22.3', date: '2026-04-27', n: 'Version-log link in panel footer with back-populated history.' },
+  { v: 'v1.22.3', date: '2026-04-27', n: 'Preview-quality dropdown — Standard/High/Ultra (96³/128³/160³). Resolves finer texture octaves.' },
+  { v: 'v1.22.1', date: '2026-04-27', n: 'Organic texture: Romanesco bumps gated to outer hull only — no longer constrict carved tunnels.' },
+  { v: 'v1.22.0', date: '2026-04-27', n: 'Organic texture moved from SDF domain to mesh domain — fixes tunnel-fill bug entirely.' },
+  { v: 'v1.21.5', date: '2026-04-27', n: 'Reverted v1.21.4 — texture was filling carved tunnels.' },
+  { v: 'v1.21.4', date: '2026-04-27', n: 'Tuned organic texture for visibility (deprecated by v1.22.0 rewrite).' },
+  { v: 'v1.21.3', date: '2026-04-27', n: 'Organic texture defaults on; amplitude split so bumps are actually visible.' },
+  { v: 'v1.21.2', date: '2026-04-27', n: 'Romanesco + coral surface displacement (chunk C).' },
+  { v: 'v1.21.1', date: '2026-04-27', n: 'Seeded 3D noise + region classifier (chunk B).' },
+  { v: 'v1.21.0', date: '2026-04-27', n: 'Surface-texture dropdown + state + codec (chunk A).' },
+  { v: 'v1.20.4', date: '2026-04-27', n: 'Default Min negative space 1.5 → 3.7mm — more skeletal feel.' },
+  { v: 'v1.20.3', date: '2026-04-27', n: 'Config-field paste applies immediately.' },
+  { v: 'v1.20.2', date: '2026-04-27', n: 'Full configuration is the first field in the codec block.' },
+  { v: 'v1.20.1', date: '2026-04-27', n: 'Draggable divider works on mobile too.' },
+  { v: 'v1.20.0', date: '2026-04-27', n: 'Draggable panel/canvas divider + 3 encoded-config fields.' },
+  { v: 'v1.19.0', date: '2026-04-26', n: 'Parameter configuration field — copy/paste full state.' },
+  { v: 'v1.18.3', date: '2026-04-26', n: 'Include size (mm) in STL filename.' },
+  { v: 'v1.18.2', date: '2026-04-26', n: 'STL export is now WYSIWYG — serializes the live preview directly.' },
+  { v: 'v1.18.1', date: '2026-04-26', n: 'STL export now goes through the full repair pipeline.' },
+  { v: 'v1.18.0', date: '2026-04-26', n: 'Printability report collapses by default + chevron toggle.' },
+  { v: 'v1.17.1', date: '2026-04-25', n: 'Renamed to Radiolaria.' },
+  { v: 'v1.17.0', date: '2026-04-25', n: 'More skeletal defaults + corner progress pill.' },
+  { v: 'v1.16.0', date: '2026-04-25', n: 'Printability resolution check is a real blocker, auto-fixed.' },
+  { v: 'v1.15.0', date: '2026-04-25', n: 'Realtime build visualization (skeleton → SDF → repair phases).' },
+  { v: 'v1.14.0', date: '2026-04-25', n: 'Restored visible negative-space + UI polish.' },
+  { v: 'v1.13.0', date: '2026-04-25', n: 'Printability report + auto-fix loop.' },
+  { v: 'v1.12.0', date: '2026-04-25', n: 'Phase 2 centroid-to-largest snake-vein orphan repair.' },
+  { v: 'v1.11.0', date: '2026-04-25', n: 'Visible progress overlay + async repair loop + version sync.' },
+  { v: 'v1.10.0', date: '2026-04-25', n: 'Busy spinner during generation + export.' },
+  { v: 'v1.9.2',  date: '2026-04-25', n: 'Comprehensive disconnect repair via interior veins.' },
+  { v: 'v1.9.1',  date: '2026-04-25', n: 'Default symmetry → radial 5-fold.' },
+  { v: 'v1.9.0',  date: '2026-04-25', n: 'Inner links — meandering material struts through the cavity.' },
+  { v: 'v1.8.1',  date: '2026-04-25', n: 'Taller canvas on mobile.' },
+  { v: 'v1.8.0',  date: '2026-04-25', n: 'Added 5 plastic options (PLA, PETG, ABS, Nylon, SLA resin).' },
+  { v: 'v1.7.1',  date: '2026-04-19', n: 'Fixed disconnected shells caused by neg-space carving.' },
+  { v: 'v1.7.0',  date: '2026-04-19', n: 'Bigger negative-space carves, 1mm default wall.' },
+  { v: 'v1.6.0',  date: '2026-04-19', n: 'Internal negative-space carving (N-Helix + Colony paths).' },
+  { v: 'v1.5.0',  date: '2026-04-19', n: 'Hollow shell + drain bore.' },
+  { v: 'v1.4.1',  date: '2026-04-19', n: 'Rulers respect depth (body occludes them when in front).' },
+  { v: 'v1.4.0',  date: '2026-04-19', n: 'Fixed iPhone bottom-sheet layout.' },
+  { v: 'v1.3.0',  date: '2026-04-19', n: 'Size slider + 3D rulers + mass/cost readout.' },
+  { v: 'v1.2.0',  date: '2026-04-19', n: 'Metal dropdown — 7 non-toxic DMLS/SLM alloys.' },
+  { v: 'v1.1.1',  date: '2026-04-19', n: 'Spindly + organic radius wobble.' },
+  { v: 'v1.1.0',  date: '2026-04-19', n: 'Spherical core cluster replaces single trunk.' },
+  { v: 'v1.0.1',  date: '2026-04-19', n: 'Fixed inverted MC winding.' },
+  { v: 'v1.0.0',  date: '2026-04-19', n: 'Dual-phase preview, buffer freeing, deploy notes.' },
+  { v: 'v0.2.0',  date: '2026-04-18', n: 'Initial version badge.' },
+];
+
+const versionLogLink = document.getElementById('versionLogLink');
+const versionLogModal = document.getElementById('versionLogModal');
+const versionLogList = document.getElementById('versionLogList');
+const versionLogClose = document.getElementById('versionLogClose');
+
+function renderVersionLog() {
+  if (!versionLogList || versionLogList.childNodes.length) return;
+  for (const e of VERSION_LOG) {
+    const row = document.createElement('div');
+    row.className = 'vlog-entry';
+    const v = document.createElement('span'); v.className = 'vlog-v'; v.textContent = e.v;
+    const d = document.createElement('span'); d.className = 'vlog-d'; d.textContent = e.date;
+    const n = document.createElement('span'); n.className = 'vlog-n'; n.textContent = e.n;
+    row.append(v, d, n);
+    versionLogList.appendChild(row);
+  }
+}
+function openVersionLog()  { renderVersionLog(); versionLogModal && versionLogModal.classList.add('open'); }
+function closeVersionLog() { versionLogModal && versionLogModal.classList.remove('open'); }
+if (versionLogLink) versionLogLink.addEventListener('click', openVersionLog);
+if (versionLogClose) versionLogClose.addEventListener('click', closeVersionLog);
+if (versionLogModal) versionLogModal.addEventListener('click', e => {
+  if (e.target === versionLogModal) closeVersionLog();
+});
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && versionLogModal && versionLogModal.classList.contains('open')) closeVersionLog();
+});
 
 // Three encoded-config fields (Chunk v1.20.0). Each has the same
 // behaviour: live-update on state change (handled in updateAllFields);
@@ -3766,7 +3902,7 @@ function scheduleRegen() {
   if (fullTimer) clearTimeout(fullTimer);
   fullTimer = setTimeout(() => {
     fullTimer = null;
-    // Quality knob controls the post-settle preview voxel count (v1.22.2).
+    // Quality knob controls the post-settle preview voxel count (v1.22.3).
     // Drag preview stays at 64 above so dragging is always responsive.
     requestAnimationFrame(() => generate(QUALITY_VOXELS[state.quality] || 96));
   }, 300);
