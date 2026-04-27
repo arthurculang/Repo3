@@ -541,6 +541,7 @@
           <option value="off">Off (1×)</option>
           <option value="medium">Medium (4×)</option>
           <option value="high" selected>High (16×)</option>
+          <option value="extreme">Extreme (64×, large STL)</option>
         </select>
       </div>
 
@@ -600,7 +601,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.23.2</span>
+        <span id="version">v1.23.3</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -652,7 +653,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.23.2";
+const VERSION = "v1.23.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -749,8 +750,8 @@ const NEGSTYLE_KEYS = ['none','helix','colony'];
 const TEXTURE_KEYS = ['smooth','organic'];
 const QUALITY_KEYS = ['standard','high','ultra'];
 const QUALITY_VOXELS = { standard: 96, high: 128, ultra: 160 };
-const TEXDETAIL_KEYS = ['off','medium','high'];
-const TEXDETAIL_LEVELS = { off: 0, medium: 1, high: 2 };
+const TEXDETAIL_KEYS = ['off','medium','high','extreme'];
+const TEXDETAIL_LEVELS = { off: 0, medium: 1, high: 2, extreme: 3 };
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
@@ -3858,6 +3859,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.23.3', date: '2026-04-27', n: 'Extreme texture-detail tier (64×) for SLA/DMLS-grade surface fidelity. Large STL.' },
   { v: 'v1.23.2', date: '2026-04-27', n: 'Two extra Romanesco octaves + finer Coral roughness — sub-mm surface detail.' },
   { v: 'v1.23.1', date: '2026-04-27', n: 'Default texture detail raised to High (16×).' },
   { v: 'v1.23.0', date: '2026-04-27', n: 'Texture-detail dropdown — midpoint subdivision after MC. Decouples texture density from morphology.' },
