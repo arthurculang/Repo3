@@ -601,7 +601,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.23.4</span>
+        <span id="version">v1.23.5</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -653,7 +653,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.23.4";
+const VERSION = "v1.23.5";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -3713,7 +3713,13 @@ async function downloadSTL() {
     const url = URL.createObjectURL(blob);
     const matSlug = (MATERIALS[state.material] || MATERIALS.stainless).slug;
     a.href = url;
-    a.download = `radiolaria_${matSlug}_seed${state.seed}_${state.size}mm_${encodeFull(state)}_${VERSION}.stl`;
+    // Filename starts with an ISO-8601-style timestamp so files sort
+    // chronologically by name (v1.23.5). Colons aren't safe on Windows,
+    // so the time portion uses dashes (HH-MM-SS).
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+    a.download = `radiolaria_${stamp}_${matSlug}_seed${state.seed}_${state.size}mm_${encodeFull(state)}_${VERSION}.stl`;
     a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 
@@ -3866,6 +3872,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.23.5', date: '2026-04-27', n: 'STL filename starts with ISO-8601 timestamp so downloads sort chronologically by name.' },
   { v: 'v1.23.4', date: '2026-04-27', n: 'Defaults: Quality → Ultra, Texture detail → Extreme. Codec preserves morphology of older configs (slot 20 still defaults to standard).' },
   { v: 'v1.23.3', date: '2026-04-27', n: 'Extreme texture-detail tier (64×) for SLA/DMLS-grade surface fidelity. Large STL.' },
   { v: 'v1.23.2', date: '2026-04-27', n: 'Two extra Romanesco octaves + finer Coral roughness — sub-mm surface detail.' },
