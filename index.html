@@ -138,11 +138,11 @@
     width: 100%; height: 28px; background: transparent; margin: 0;
     -webkit-appearance: none; appearance: none;
   }
-  .ctrl.disabled { opacity: 0.42; }
+  .ctrl.disabled { opacity: 0.55; }
   .ctrl.disabled input[type="range"] { pointer-events: none; }
-  .ctrl.disabled label::after {
-    content: " (inactive)"; font-size: 10px; letter-spacing: 0.04em;
-    color: var(--ink-dim);
+  .ctrl-note {
+    margin-top: 4px; font-size: 10px; letter-spacing: 0.02em;
+    color: var(--ink-dim); line-height: 1.35;
   }
   .ctrl-warn {
     margin-top: 6px; padding: 6px 8px; border-radius: 4px;
@@ -520,6 +520,7 @@
       <div class="ctrl">
         <label>Wall thickness (mm) <span class="val" id="wallVal">1.0</span></label>
         <input type="range" id="wall" min="0" max="5" step="0.1" value="1.0">
+        <div class="ctrl-note">Carves the shell in Hollow mode; also caps coral pit depth in all modes.</div>
       </div>
 
       <div class="ctrl">
@@ -627,7 +628,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.24.4</span>
+        <span id="version">v1.24.5</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -679,7 +680,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.24.4";
+const VERSION = "v1.24.5";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2602,8 +2603,17 @@ function applyVertexTexture(geom, s) {
   // each other. Floor at 1.5mm so the texture reads even at coarse
   // preview resolution.
   const ampOut = Math.max(meanEdge * 1.5, 1.5);
-  const ampIn = s.wall > 0
-    ? Math.max(0.4, Math.min(ampOut, s.wall - minWall - 0.1))
+  // Coral inward-amp cap reads the USER's wall slider (s.userWall),
+  // not the SDF-effective wall (s.wall). In hollow mode userWall is
+  // undefined and we fall back to s.wall (=== state.wall, same value).
+  // In cast/solid modes s.wall is forced to 0 by effectiveState but
+  // userWall still holds the user's slider — so coral pit depth is
+  // identical across all three bodyModes at the same wall slider value
+  // (v1.24.5). Closes the dominant pre-v1.24.5 source of "solid w/
+  // tunnels looks different from hollow."
+  const wallForAmp = s.userWall !== undefined ? s.userWall : s.wall;
+  const ampIn = wallForAmp > 0
+    ? Math.max(0.4, Math.min(ampOut, wallForAmp - minWall - 0.1))
     : ampOut;
 
   for (let v = 0; v < V; v++) {
@@ -3612,6 +3622,11 @@ function effectiveState(s) {
     ...s,
     wall: 0,
     negStyle: s.bodyMode === 'cast' ? 'none' : s.negStyle,
+    // Preserve the user's slider wall value so the texture pass can
+    // still cap coral pit depth uniformly across modes (v1.24.5).
+    // Without this, cast/solid would see s.wall=0 and skip the cap,
+    // producing visibly deeper coral pits than hollow at the same seed.
+    userWall: s.wall,
   };
 }
 
@@ -4050,6 +4065,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.24.5', date: '2026-04-30', n: 'Coral pit depth uses the wall slider as a cap in all body modes — closes the dominant texture-amplitude gap between Solid w/ tunnels and Hollow.' },
   { v: 'v1.24.4', date: '2026-04-30', n: 'Default body mode → Hollow. Preserves lattice morphology; the casting warning + dropdown copy still flag the risk.' },
   { v: 'v1.24.3', date: '2026-04-30', n: 'Hollow mode skips the drain bore for lost-wax materials — tunnels handle wax escape, no visible cylindrical bore through the silhouette.' },
   { v: 'v1.24.2', date: '2026-04-30', n: 'Body-mode polish: wall-check label names the bodyMode, and a casting warning surfaces when brass material + hollow mode are combined.' },
