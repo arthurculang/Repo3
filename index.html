@@ -138,6 +138,12 @@
     width: 100%; height: 28px; background: transparent; margin: 0;
     -webkit-appearance: none; appearance: none;
   }
+  .ctrl.disabled { opacity: 0.42; }
+  .ctrl.disabled input[type="range"] { pointer-events: none; }
+  .ctrl.disabled label::after {
+    content: " (inactive)"; font-size: 10px; letter-spacing: 0.04em;
+    color: var(--ink-dim);
+  }
   .ctrl input[type="range"]::-webkit-slider-runnable-track {
     height: 4px; border-radius: 2px; background: #2a323b;
   }
@@ -492,6 +498,15 @@
       </div>
 
       <div class="ctrl">
+        <label>Body</label>
+        <select id="bodyMode">
+          <option value="cast">Cast-friendly (no shell, no tunnels)</option>
+          <option value="solid" selected>Solid w/ tunnels (cast risk; preserves morphology)</option>
+          <option value="hollow">Hollow — not good for casting</option>
+        </select>
+      </div>
+
+      <div class="ctrl">
         <label>Wall thickness (mm) <span class="val" id="wallVal">1.0</span></label>
         <input type="range" id="wall" min="0" max="5" step="0.1" value="1.0">
       </div>
@@ -601,7 +616,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.23.5</span>
+        <span id="version">v1.24.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -653,7 +668,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.23.5";
+const VERSION = "v1.24.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -724,6 +739,15 @@ const DEFAULTS = {
                             // morphology. STL export includes the
                             // subdivided mesh (WYSIWYG). Default raised
                             // from 'high' to 'extreme' in v1.23.4.
+  bodyMode: 'solid',   // 'cast' | 'solid' | 'hollow' — body composition
+                       // toggle (v1.24.0). 'cast' forces wall=0 AND
+                       // negStyle='none' for lost-wax-friendly geometry;
+                       // 'solid' forces wall=0 only (tunnels stay,
+                       // morphology preserved but tunnels are a casting
+                       // risk); 'hollow' applies the user's wall +
+                       // negStyle as configured (current pre-v1.24
+                       // behaviour). state.wall and state.negStyle still
+                       // hold the user's preferences regardless of mode.
 };
 const state = { ...DEFAULTS };
 
@@ -754,6 +778,7 @@ const QUALITY_KEYS = ['standard','high','ultra'];
 const QUALITY_VOXELS = { standard: 96, high: 128, ultra: 160 };
 const TEXDETAIL_KEYS = ['off','medium','high','extreme'];
 const TEXDETAIL_LEVELS = { off: 0, medium: 1, high: 2, extreme: 3 };
+const BODYMODE_KEYS = ['cast','solid','hollow'];
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
@@ -764,6 +789,7 @@ function paramFields(s) {
   const tx = TEXTURE_KEYS.indexOf(s.texture);
   const ql = QUALITY_KEYS.indexOf(s.quality);
   const td = TEXDETAIL_KEYS.indexOf(s.textureDetail);
+  const bm = BODYMODE_KEYS.indexOf(s.bodyMode);
   return [
     m < 0 ? 0 : m,
     s.size,
@@ -795,6 +821,10 @@ function paramFields(s) {
     // morphology. Default raised: medium → high (v1.23.1) → extreme
     // (v1.23.4).
     td < 0 ? 3 : td,
+    // ↓ added in v1.24.0. Append-only; older strings derive bodyMode
+    // from wall + negStyle below in parseParamSlots so reloaded configs
+    // render the same shape they were saved with.
+    bm < 0 ? 1 : bm,
   ];
 }
 
@@ -830,6 +860,23 @@ function parseParamSlots(slots) {
   const tdIdx = slots.length > 21
     ? clamp(parseInt(slots[21], 10) || 3, 0, TEXDETAIL_KEYS.length - 1)
     : 3;
+  // Body mode: new in v1.24.0. For older strings (no slot 22), DERIVE
+  // bodyMode from the wall + negStyle they encoded so reloaded configs
+  // render the same shape they were saved with:
+  //   wall > 0                 → hollow (had a shell, regardless of tunnels)
+  //   wall == 0, negStyle none → cast    (no shell, no tunnels)
+  //   wall == 0, negStyle any  → solid   (no shell, tunnels stay)
+  // New sessions use DEFAULTS.bodyMode = 'solid'.
+  const wallVal = parseFloat(slots[2]) || 0;
+  const ngStyle = NEGSTYLE_KEYS[nsIdx];
+  const derivedBm = wallVal > 0 ? 'hollow' : (ngStyle === 'none' ? 'cast' : 'solid');
+  let bmIdx;
+  if (slots.length > 22) {
+    bmIdx = clamp(parseInt(slots[22], 10) || 1, 0, BODYMODE_KEYS.length - 1);
+  } else {
+    bmIdx = BODYMODE_KEYS.indexOf(derivedBm);
+    if (bmIdx < 0) bmIdx = 1;
+  }
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -853,6 +900,7 @@ function parseParamSlots(slots) {
     texture:     TEXTURE_KEYS[txIdx],
     quality:     QUALITY_KEYS[qlIdx],
     textureDetail: TEXDETAIL_KEYS[tdIdx],
+    bodyMode:    BODYMODE_KEYS[bmIdx],
   };
 }
 
@@ -3491,6 +3539,24 @@ function formatCost(mat, volumeMM3) {
   return `${massStr}g · $${costStr}`;
 }
 
+// Derive the effective state for the build pipeline based on bodyMode
+// (v1.24.0). The user's `state` always holds their preferences (wall,
+// negStyle); bodyMode selects how those are applied:
+//   'cast'   → wall=0 AND negStyle='none'  (lost-wax-friendly: chunky body)
+//   'solid'  → wall=0  (tunnels stay; morphology preserved; cast risk)
+//   'hollow' → unchanged (current behavior; not good for casting)
+// In hollow mode we return state itself so the auto-fix loop can still
+// mutate state.wall and have it reflected in the slider; in cast/solid
+// modes we return a shallow clone so overrides don't leak into user state.
+function effectiveState(s) {
+  if (s.bodyMode === 'hollow') return s;
+  return {
+    ...s,
+    wall: 0,
+    negStyle: s.bodyMode === 'cast' ? 'none' : s.negStyle,
+  };
+}
+
 async function generate(previewVoxels = 96) {
   const myToken = ++genToken;
   setBusy(true);
@@ -3499,10 +3565,14 @@ async function generate(previewVoxels = 96) {
   await yieldFrame();
   if (myToken !== genToken) return;
 
+  // Snapshot the effective state once at the top so every downstream
+  // call sees a consistent view, even if the user toggles mode mid-build.
+  const eff = effectiveState(state);
+
   const t0 = performance.now();
-  const { branches: rawBranches, accents: rawAccents } = generateStructure(state);
-  scaleStructureToSize(rawBranches, rawAccents, state.size);
-  const { branches, accents } = applySymmetry(rawBranches, rawAccents, state);
+  const { branches: rawBranches, accents: rawAccents } = generateStructure(eff);
+  scaleStructureToSize(rawBranches, rawAccents, eff.size);
+  const { branches, accents } = applySymmetry(rawBranches, rawAccents, eff);
 
   // Phase 0 (Chunk B / v1.15.0): show the structural skeleton in the
   // canvas before the SDF rasterization runs. Gives the user something
@@ -3529,7 +3599,7 @@ async function generate(previewVoxels = 96) {
     await yieldFrame();
   };
 
-  let result = await buildBodyMesh(branches, accents, state, previewVoxels, myToken, onPhase);
+  let result = await buildBodyMesh(branches, accents, eff, previewVoxels, myToken, onPhase);
   if (myToken !== genToken) return;
   if (!result) return;
   let { mesh, triCount, voxel, nComp, bridges } = result;
@@ -3538,39 +3608,44 @@ async function generate(previewVoxels = 96) {
   setProgress('rings & accents…');
   await yieldFrame();
   if (myToken !== genToken) return;
-  const ringRng = mulberry32((state.seed >>> 0) ^ 0x7a5529c1);
-  const rawRings = generateRings(rawBranches, state, ringRng);
-  const rings = symmetrizeRings(rawRings, state);
+  const ringRng = mulberry32((eff.seed >>> 0) ^ 0x7a5529c1);
+  const rawRings = generateRings(rawBranches, eff, ringRng);
+  const rings = symmetrizeRings(rawRings, eff);
 
   // Printability analysis + auto-fix loop (Chunk C / v1.13.0). Inspects the
   // built mesh against the active material's print rules and the connectivity
   // result; if any auto-fixable issue is found, applies the fix to state,
   // rebuilds, and re-analyzes. Up to 3 iterations. Loop exits as soon as
   // every check passes or no further fix is possible.
+  // In cast/solid modes (eff !== state, eff.wall = 0), applyAutoFix will
+  // early-return since its first check is `if (state.wall <= 0) return`,
+  // so no rebuild occurs and the slider is correctly left alone.
   setProgress('printability check…');
   await yieldFrame();
   if (myToken !== genToken) return;
-  let report = analyzePrintability(result, rings, state, branches);
+  let report = analyzePrintability(result, rings, eff, branches);
   let fixCount = 0;
   const MAX_FIX = 3;
   while (!report.pass && fixCount < MAX_FIX) {
-    const fixes = applyAutoFix(state, report.checks, voxel);
+    const fixes = applyAutoFix(eff, report.checks, voxel);
     if (fixes.length === 0) break;  // nothing further is auto-fixable
+    // Auto-fix only mutates state.wall in hollow mode (where eff === state);
+    // in cast/solid modes the function early-returns, so eff.wall stays 0.
     // Sync the wall slider so the user sees their adjusted value.
-    if (bindings.wall) {
+    if (bindings.wall && state.bodyMode === 'hollow') {
       bindings.wall.el.value = String(state.wall.toFixed(1));
       bindings.wall.update();
     }
     setProgress(`auto-fix #${fixCount+1}: ${fixes.join(', ')}…`);
     await yieldFrame();
     if (myToken !== genToken) return;
-    const reb = await buildBodyMesh(branches, accents, state, previewVoxels, myToken, onPhase);
+    const reb = await buildBodyMesh(branches, accents, eff, previewVoxels, myToken, onPhase);
     if (myToken !== genToken) return;
     if (!reb) return;
     result = reb;
     ({ mesh, triCount, voxel, nComp, bridges } = reb);
     fixCount++;
-    report = analyzePrintability(reb, rings, state, branches);
+    report = analyzePrintability(reb, rings, eff, branches);
   }
   displayPrintReport(report, fixCount);
 
@@ -3584,7 +3659,12 @@ async function generate(previewVoxels = 96) {
   // Cache the build result so downloadSTL can run its safety check
   // against the actual built field, and so the export-time pipeline
   // can serialize this exact mesh (no recomputation, no divergence).
-  lastBuildResult = { fieldInfo: result.fieldInfo, voxel: result.voxel, branches, rings };
+  // Stash effective wall + negStyle (v1.24.0) so export safety checks
+  // see what was actually built, not the user's pre-mode state.
+  lastBuildResult = {
+    fieldInfo: result.fieldInfo, voxel: result.voxel, branches, rings,
+    effWall: eff.wall, effNegStyle: eff.negStyle,
+  };
 
   // Mass + cost readout. Body volume comes from the preview mesh via the
   // divergence trick; ring volumes via exact torus formula. Preview uses
@@ -3699,9 +3779,14 @@ async function downloadSTL() {
     // most recent preview build, so the export still logs warnings if
     // anything's off. The Printability card already shows the same info,
     // but the console log gives a verifiable record at export time.
+    // Use the cached effective wall/negStyle (v1.24.0) so the safety
+    // check sees what was actually built, not the user's pre-mode state.
+    const effWall = lastBuildResult ? lastBuildResult.effWall : state.wall;
+    const effNegStyle = lastBuildResult ? lastBuildResult.effNegStyle : state.negStyle;
+    const safetyState = { ...state, wall: effWall, negStyle: effNegStyle };
     const warns = lastBuildResult
-      ? checkPrintSafety(lastBuildResult.branches, lastBuildResult.voxel, lastBuildResult.fieldInfo, state.material, state.wall)
-          .concat(checkNegSpaceSafety(state, lastBuildResult.branches))
+      ? checkPrintSafety(lastBuildResult.branches, lastBuildResult.voxel, lastBuildResult.fieldInfo, state.material, effWall)
+          .concat(checkNegSpaceSafety(safetyState, lastBuildResult.branches))
       : [];
     if (warns.length) {
       console.warn('print-safety warnings:');
@@ -3715,11 +3800,16 @@ async function downloadSTL() {
     a.href = url;
     // Filename starts with an ISO-8601-style timestamp so files sort
     // chronologically by name (v1.23.5). Colons aren't safe on Windows,
-    // so the time portion uses dashes (HH-MM-SS).
+    // so the time portion uses dashes (HH-MM-SS). Body-mode token
+    // (v1.24.0) appears after the material slug so the casting target
+    // is obvious from filename alone.
     const now = new Date();
     const pad = n => String(n).padStart(2, '0');
     const stamp = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-    a.download = `radiolaria_${stamp}_${matSlug}_seed${state.seed}_${state.size}mm_${encodeFull(state)}_${VERSION}.stl`;
+    const bodyToken = state.bodyMode === 'hollow'
+      ? `hollow${(state.wall || 0).toFixed(1)}mm`
+      : state.bodyMode;
+    a.download = `radiolaria_${stamp}_${matSlug}_${bodyToken}_seed${state.seed}_${state.size}mm_${encodeFull(state)}_${VERSION}.stl`;
     a.click();
     setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
 
@@ -3850,6 +3940,24 @@ if (textureDetailEl) {
   });
 }
 
+// Body-mode dropdown (v1.24.0). Toggles between cast-friendly /
+// solid-with-tunnels / hollow geometries via effectiveState() at
+// generation time. The wall slider is greyed out in non-hollow modes
+// since wall thickness has no effect on the build there.
+const bodyModeEl = document.getElementById('bodyMode');
+function refreshWallEnabled() {
+  if (!bindings.wall) return;
+  const ctrl = bindings.wall.el.closest('.ctrl');
+  if (ctrl) ctrl.classList.toggle('disabled', state.bodyMode !== 'hollow');
+}
+if (bodyModeEl) {
+  bodyModeEl.addEventListener('change', () => {
+    state.bodyMode = bodyModeEl.value;
+    refreshWallEnabled();
+    scheduleRegen();
+  });
+}
+
 // Refresh the quality option labels with approximate voxels-per-mm at
 // the current state.size (v1.22.4). Helps the user reason about feature
 // resolution without doing the math. Computed against state.size
@@ -3872,6 +3980,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.24.0', date: '2026-04-27', n: 'Body-mode toggle: Cast-friendly / Solid w/ tunnels (default) / Hollow. Defaults work for lost-wax brass casting.' },
   { v: 'v1.23.5', date: '2026-04-27', n: 'STL filename starts with ISO-8601 timestamp so downloads sort chronologically by name.' },
   { v: 'v1.23.4', date: '2026-04-27', n: 'Defaults: Quality → Ultra, Texture detail → Extreme. Codec preserves morphology of older configs (slot 20 still defaults to standard).' },
   { v: 'v1.23.3', date: '2026-04-27', n: 'Extreme texture-detail tier (64×) for SLA/DMLS-grade surface fidelity. Large STL.' },
@@ -4060,6 +4169,8 @@ function refreshUIFromState() {
   if (textureEl) textureEl.value = state.texture;
   if (qualityEl) qualityEl.value = state.quality;
   if (textureDetailEl) textureDetailEl.value = state.textureDetail;
+  if (bodyModeEl) bodyModeEl.value = state.bodyMode;
+  refreshWallEnabled();
   updateQualityLabels();
   updateAllFields();
 }
