@@ -482,6 +482,10 @@
             <option value="bronze">Bronze</option>
             <option value="copper">Copper (CuCr1Zr)</option>
           </optgroup>
+          <optgroup label="Lost-wax cast (i.materialise)">
+            <option value="brass-cast-gold" selected>Brass + 18K Yellow Gold Plate</option>
+            <option value="brass-cast">Brass (Natural PU)</option>
+          </optgroup>
           <optgroup label="Plastics (FDM / SLA / SLS)">
             <option value="pla">PLA (FDM)</option>
             <option value="petg">PETG (FDM)</option>
@@ -616,7 +620,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.24.0</span>
+        <span id="version">v1.24.1</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -668,7 +672,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.24.0";
+const VERSION = "v1.24.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -694,6 +698,22 @@ const MATERIALS = {
   abs:       { label: 'ABS (FDM)',              slug: 'abs',       group: 'plastic', color: 0xb8b8b8, metalness: 0.00, roughness: 0.60, minWall: 0.8, density: 1.04e-3,  cost: 0.15  },
   nylon:     { label: 'Nylon PA12 (SLS)',       slug: 'nylon',     group: 'plastic', color: 0xeae3d4, metalness: 0.00, roughness: 0.70, minWall: 0.7, density: 1.01e-3,  cost: 0.50  },
   resin:     { label: 'Resin (SLA)',            slug: 'resin',     group: 'plastic', color: 0xd6d6da, metalness: 0.00, roughness: 0.30, minWall: 0.5, density: 1.18e-3,  cost: 0.40  },
+
+  // Lost-wax cast metals via i.materialise (v1.24.1). Pricing is
+  // approximated from publicly-described i.materialise quote data —
+  // their official quote engine is the source of truth, so always
+  // verify the final price on their site before ordering. Density and
+  // minWall come from their published material specs.
+  //
+  // Yellow brass C26000 = ~8.5 g/cm³. minWall 0.6mm is i.materialise's
+  // documented brass minimum. Cost per gram is a midrange estimate
+  // that hits the Brass-PU "30 EUR small ring" data point reasonably
+  // well at sculpture scale (~50-200cm³); their volume-discount curve
+  // means small parts will under-price slightly here. Plating
+  // surcharge (5-9 EUR depending on finish) is folded into the
+  // startup fee for the gold-plated entry.
+  'brass-cast':      { label: 'Brass (lost-wax cast, i.materialise)',   slug: 'brass-cast',      group: 'metal', color: 0xb5a642, metalness: 0.85, roughness: 0.40, minWall: 0.6, density: 8.50e-3, cost: 0.80, startup: 15.00 },
+  'brass-cast-gold': { label: 'Brass + 18K Yellow Gold Plate (i.mat.)', slug: 'brass-cast-gold', group: 'metal', color: 0xd4af37, metalness: 0.95, roughness: 0.20, minWall: 0.6, density: 8.50e-3, cost: 0.80, startup: 21.00 },
 };
 
 const DEFAULTS = {
@@ -710,7 +730,9 @@ const DEFAULTS = {
   sym: 'radial',
   radialN: 5,
   neg: 3.7,
-  material: 'stainless',
+  material: 'brass-cast-gold',  // Default raised in v1.24.1 — most users
+                                 // here are casting via i.materialise lost-
+                                 // wax-cast brass with 18K yellow gold plate.
   size: 80,  // target max bounding-box dimension (mm)
   wall: 1.0, // default hollow shell with 1mm wall — above every material's
              // minWall, sensible at default size/export-resolution.
@@ -770,7 +792,10 @@ const state = { ...DEFAULTS };
 // future state additions don't silently misinterpret old strings.
 const SCHEMA_FULL = 1;
 const SCHEMA_PARAMS = 2;
-const MATERIAL_KEYS = ['stainless','titanium','aluminum','inconel','cocr','bronze','copper','pla','petg','abs','nylon','resin'];
+// Append-only — new entries get appended at the end so existing config
+// strings (which encode material as an integer index) keep decoding to
+// the same material across versions.
+const MATERIAL_KEYS = ['stainless','titanium','aluminum','inconel','cocr','bronze','copper','pla','petg','abs','nylon','resin','brass-cast','brass-cast-gold'];
 const SYM_KEYS = ['none','bilateral','radial'];
 const NEGSTYLE_KEYS = ['none','helix','colony'];
 const TEXTURE_KEYS = ['smooth','organic'];
@@ -3533,7 +3558,12 @@ function torusVolume(R, r) { return 2 * Math.PI * Math.PI * R * r * r; }
 
 function formatCost(mat, volumeMM3) {
   const mass_g = volumeMM3 * mat.density;
-  const cost = mass_g * mat.cost;
+  // Optional fixed startup fee per piece (v1.24.1) — used by service-
+  // bureau materials like i.materialise lost-wax brass that charge a
+  // per-piece fee on top of the per-gram material cost. Defaults to 0
+  // for in-house DMLS/FDM materials where the user supplies the print.
+  const startup = mat.startup || 0;
+  const cost = mass_g * mat.cost + startup;
   const massStr = mass_g < 10 ? mass_g.toFixed(1) : Math.round(mass_g);
   const costStr = cost < 10 ? cost.toFixed(2) : cost < 1000 ? Math.round(cost) : (cost/1000).toFixed(1)+'k';
   return `${massStr}g · $${costStr}`;
@@ -3980,6 +4010,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.24.1', date: '2026-04-30', n: 'Lost-wax cast brass + 18K gold plate (i.materialise) is the new default material. Cost formula gains optional startup fee.' },
   { v: 'v1.24.0', date: '2026-04-27', n: 'Body-mode toggle: Cast-friendly / Solid w/ tunnels (default) / Hollow. Defaults work for lost-wax brass casting.' },
   { v: 'v1.23.5', date: '2026-04-27', n: 'STL filename starts with ISO-8601 timestamp so downloads sort chronologically by name.' },
   { v: 'v1.23.4', date: '2026-04-27', n: 'Defaults: Quality → Ultra, Texture detail → Extreme. Codec preserves morphology of older configs (slot 20 still defaults to standard).' },
