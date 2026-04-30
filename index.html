@@ -627,7 +627,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.24.2</span>
+        <span id="version">v1.24.3</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -679,7 +679,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.24.2";
+const VERSION = "v1.24.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -719,8 +719,8 @@ const MATERIALS = {
   // means small parts will under-price slightly here. Plating
   // surcharge (5-9 EUR depending on finish) is folded into the
   // startup fee for the gold-plated entry.
-  'brass-cast':      { label: 'Brass (lost-wax cast, i.materialise)',   slug: 'brass-cast',      group: 'metal', color: 0xb5a642, metalness: 0.85, roughness: 0.40, minWall: 0.6, density: 8.50e-3, cost: 0.80, startup: 15.00 },
-  'brass-cast-gold': { label: 'Brass + 18K Yellow Gold Plate (i.mat.)', slug: 'brass-cast-gold', group: 'metal', color: 0xd4af37, metalness: 0.95, roughness: 0.20, minWall: 0.6, density: 8.50e-3, cost: 0.80, startup: 21.00 },
+  'brass-cast':      { label: 'Brass (lost-wax cast, i.materialise)',   slug: 'brass-cast',      group: 'metal', color: 0xb5a642, metalness: 0.85, roughness: 0.40, minWall: 0.6, density: 8.50e-3, cost: 0.80, startup: 15.00, lostWax: true },
+  'brass-cast-gold': { label: 'Brass + 18K Yellow Gold Plate (i.mat.)', slug: 'brass-cast-gold', group: 'metal', color: 0xd4af37, metalness: 0.95, roughness: 0.20, minWall: 0.6, density: 8.50e-3, cost: 0.80, startup: 21.00, lostWax: true },
 };
 
 const DEFAULTS = {
@@ -2223,9 +2223,18 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
   // an infinite bore along the longest bounding-box axis through origin,
   // so DMLS unfused powder has an orientation-agnostic escape path. We
   // skip this pass entirely when wall == 0 so solid mode stays cheap.
+  //
+  // v1.24.3: lost-wax materials skip the drain bore pass — the
+  // negative-space tunnels already puncture the shell, so wax can
+  // escape through them during burnout. Removing the cylindrical bore
+  // also avoids the visually-distracting hole through the silhouette
+  // that was the dominant difference between Hollow and Solid w/
+  // tunnels at the same seed. Shell carving still applies; only the
+  // drain subtraction is conditional.
   if (s.wall > 0.01) {
     const wall = s.wall;
     const mat = MATERIALS[s.material] || MATERIALS.stainless;
+    const skipDrain = !!mat.lostWax;
     // Drain diameter = max(2mm, 2.5 × minWall). Smaller diameters can trap
     // powder during removal; larger eats more material than needed.
     const drainR = Math.max(1.0, 1.25 * mat.minWall);
@@ -2246,14 +2255,16 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
           const idx = base + xi;
           const d = field[idx];
           let shell = Math.max(d, -(d + wall));
-          // Cylinder SDF along axis through origin. proj = p·axis,
-          // perp = p - proj·axis, dist = |perp|.
-          const proj = px * dx + py * dy + pz * dz;
-          const ex = px - proj * dx, ey = py - proj * dy, ez = pz - proj * dz;
-          const perpDist = Math.sqrt(ex*ex + ey*ey + ez*ez);
-          const cyl = perpDist - drainR;
-          // Subtract cylinder: where inside cylinder (cyl < 0), push shell to outside.
-          if (-cyl > shell) shell = -cyl;
+          if (!skipDrain) {
+            // Cylinder SDF along axis through origin. proj = p·axis,
+            // perp = p - proj·axis, dist = |perp|.
+            const proj = px * dx + py * dy + pz * dz;
+            const ex = px - proj * dx, ey = py - proj * dy, ez = pz - proj * dz;
+            const perpDist = Math.sqrt(ex*ex + ey*ey + ez*ez);
+            const cyl = perpDist - drainR;
+            // Subtract cylinder: where inside cylinder (cyl < 0), push shell to outside.
+            if (-cyl > shell) shell = -cyl;
+          }
           field[idx] = shell;
         }
       }
@@ -4035,6 +4046,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.24.3', date: '2026-04-30', n: 'Hollow mode skips the drain bore for lost-wax materials — tunnels handle wax escape, no visible cylindrical bore through the silhouette.' },
   { v: 'v1.24.2', date: '2026-04-30', n: 'Body-mode polish: wall-check label names the bodyMode, and a casting warning surfaces when brass material + hollow mode are combined.' },
   { v: 'v1.24.1', date: '2026-04-30', n: 'Lost-wax cast brass + 18K gold plate (i.materialise) is the new default material. Cost formula gains optional startup fee.' },
   { v: 'v1.24.0', date: '2026-04-27', n: 'Body-mode toggle: Cast-friendly / Solid w/ tunnels (default) / Hollow. Defaults work for lost-wax brass casting.' },
