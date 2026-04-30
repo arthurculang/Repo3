@@ -511,8 +511,8 @@
         <label>Body</label>
         <select id="bodyMode">
           <option value="cast">Cast-friendly (no shell, no tunnels)</option>
-          <option value="solid" selected>Solid w/ tunnels (cast risk; preserves morphology)</option>
-          <option value="hollow">Hollow — not good for casting</option>
+          <option value="solid">Solid w/ tunnels (cast risk; preserves morphology)</option>
+          <option value="hollow" selected>Hollow — not good for casting</option>
         </select>
         <div id="bodyModeWarn" class="ctrl-warn hidden">⚠ Hollow shells often fail in lost-wax casting — switch to Solid w/ tunnels or Cast-friendly.</div>
       </div>
@@ -627,7 +627,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.24.3</span>
+        <span id="version">v1.24.4</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -679,7 +679,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.24.3";
+const VERSION = "v1.24.4";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -768,7 +768,7 @@ const DEFAULTS = {
                             // morphology. STL export includes the
                             // subdivided mesh (WYSIWYG). Default raised
                             // from 'high' to 'extreme' in v1.23.4.
-  bodyMode: 'solid',   // 'cast' | 'solid' | 'hollow' — body composition
+  bodyMode: 'hollow',  // 'cast' | 'solid' | 'hollow' — body composition
                        // toggle (v1.24.0). 'cast' forces wall=0 AND
                        // negStyle='none' for lost-wax-friendly geometry;
                        // 'solid' forces wall=0 only (tunnels stay,
@@ -777,6 +777,10 @@ const DEFAULTS = {
                        // negStyle as configured (current pre-v1.24
                        // behaviour). state.wall and state.negStyle still
                        // hold the user's preferences regardless of mode.
+                       // Default raised from 'solid' to 'hollow' in
+                       // v1.24.4 — preserves the lattice morphology;
+                       // user accepts the casting-risk trade-off until
+                       // the solid-mode visual gap is closed.
 };
 const state = { ...DEFAULTS };
 
@@ -4046,6 +4050,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.24.4', date: '2026-04-30', n: 'Default body mode → Hollow. Preserves lattice morphology; the casting warning + dropdown copy still flag the risk.' },
   { v: 'v1.24.3', date: '2026-04-30', n: 'Hollow mode skips the drain bore for lost-wax materials — tunnels handle wax escape, no visible cylindrical bore through the silhouette.' },
   { v: 'v1.24.2', date: '2026-04-30', n: 'Body-mode polish: wall-check label names the bodyMode, and a casting warning surfaces when brass material + hollow mode are combined.' },
   { v: 'v1.24.1', date: '2026-04-30', n: 'Lost-wax cast brass + 18K gold plate (i.materialise) is the new default material. Cost formula gains optional startup fee.' },
