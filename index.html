@@ -144,6 +144,12 @@
     content: " (inactive)"; font-size: 10px; letter-spacing: 0.04em;
     color: var(--ink-dim);
   }
+  .ctrl-warn {
+    margin-top: 6px; padding: 6px 8px; border-radius: 4px;
+    background: rgba(255, 107, 107, 0.10);
+    border-left: 3px solid var(--danger);
+    color: var(--ink); font-size: 11px; line-height: 1.35;
+  }
   .ctrl input[type="range"]::-webkit-slider-runnable-track {
     height: 4px; border-radius: 2px; background: #2a323b;
   }
@@ -508,6 +514,7 @@
           <option value="solid" selected>Solid w/ tunnels (cast risk; preserves morphology)</option>
           <option value="hollow">Hollow — not good for casting</option>
         </select>
+        <div id="bodyModeWarn" class="ctrl-warn hidden">⚠ Hollow shells often fail in lost-wax casting — switch to Solid w/ tunnels or Cast-friendly.</div>
       </div>
 
       <div class="ctrl">
@@ -620,7 +627,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.24.1</span>
+        <span id="version">v1.24.2</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -672,7 +679,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.24.1";
+const VERSION = "v1.24.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -3275,12 +3282,18 @@ function analyzePrintability(buildResult, rings, s, branches) {
         : `shell wall ${s.wall.toFixed(2)}mm is below ${mat.label} ${mat.minWall}mm minimum`,
     });
   } else {
-    checks.push({
-      name: 'wall',
-      pass: true,
-      autoFix: false,
-      label: 'solid (no shell wall — printable as a fully-solid part)',
-    });
+    // wall=0 reaches here in cast/solid bodyModes (effectiveState forces
+    // wall to 0 there). Surface the bodyMode reason so the report
+    // explains WHY there's no shell, not just that there isn't one.
+    let label;
+    if (s.bodyMode === 'cast') {
+      label = 'cast-friendly body — no shell, no tunnels (lost-wax-safe)';
+    } else if (s.bodyMode === 'solid') {
+      label = 'solid w/ tunnels — no shell wall (morphology preserved; tunnels may risk casting)';
+    } else {
+      label = 'solid (no shell wall — printable as a fully-solid part)';
+    }
+    checks.push({ name: 'wall', pass: true, autoFix: false, label });
   }
 
   // 3. Branch radii.
@@ -3929,6 +3942,7 @@ materialEl.addEventListener('change', () => {
     bindings.wall.update();
     scheduleRegen();
   }
+  if (typeof refreshBodyModeWarn === 'function') refreshBodyModeWarn();
   updateAllFields();
 });
 
@@ -3975,15 +3989,26 @@ if (textureDetailEl) {
 // generation time. The wall slider is greyed out in non-hollow modes
 // since wall thickness has no effect on the build there.
 const bodyModeEl = document.getElementById('bodyMode');
+const bodyModeWarnEl = document.getElementById('bodyModeWarn');
 function refreshWallEnabled() {
   if (!bindings.wall) return;
   const ctrl = bindings.wall.el.closest('.ctrl');
   if (ctrl) ctrl.classList.toggle('disabled', state.bodyMode !== 'hollow');
 }
+// Show the casting warning only when both conditions hold: lost-wax
+// material AND hollow body. Cast-friendly + Solid w/ tunnels modes
+// are the supported casting paths, so they stay quiet.
+function refreshBodyModeWarn() {
+  if (!bodyModeWarnEl) return;
+  const isCastMaterial = state.material === 'brass-cast' || state.material === 'brass-cast-gold';
+  const isHollow = state.bodyMode === 'hollow';
+  bodyModeWarnEl.classList.toggle('hidden', !(isCastMaterial && isHollow));
+}
 if (bodyModeEl) {
   bodyModeEl.addEventListener('change', () => {
     state.bodyMode = bodyModeEl.value;
     refreshWallEnabled();
+    refreshBodyModeWarn();
     scheduleRegen();
   });
 }
@@ -4010,6 +4035,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.24.2', date: '2026-04-30', n: 'Body-mode polish: wall-check label names the bodyMode, and a casting warning surfaces when brass material + hollow mode are combined.' },
   { v: 'v1.24.1', date: '2026-04-30', n: 'Lost-wax cast brass + 18K gold plate (i.materialise) is the new default material. Cost formula gains optional startup fee.' },
   { v: 'v1.24.0', date: '2026-04-27', n: 'Body-mode toggle: Cast-friendly / Solid w/ tunnels (default) / Hollow. Defaults work for lost-wax brass casting.' },
   { v: 'v1.23.5', date: '2026-04-27', n: 'STL filename starts with ISO-8601 timestamp so downloads sort chronologically by name.' },
@@ -4202,6 +4228,7 @@ function refreshUIFromState() {
   if (textureDetailEl) textureDetailEl.value = state.textureDetail;
   if (bodyModeEl) bodyModeEl.value = state.bodyMode;
   refreshWallEnabled();
+  refreshBodyModeWarn();
   updateQualityLabels();
   updateAllFields();
 }
