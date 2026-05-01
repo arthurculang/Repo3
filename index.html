@@ -576,6 +576,17 @@
       </div>
 
       <div class="ctrl">
+        <label>Mesh simplify</label>
+        <select id="simplify">
+          <option value="off" selected>Off (full fidelity)</option>
+          <option value="light">Light (−25% tris)</option>
+          <option value="medium">Medium (−50% tris)</option>
+          <option value="aggressive">Aggressive (−75% tris)</option>
+        </select>
+        <div class="ctrl-note">Reduces tri count + STL size for service-bureau uploads. Preserves morphology; spends some surface texture.</div>
+      </div>
+
+      <div class="ctrl">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
       </div>
@@ -631,7 +642,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.24.7</span>
+        <span id="version">v1.25.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -679,11 +690,12 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { SimplifyModifier } from 'three/addons/modifiers/SimplifyModifier.js';
 
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.24.7";
+const VERSION = "v1.25.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -772,6 +784,15 @@ const DEFAULTS = {
                             // morphology. STL export includes the
                             // subdivided mesh (WYSIWYG). Default raised
                             // from 'high' to 'extreme' in v1.23.4.
+  simplify: 'off',     // 'off' | 'light' | 'medium' | 'aggressive' — runs
+                       // quadric edge-collapse decimation on the final
+                       // textured mesh before STL export (v1.25.0).
+                       // Reduces triangle count + STL file size; preserves
+                       // overall morphology (low-curvature regions
+                       // collapsed first, silhouettes preserved). Off by
+                       // default so the print-fidelity output is the
+                       // baseline; opt in when a service-bureau upload
+                       // size limit forces the issue.
   bodyMode: 'hollow-fill',  // 'cast' | 'solid' | 'hollow' | 'hollow-fill' — body composition
                        // toggle (v1.24.0). 'cast' forces wall=0 AND
                        // negStyle='none' for lost-wax-friendly geometry;
@@ -819,6 +840,13 @@ const QUALITY_VOXELS = { standard: 96, high: 128, ultra: 160 };
 const TEXDETAIL_KEYS = ['off','medium','high','extreme'];
 const TEXDETAIL_LEVELS = { off: 0, medium: 1, high: 2, extreme: 3 };
 const BODYMODE_KEYS = ['cast','solid','hollow','hollow-fill'];
+const SIMPLIFY_KEYS = ['off','light','medium','aggressive'];
+// Fraction of vertices to REMOVE per setting. SimplifyModifier reduces
+// triangle count proportionally — at light/0.25 you get ~25% fewer
+// tris, at aggressive/0.75 you get ~75% fewer. Edge collapse merges
+// adjacent vertices, so silhouette + high-curvature areas are
+// preserved while smooth large regions get collapsed first.
+const SIMPLIFY_FRACS = { off: 0, light: 0.25, medium: 0.5, aggressive: 0.75 };
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
@@ -830,6 +858,7 @@ function paramFields(s) {
   const ql = QUALITY_KEYS.indexOf(s.quality);
   const td = TEXDETAIL_KEYS.indexOf(s.textureDetail);
   const bm = BODYMODE_KEYS.indexOf(s.bodyMode);
+  const sm = SIMPLIFY_KEYS.indexOf(s.simplify);
   return [
     m < 0 ? 0 : m,
     s.size,
@@ -865,6 +894,9 @@ function paramFields(s) {
     // from wall + negStyle below in parseParamSlots so reloaded configs
     // render the same shape they were saved with.
     bm < 0 ? 1 : bm,
+    // ↓ added in v1.25.0. Append-only; defaults to 'off' for older
+    // strings so reloaded configs render at full fidelity.
+    sm < 0 ? 0 : sm,
   ];
 }
 
@@ -917,6 +949,11 @@ function parseParamSlots(slots) {
     bmIdx = BODYMODE_KEYS.indexOf(derivedBm);
     if (bmIdx < 0) bmIdx = 1;
   }
+  // Mesh simplify: new in v1.25.0. Defaults to 'off' for older strings
+  // so reloaded configs render at full fidelity.
+  const smIdx = slots.length > 23
+    ? clamp(parseInt(slots[23], 10) || 0, 0, SIMPLIFY_KEYS.length - 1)
+    : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -941,6 +978,7 @@ function parseParamSlots(slots) {
     quality:     QUALITY_KEYS[qlIdx],
     textureDetail: TEXDETAIL_KEYS[tdIdx],
     bodyMode:    BODYMODE_KEYS[bmIdx],
+    simplify:    SIMPLIFY_KEYS[smIdx],
   };
 }
 
@@ -2973,6 +3011,38 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   // negative-space tunnels the way the v1.21.x SDF-domain pass did.
   // No-ops for s.texture === 'smooth'.
   applyVertexTexture(geom, s);
+
+  // Mesh simplify (v1.25.0). Quadric edge-collapse decimation runs
+  // AFTER texture so the displacement gets baked in before vertices
+  // collapse — the texture's high-frequency detail is partly preserved
+  // by the quadric metric (it weights collapses by local curvature, so
+  // bumpy regions resist collapsing more than smooth ones). Skipped
+  // for s.simplify === 'off' so the default pipeline pays no cost.
+  // The displacement-aware simplify is what lets us cut tri count for
+  // service-bureau uploads without flattening the morphology.
+  const simplifyFrac = SIMPLIFY_FRACS[s.simplify] || 0;
+  if (simplifyFrac > 0) {
+    const vertCountBefore = geom.getAttribute('position').count;
+    const removeCount = Math.floor(vertCountBefore * simplifyFrac);
+    if (removeCount > 0) {
+      try {
+        const simplifier = new SimplifyModifier();
+        const simplified = simplifier.modify(geom, removeCount);
+        if (simplified && simplified.getAttribute('position').count > 0) {
+          geom.dispose();
+          geom = simplified;
+          // SimplifyModifier returns a non-indexed BufferGeometry;
+          // re-merge so subsequent processing (mass calc, STL export)
+          // sees a proper indexed mesh and we get clean shading.
+          geom = mergeVertices(geom, 1e-4);
+          geom.computeVertexNormals();
+        }
+      } catch (e) {
+        console.warn('SimplifyModifier failed; keeping full-resolution mesh:', e.message);
+      }
+    }
+  }
+
   const mesh = new THREE.Mesh(geom, material);
   const triCount = geom.getIndex().count / 3;
   return { mesh, triCount, voxel: f.voxel, nComp: comp.nComp, bridges: nRepairs, fieldInfo: f };
@@ -4180,6 +4250,17 @@ if (textureDetailEl) {
   });
 }
 
+// Mesh-simplify dropdown (v1.25.0). Runs SimplifyModifier on the final
+// textured geometry to reduce triangle count for service-bureau STL
+// uploads. Off by default; opt in when an upload size limit forces it.
+const simplifyEl = document.getElementById('simplify');
+if (simplifyEl) {
+  simplifyEl.addEventListener('change', () => {
+    state.simplify = simplifyEl.value;
+    scheduleRegen();
+  });
+}
+
 // Body-mode dropdown (v1.24.0). Toggles between cast-friendly /
 // solid-with-tunnels / hollow geometries via effectiveState() at
 // generation time. The wall slider is greyed out in non-hollow modes
@@ -4234,6 +4315,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.25.0', date: '2026-05-01', n: 'Mesh simplify dropdown: quadric edge-collapse decimation reduces tri count for service-bureau STL uploads. Off / Light / Medium / Aggressive.' },
   { v: 'v1.24.7', date: '2026-05-01', n: 'New "Hollow + Fill" body mode (now default): same lattice morphology as Hollow but interior pockets are sealed for casting. Slicer-slow tri count is now a yellow ⚠, not a red ✗.' },
   { v: 'v1.24.6', date: '2026-05-01', n: 'Sealed-cavity detection: printability card now reports interior pockets that may trap air during brass pour. Informational only.' },
   { v: 'v1.24.5', date: '2026-04-30', n: 'Coral pit depth uses the wall slider as a cap in all body modes — closes the dominant texture-amplitude gap between Solid w/ tunnels and Hollow.' },
@@ -4430,6 +4512,7 @@ function refreshUIFromState() {
   if (textureEl) textureEl.value = state.texture;
   if (qualityEl) qualityEl.value = state.quality;
   if (textureDetailEl) textureDetailEl.value = state.textureDetail;
+  if (simplifyEl) simplifyEl.value = state.simplify;
   if (bodyModeEl) bodyModeEl.value = state.bodyMode;
   refreshWallEnabled();
   refreshBodyModeWarn();
