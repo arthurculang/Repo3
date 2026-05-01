@@ -586,6 +586,7 @@
           <option value="severe">Severe (−85% tris)</option>
           <option value="brutal">Brutal (−90% tris)</option>
           <option value="maximum">Maximum (−95% tris)</option>
+          <option value="obliterate">Obliterate (−98% tris)</option>
         </select>
         <div class="ctrl-note">Reduces tri count + STL size for service-bureau uploads. Preserves morphology; spends some surface texture.</div>
       </div>
@@ -646,7 +647,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.25.2</span>
+        <span id="version">v1.25.3</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -698,7 +699,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.25.2";
+const VERSION = "v1.25.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -843,7 +844,7 @@ const QUALITY_VOXELS = { standard: 96, high: 128, ultra: 160 };
 const TEXDETAIL_KEYS = ['off','medium','high','extreme'];
 const TEXDETAIL_LEVELS = { off: 0, medium: 1, high: 2, extreme: 3 };
 const BODYMODE_KEYS = ['cast','solid','hollow','hollow-fill'];
-const SIMPLIFY_KEYS = ['off','light','medium','aggressive','extreme','severe','brutal','maximum'];
+const SIMPLIFY_KEYS = ['off','light','medium','aggressive','extreme','severe','brutal','maximum','obliterate'];
 // Spatial tolerance (mm) for vertex-clustering decimation. mergeVertices
 // collapses any two vertices within this distance into one; triangles
 // that become degenerate (two or three indices the same) are then
@@ -871,6 +872,8 @@ const SIMPLIFY_TOLS = {
   severe: 0.40,       // ~85%
   brutal: 0.60,       // ~90%
   maximum: 0.90,      // ~95%
+  obliterate: 1.50,   // ~98% — surface texture all but gone; only the
+                      //         silhouette and major branching survive.
 };
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
@@ -4350,6 +4353,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.25.3', date: '2026-05-01', n: 'Added Obliterate (−98%) Mesh simplify tier for hardest upload limits.' },
   { v: 'v1.25.2', date: '2026-05-01', n: 'Added more aggressive Mesh simplify tiers: Extreme (−80%), Severe (−85%), Brutal (−90%), Maximum (−95%) for tight upload limits.' },
   { v: 'v1.25.1', date: '2026-05-01', n: 'Mesh simplify swapped from SimplifyModifier (OOM-crashed on 7M+ tris) to vertex-clustering decimation — O(n), ~100ms even on extreme meshes.' },
   { v: 'v1.25.0', date: '2026-05-01', n: 'Mesh simplify dropdown: quadric edge-collapse decimation reduces tri count for service-bureau STL uploads. Off / Light / Medium / Aggressive.' },
