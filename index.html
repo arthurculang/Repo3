@@ -628,7 +628,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.24.5</span>
+        <span id="version">v1.24.6</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -680,7 +680,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.24.5";
+const VERSION = "v1.24.6";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -3278,6 +3278,101 @@ function checkNegSpaceSafety(s, branches) {
 // The fail items that are auto-fixable get clamped state values via
 // applyAutoFix; the generate() loop then rebuilds and re-analyzes until
 // either everything passes or no further fix is possible.
+// Sealed-cavity detection (v1.24.6). Looks for "trapped air" inside the
+// body — empty-space voxels (field > 0) that aren't reachable from the
+// bounding-box exterior via empty-space neighbors. These are the
+// "Swiss-cheese-bubble" pockets in the wax pattern; during brass pour,
+// air in them needs to escape via a long void path, which can fail and
+// leave a void in the cooled brass.
+//
+// Algorithm: flood-fill from every empty-space voxel on the bounding-
+// box surface (those are definitionally exterior). Any positive-field
+// voxel BFS doesn't reach is sealed. Then a second BFS counts connected
+// components among the sealed set and sums their volumes.
+//
+// Cost: ~O(nx·ny·nz) per call. At Standard 96³ ≈ 0.65M voxels → ~50ms.
+// At Ultra 160³ ≈ 4M voxels → ~500ms. Cheap enough to run inside
+// analyzePrintability without noticeably slowing the auto-fix loop.
+function detectSealedCavities(field, nx, ny, nz, voxel) {
+  const stride = nx * ny;
+  const total = nx * ny * nz;
+  const reachable = new Uint8Array(total);
+  const queue = new Int32Array(total);
+  let qHead = 0, qTail = 0;
+
+  // Seed: every empty-space voxel on the bounding-box boundary. The
+  // padded bbox always has air on every face, so this is robust even
+  // if a single corner happened to be inside the body.
+  for (let z = 0; z < nz; z++) {
+    const onZ = (z === 0 || z === nz - 1);
+    for (let y = 0; y < ny; y++) {
+      const onY = (y === 0 || y === ny - 1);
+      const yBase = z * stride + y * nx;
+      for (let x = 0; x < nx; x++) {
+        if (!onZ && !onY && x !== 0 && x !== nx - 1) continue;
+        const idx = yBase + x;
+        if (field[idx] > 0 && !reachable[idx]) {
+          reachable[idx] = 1;
+          queue[qTail++] = idx;
+        }
+      }
+    }
+  }
+
+  // BFS through empty-space connectivity (6-neighbour).
+  while (qHead < qTail) {
+    const idx = queue[qHead++];
+    const z = (idx / stride) | 0;
+    const rem = idx - z * stride;
+    const y = (rem / nx) | 0;
+    const x = rem - y * nx;
+    const tryNb = (n) => {
+      if (n < 0 || n >= total || reachable[n]) return;
+      if (field[n] > 0) { reachable[n] = 1; queue[qTail++] = n; }
+    };
+    if (x > 0)      tryNb(idx - 1);
+    if (x < nx - 1) tryNb(idx + 1);
+    if (y > 0)      tryNb(idx - nx);
+    if (y < ny - 1) tryNb(idx + nx);
+    if (z > 0)      tryNb(idx - stride);
+    if (z < nz - 1) tryNb(idx + stride);
+  }
+
+  // Pass 2: count connected components among the SEALED voxels and
+  // sum their volumes. Reusing the queue array.
+  const compId = new Int32Array(total);
+  let nCavities = 0;
+  let sealedVoxels = 0;
+  for (let i = 0; i < total; i++) {
+    if (field[i] <= 0 || reachable[i] || compId[i]) continue;
+    nCavities++;
+    sealedVoxels++;
+    compId[i] = nCavities;
+    qHead = 0; qTail = 0;
+    queue[qTail++] = i;
+    while (qHead < qTail) {
+      const idx = queue[qHead++];
+      const z = (idx / stride) | 0;
+      const rem = idx - z * stride;
+      const y = (rem / nx) | 0;
+      const x = rem - y * nx;
+      const tryNb2 = (n) => {
+        if (n < 0 || n >= total || reachable[n] || compId[n]) return;
+        if (field[n] > 0) { compId[n] = nCavities; sealedVoxels++; queue[qTail++] = n; }
+      };
+      if (x > 0)      tryNb2(idx - 1);
+      if (x < nx - 1) tryNb2(idx + 1);
+      if (y > 0)      tryNb2(idx - nx);
+      if (y < ny - 1) tryNb2(idx + nx);
+      if (z > 0)      tryNb2(idx - stride);
+      if (z < nz - 1) tryNb2(idx + stride);
+    }
+  }
+
+  const volumeMM3 = sealedVoxels * voxel * voxel * voxel;
+  return { nCavities, sealedVoxels, volumeMM3 };
+}
+
 function analyzePrintability(buildResult, rings, s, branches) {
   const mat = MATERIALS[s.material] || MATERIALS.stainless;
   const voxel = buildResult.voxel;
@@ -3383,7 +3478,38 @@ function analyzePrintability(buildResult, rings, s, branches) {
         : `${triCount.toLocaleString()} triangles — may be slow to slice`,
   });
 
-  // 7. Material printable confirmation.
+  // 7. Sealed-cavity check (v1.24.6). Reports any interior empty-
+  // space pockets that aren't reachable from the bounding-box
+  // exterior. Severity is 'warn' so the overall printability still
+  // passes — these are informational for cast-aware materials.
+  // Skipped for non-hollow modes (no interior cavity to check).
+  if (s.bodyMode === 'hollow' && buildResult.fieldInfo) {
+    const f = buildResult.fieldInfo;
+    const cavities = detectSealedCavities(f.field, f.nx, f.ny, f.nz, f.voxel);
+    const isLostWax = !!mat.lostWax;
+    let label;
+    if (cavities.nCavities === 0) {
+      label = 'no sealed cavities — wax pattern drains freely';
+    } else {
+      const volStr = cavities.volumeMM3 < 1
+        ? cavities.volumeMM3.toFixed(2)
+        : Math.round(cavities.volumeMM3).toString();
+      const noun = cavities.nCavities === 1 ? 'cavity' : 'cavities';
+      label = `${cavities.nCavities} sealed ${noun} (${volStr}mm³)` +
+        (isLostWax
+          ? ' — air may trap during brass pour'
+          : ' — cosmetic only at this material');
+    }
+    checks.push({
+      name: 'cavities',
+      pass: cavities.nCavities === 0,
+      severity: 'warn',
+      autoFix: false,
+      label,
+    });
+  }
+
+  // 8. Material printable confirmation.
   checks.push({
     name: 'material',
     pass: true,
@@ -4065,6 +4191,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.24.6', date: '2026-05-01', n: 'Sealed-cavity detection: printability card now reports interior pockets that may trap air during brass pour. Informational only.' },
   { v: 'v1.24.5', date: '2026-04-30', n: 'Coral pit depth uses the wall slider as a cap in all body modes — closes the dominant texture-amplitude gap between Solid w/ tunnels and Hollow.' },
   { v: 'v1.24.4', date: '2026-04-30', n: 'Default body mode → Hollow. Preserves lattice morphology; the casting warning + dropdown copy still flag the risk.' },
   { v: 'v1.24.3', date: '2026-04-30', n: 'Hollow mode skips the drain bore for lost-wax materials — tunnels handle wax escape, no visible cylindrical bore through the silhouette.' },
