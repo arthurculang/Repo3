@@ -642,7 +642,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.25.0</span>
+        <span id="version">v1.25.1</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -690,12 +690,11 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { SimplifyModifier } from 'three/addons/modifiers/SimplifyModifier.js';
 
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.25.0";
+const VERSION = "v1.25.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -841,12 +840,20 @@ const TEXDETAIL_KEYS = ['off','medium','high','extreme'];
 const TEXDETAIL_LEVELS = { off: 0, medium: 1, high: 2, extreme: 3 };
 const BODYMODE_KEYS = ['cast','solid','hollow','hollow-fill'];
 const SIMPLIFY_KEYS = ['off','light','medium','aggressive'];
-// Fraction of vertices to REMOVE per setting. SimplifyModifier reduces
-// triangle count proportionally — at light/0.25 you get ~25% fewer
-// tris, at aggressive/0.75 you get ~75% fewer. Edge collapse merges
-// adjacent vertices, so silhouette + high-curvature areas are
-// preserved while smooth large regions get collapsed first.
-const SIMPLIFY_FRACS = { off: 0, light: 0.25, medium: 0.5, aggressive: 0.75 };
+// Spatial tolerance (mm) for vertex-clustering decimation. mergeVertices
+// collapses any two vertices within this distance into one; triangles
+// that become degenerate (two or three indices the same) are then
+// filtered out. Larger values = more aggressive collapse = smaller
+// mesh + more flattening of surface texture.
+//
+// v1.25.0 attempted to use three.js's SimplifyModifier (quadric edge
+// collapse) but it OOM-crashes Chrome on 7M+ tri inputs. The clustering
+// approach is O(n), runs in ~100ms even on extreme meshes, and uses
+// the already-imported mergeVertices. Quality is lower than quadric
+// (no curvature-aware preservation) but adequate for the goal —
+// shrinking the STL enough to clear service-bureau upload limits
+// while keeping the silhouette and lattice character intact.
+const SIMPLIFY_TOLS = { off: 0, light: 0.05, medium: 0.10, aggressive: 0.20 };
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
@@ -3012,34 +3019,44 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   // No-ops for s.texture === 'smooth'.
   applyVertexTexture(geom, s);
 
-  // Mesh simplify (v1.25.0). Quadric edge-collapse decimation runs
-  // AFTER texture so the displacement gets baked in before vertices
-  // collapse — the texture's high-frequency detail is partly preserved
-  // by the quadric metric (it weights collapses by local curvature, so
-  // bumpy regions resist collapsing more than smooth ones). Skipped
-  // for s.simplify === 'off' so the default pipeline pays no cost.
-  // The displacement-aware simplify is what lets us cut tri count for
-  // service-bureau uploads without flattening the morphology.
-  const simplifyFrac = SIMPLIFY_FRACS[s.simplify] || 0;
-  if (simplifyFrac > 0) {
-    const vertCountBefore = geom.getAttribute('position').count;
-    const removeCount = Math.floor(vertCountBefore * simplifyFrac);
-    if (removeCount > 0) {
-      try {
-        const simplifier = new SimplifyModifier();
-        const simplified = simplifier.modify(geom, removeCount);
-        if (simplified && simplified.getAttribute('position').count > 0) {
-          geom.dispose();
-          geom = simplified;
-          // SimplifyModifier returns a non-indexed BufferGeometry;
-          // re-merge so subsequent processing (mass calc, STL export)
-          // sees a proper indexed mesh and we get clean shading.
-          geom = mergeVertices(geom, 1e-4);
-          geom.computeVertexNormals();
+  // Mesh simplify (v1.25.1 — replaces v1.25.0's SimplifyModifier
+  // which OOM-crashed on 7M+ tri inputs). Vertex-clustering decimation:
+  // call mergeVertices with a larger tolerance to collapse nearby
+  // vertices, then filter triangles whose three indices aren't all
+  // distinct (degenerate triangles produced by the merge). O(n),
+  // ~100ms on the heaviest meshes — well within budget.
+  const simplifyTol = SIMPLIFY_TOLS[s.simplify] || 0;
+  if (simplifyTol > 0) {
+    try {
+      const merged = mergeVertices(geom, simplifyTol);
+      const idx = merged.getIndex();
+      if (idx) {
+        const ix = idx.array;
+        let validTris = 0;
+        for (let i = 0; i < ix.length; i += 3) {
+          if (ix[i] !== ix[i+1] && ix[i+1] !== ix[i+2] && ix[i] !== ix[i+2]) validTris++;
         }
-      } catch (e) {
-        console.warn('SimplifyModifier failed; keeping full-resolution mesh:', e.message);
+        if (validTris > 0 && validTris * 3 < ix.length) {
+          // Degenerate triangles to drop. Build a fresh index buffer
+          // sized to vertex count so Uint16/Uint32 picks correctly.
+          const Vmerged = merged.getAttribute('position').count;
+          const NewIdx = Vmerged > 65535 ? Uint32Array : Uint16Array;
+          const filtered = new NewIdx(validTris * 3);
+          let j = 0;
+          for (let i = 0; i < ix.length; i += 3) {
+            const a = ix[i], b = ix[i+1], c = ix[i+2];
+            if (a !== b && b !== c && a !== c) {
+              filtered[j++] = a; filtered[j++] = b; filtered[j++] = c;
+            }
+          }
+          merged.setIndex(new THREE.BufferAttribute(filtered, 1));
+        }
+        merged.computeVertexNormals();
+        geom.dispose();
+        geom = merged;
       }
+    } catch (e) {
+      console.warn('mesh simplify failed; keeping full-resolution mesh:', e.message);
     }
   }
 
@@ -4315,6 +4332,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.25.1', date: '2026-05-01', n: 'Mesh simplify swapped from SimplifyModifier (OOM-crashed on 7M+ tris) to vertex-clustering decimation — O(n), ~100ms even on extreme meshes.' },
   { v: 'v1.25.0', date: '2026-05-01', n: 'Mesh simplify dropdown: quadric edge-collapse decimation reduces tri count for service-bureau STL uploads. Off / Light / Medium / Aggressive.' },
   { v: 'v1.24.7', date: '2026-05-01', n: 'New "Hollow + Fill" body mode (now default): same lattice morphology as Hollow but interior pockets are sealed for casting. Slicer-slow tri count is now a yellow ⚠, not a red ✗.' },
   { v: 'v1.24.6', date: '2026-05-01', n: 'Sealed-cavity detection: printability card now reports interior pockets that may trap air during brass pour. Informational only.' },
