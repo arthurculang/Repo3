@@ -145,6 +145,12 @@
     margin-top: 4px; font-size: 10px; letter-spacing: 0.02em;
     color: var(--ink-dim); line-height: 1.35;
   }
+  .section-header {
+    margin: 18px 0 6px; padding-top: 14px;
+    border-top: 1px solid var(--border);
+    font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
   .ctrl-warn {
     margin-top: 6px; padding: 6px 8px; border-radius: 4px;
     background: rgba(255, 107, 107, 0.10);
@@ -591,6 +597,40 @@
         <div class="ctrl-note">Reduces tri count + STL size for service-bureau uploads. Preserves morphology; spends some surface texture.</div>
       </div>
 
+      <div class="section-header">Print compatibility</div>
+
+      <div class="ctrl">
+        <label>Drop tiny shells</label>
+        <select id="dropShells">
+          <option value="off" selected>Off</option>
+          <option value="light">Light (drop &lt; 10 tri)</option>
+          <option value="medium">Medium (drop &lt; 50 tri)</option>
+          <option value="aggressive">Aggressive (drop &lt; 200 tri)</option>
+        </select>
+        <div class="ctrl-note">Removes small disconnected pieces from the mesh. Reduces "Number of shells" warnings.</div>
+      </div>
+
+      <div class="ctrl">
+        <label>Manifold re-weld</label>
+        <select id="manifoldWeld">
+          <option value="off" selected>Off</option>
+          <option value="tight">Tight (0.001 mm)</option>
+          <option value="loose">Loose (0.01 mm)</option>
+        </select>
+        <div class="ctrl-note">Closes near-duplicate vertices left by simplify. Reduces "Bad edges" warnings.</div>
+      </div>
+
+      <div class="ctrl">
+        <label>Surface smooth</label>
+        <select id="smoothSurface">
+          <option value="off" selected>Off</option>
+          <option value="light">Light (1 pass)</option>
+          <option value="medium">Medium (3 passes)</option>
+          <option value="heavy">Heavy (5 passes)</option>
+        </select>
+        <div class="ctrl-note">Laplacian smoothing on vertex positions. Polishes residual non-manifold geometry; trades texture detail for cleaner topology.</div>
+      </div>
+
       <div class="ctrl">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
@@ -647,7 +687,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.25.3</span>
+        <span id="version">v1.26.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -699,7 +739,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.25.3";
+const VERSION = "v1.26.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -788,6 +828,19 @@ const DEFAULTS = {
                             // morphology. STL export includes the
                             // subdivided mesh (WYSIWYG). Default raised
                             // from 'high' to 'extreme' in v1.23.4.
+  // Print compatibility cleanup pipeline (Chunk 1, v1.26.0). All
+  // default Off so existing output is unchanged. They run AFTER
+  // simplify, in this order: dropShells → manifoldWeld → smoothSurface.
+  // Each step is independent of the others; chaining them is fine.
+  dropShells: 'off',     // 'off' | 'light' | 'medium' | 'aggressive'
+                         // — removes small disconnected components
+                         //   below the threshold (largest is always kept)
+  manifoldWeld: 'off',   // 'off' | 'tight' (1e-3) | 'loose' (1e-2)
+                         // — re-runs mergeVertices to close near-
+                         //   duplicate vertices left by simplify
+  smoothSurface: 'off',  // 'off' | 'light' (1 pass) | 'medium' (3) | 'heavy' (5)
+                         // — Laplacian smoothing; trades surface
+                         //   texture detail for cleaner topology
   simplify: 'off',     // 'off' | 'light' | 'medium' | 'aggressive' — runs
                        // quadric edge-collapse decimation on the final
                        // textured mesh before STL export (v1.25.0).
@@ -876,6 +929,14 @@ const SIMPLIFY_TOLS = {
                       //         silhouette and major branching survive.
 };
 
+// Print-compatibility cleanup tiers (Chunk 1, v1.26.0).
+const DROPSHELLS_KEYS = ['off','light','medium','aggressive'];
+const DROPSHELLS_THRESHOLDS = { off: 0, light: 10, medium: 50, aggressive: 200 };
+const MANIFOLDWELD_KEYS = ['off','tight','loose'];
+const MANIFOLDWELD_TOLS = { off: 0, tight: 1e-3, loose: 1e-2 };
+const SMOOTHSURFACE_KEYS = ['off','light','medium','heavy'];
+const SMOOTHSURFACE_PASSES = { off: 0, light: 1, medium: 3, heavy: 5 };
+
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
 function paramFields(s) {
@@ -887,6 +948,9 @@ function paramFields(s) {
   const td = TEXDETAIL_KEYS.indexOf(s.textureDetail);
   const bm = BODYMODE_KEYS.indexOf(s.bodyMode);
   const sm = SIMPLIFY_KEYS.indexOf(s.simplify);
+  const ds = DROPSHELLS_KEYS.indexOf(s.dropShells);
+  const mw = MANIFOLDWELD_KEYS.indexOf(s.manifoldWeld);
+  const ss = SMOOTHSURFACE_KEYS.indexOf(s.smoothSurface);
   return [
     m < 0 ? 0 : m,
     s.size,
@@ -925,6 +989,11 @@ function paramFields(s) {
     // ↓ added in v1.25.0. Append-only; defaults to 'off' for older
     // strings so reloaded configs render at full fidelity.
     sm < 0 ? 0 : sm,
+    // ↓ added in v1.26.0 (Print compatibility chunk 1). All three
+    // default to 'off' so existing configs keep their look.
+    ds < 0 ? 0 : ds,
+    mw < 0 ? 0 : mw,
+    ss < 0 ? 0 : ss,
   ];
 }
 
@@ -982,6 +1051,17 @@ function parseParamSlots(slots) {
   const smIdx = slots.length > 23
     ? clamp(parseInt(slots[23], 10) || 0, 0, SIMPLIFY_KEYS.length - 1)
     : 0;
+  // Print-compatibility cleanup pipeline: new in v1.26.0. All three
+  // default to 'off' for older strings.
+  const dsIdx = slots.length > 24
+    ? clamp(parseInt(slots[24], 10) || 0, 0, DROPSHELLS_KEYS.length - 1)
+    : 0;
+  const mwIdx = slots.length > 25
+    ? clamp(parseInt(slots[25], 10) || 0, 0, MANIFOLDWELD_KEYS.length - 1)
+    : 0;
+  const ssIdx = slots.length > 26
+    ? clamp(parseInt(slots[26], 10) || 0, 0, SMOOTHSURFACE_KEYS.length - 1)
+    : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1007,6 +1087,9 @@ function parseParamSlots(slots) {
     textureDetail: TEXDETAIL_KEYS[tdIdx],
     bodyMode:    BODYMODE_KEYS[bmIdx],
     simplify:    SIMPLIFY_KEYS[smIdx],
+    dropShells:  DROPSHELLS_KEYS[dsIdx],
+    manifoldWeld: MANIFOLDWELD_KEYS[mwIdx],
+    smoothSurface: SMOOTHSURFACE_KEYS[ssIdx],
   };
 }
 
@@ -3040,45 +3123,45 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   // No-ops for s.texture === 'smooth'.
   applyVertexTexture(geom, s);
 
-  // Mesh simplify (v1.25.1 — replaces v1.25.0's SimplifyModifier
-  // which OOM-crashed on 7M+ tri inputs). Vertex-clustering decimation:
-  // call mergeVertices with a larger tolerance to collapse nearby
-  // vertices, then filter triangles whose three indices aren't all
-  // distinct (degenerate triangles produced by the merge). O(n),
-  // ~100ms on the heaviest meshes — well within budget.
+  // Mesh simplify (v1.25.1 — replaces v1.25.0's SimplifyModifier which
+  // OOM-crashed on 7M+ tri inputs). Vertex-clustering decimation via
+  // mergeAndFilterDegenerates: merge nearby vertices then drop the
+  // degenerate triangles produced by collapse. O(n), ~100ms even on
+  // the heaviest meshes.
   const simplifyTol = SIMPLIFY_TOLS[s.simplify] || 0;
   if (simplifyTol > 0) {
     try {
-      const merged = mergeVertices(geom, simplifyTol);
-      const idx = merged.getIndex();
-      if (idx) {
-        const ix = idx.array;
-        let validTris = 0;
-        for (let i = 0; i < ix.length; i += 3) {
-          if (ix[i] !== ix[i+1] && ix[i+1] !== ix[i+2] && ix[i] !== ix[i+2]) validTris++;
-        }
-        if (validTris > 0 && validTris * 3 < ix.length) {
-          // Degenerate triangles to drop. Build a fresh index buffer
-          // sized to vertex count so Uint16/Uint32 picks correctly.
-          const Vmerged = merged.getAttribute('position').count;
-          const NewIdx = Vmerged > 65535 ? Uint32Array : Uint16Array;
-          const filtered = new NewIdx(validTris * 3);
-          let j = 0;
-          for (let i = 0; i < ix.length; i += 3) {
-            const a = ix[i], b = ix[i+1], c = ix[i+2];
-            if (a !== b && b !== c && a !== c) {
-              filtered[j++] = a; filtered[j++] = b; filtered[j++] = c;
-            }
-          }
-          merged.setIndex(new THREE.BufferAttribute(filtered, 1));
-        }
-        merged.computeVertexNormals();
-        geom.dispose();
-        geom = merged;
-      }
+      const simplified = mergeAndFilterDegenerates(geom, simplifyTol);
+      geom.dispose();
+      geom = simplified;
     } catch (e) {
       console.warn('mesh simplify failed; keeping full-resolution mesh:', e.message);
     }
+  }
+
+  // Print-compatibility cleanup pipeline (Chunk 1, v1.26.0). Three
+  // independent post-simplify passes, all default Off so behaviour is
+  // unchanged unless the user opts in. Order matters: drop tiny shells
+  // FIRST so the next two passes don't waste work on geometry that's
+  // about to be discarded; then re-weld near-duplicate boundary
+  // vertices left by simplify; then smooth the surviving topology.
+  const dropMin = DROPSHELLS_THRESHOLDS[s.dropShells] || 0;
+  if (dropMin > 0) {
+    try { geom = dropTinyShells(geom, dropMin); }
+    catch (e) { console.warn('dropTinyShells failed:', e.message); }
+  }
+  const weldTol = MANIFOLDWELD_TOLS[s.manifoldWeld] || 0;
+  if (weldTol > 0) {
+    try {
+      const welded = mergeAndFilterDegenerates(geom, weldTol);
+      geom.dispose();
+      geom = welded;
+    } catch (e) { console.warn('manifoldWeld failed:', e.message); }
+  }
+  const smoothPasses = SMOOTHSURFACE_PASSES[s.smoothSurface] || 0;
+  if (smoothPasses > 0) {
+    try { geom = smoothLaplacian(geom, smoothPasses); }
+    catch (e) { console.warn('smoothLaplacian failed:', e.message); }
   }
 
   const mesh = new THREE.Mesh(geom, material);
@@ -3113,6 +3196,159 @@ function countComponents(geom) {
     vertComp[i] = id;
   }
   return { nComp, vertComp };
+}
+
+// ---------- Print-compatibility cleanup pipeline (Chunk 1, v1.26.0) ----------
+
+// Shared helper: given a geometry that may have degenerate triangles
+// (two or three indices the same — produced by mergeVertices when
+// adjacent vertices collapse), build a fresh index buffer that omits
+// them. Used both by Mesh simplify (v1.25.1) and Manifold re-weld.
+// Always recomputes normals at the end so downstream passes see fresh
+// per-vertex normals.
+function mergeAndFilterDegenerates(geom, tolerance) {
+  const merged = mergeVertices(geom, tolerance);
+  const idx = merged.getIndex();
+  if (!idx) { merged.computeVertexNormals(); return merged; }
+  const ix = idx.array;
+  let validTris = 0;
+  for (let i = 0; i < ix.length; i += 3) {
+    if (ix[i] !== ix[i+1] && ix[i+1] !== ix[i+2] && ix[i] !== ix[i+2]) validTris++;
+  }
+  if (validTris * 3 < ix.length) {
+    const Vmerged = merged.getAttribute('position').count;
+    const NewIdx = Vmerged > 65535 ? Uint32Array : Uint16Array;
+    const filtered = new NewIdx(validTris * 3);
+    let j = 0;
+    for (let i = 0; i < ix.length; i += 3) {
+      const a = ix[i], b = ix[i+1], c = ix[i+2];
+      if (a !== b && b !== c && a !== c) {
+        filtered[j++] = a; filtered[j++] = b; filtered[j++] = c;
+      }
+    }
+    merged.setIndex(new THREE.BufferAttribute(filtered, 1));
+  }
+  merged.computeVertexNormals();
+  return merged;
+}
+
+// Drop disconnected components below a triangle-count threshold.
+// Always preserves the LARGEST component as a safeguard (even if its
+// triangle count somehow falls below the threshold). Orphan vertices
+// are left in the position buffer — they don't appear in the indexed
+// triangle list so STL export ignores them.
+function dropTinyShells(geom, minTris) {
+  if (minTris <= 0) return geom;
+  const idxAttr = geom.getIndex();
+  const posAttr = geom.getAttribute('position');
+  if (!idxAttr || !posAttr) return geom;
+  const comp = countComponents(geom);
+  if (comp.nComp <= 1) return geom;
+
+  const ix = idxAttr.array;
+  const T = ix.length / 3;
+  const triCounts = new Uint32Array(comp.nComp);
+  for (let t = 0; t < T; t++) triCounts[comp.vertComp[ix[t*3]]]++;
+
+  // Identify the largest component — always kept regardless of threshold.
+  let largestId = 0, largestCount = 0;
+  for (let c = 0; c < comp.nComp; c++) {
+    if (triCounts[c] > largestCount) { largestCount = triCounts[c]; largestId = c; }
+  }
+  const keep = new Uint8Array(comp.nComp);
+  let kept = 0;
+  for (let c = 0; c < comp.nComp; c++) {
+    if (c === largestId || triCounts[c] >= minTris) { keep[c] = 1; kept++; }
+  }
+  if (kept === comp.nComp) return geom;
+
+  // Build a filtered index buffer keeping only the kept-component triangles.
+  let validTris = 0;
+  for (let t = 0; t < T; t++) if (keep[comp.vertComp[ix[t*3]]]) validTris++;
+  const Vmax = posAttr.count;
+  const NewIdx = Vmax > 65535 ? Uint32Array : Uint16Array;
+  const filtered = new NewIdx(validTris * 3);
+  let j = 0;
+  for (let t = 0; t < T; t++) {
+    if (keep[comp.vertComp[ix[t*3]]]) {
+      filtered[j++] = ix[t*3];
+      filtered[j++] = ix[t*3+1];
+      filtered[j++] = ix[t*3+2];
+    }
+  }
+  geom.setIndex(new THREE.BufferAttribute(filtered, 1));
+  geom.computeVertexNormals();
+  return geom;
+}
+
+// Laplacian smoothing — N passes of "average each vertex with its
+// neighbours, weighted at 0.5." Adjacency is built once in CSR format
+// from the triangle list. Edges are stored with possible duplicates
+// (each interior edge counted twice from its two adjacent triangles)
+// which slightly biases toward shared edges; acceptable for visual
+// smoothing. Damping factor 0.5 keeps the surface from collapsing to
+// the centroid over many passes.
+function smoothLaplacian(geom, passes) {
+  if (passes <= 0) return geom;
+  const posAttr = geom.getAttribute('position');
+  const idxAttr = geom.getIndex();
+  if (!posAttr || !idxAttr) return geom;
+  const positions = posAttr.array;
+  const ix = idxAttr.array;
+  const V = posAttr.count;
+  const T = ix.length / 3;
+
+  // Count neighbours per vertex (with duplicates from shared edges).
+  const counts = new Uint32Array(V);
+  for (let t = 0; t < T; t++) {
+    counts[ix[t*3]]   += 2;
+    counts[ix[t*3+1]] += 2;
+    counts[ix[t*3+2]] += 2;
+  }
+  // CSR offsets.
+  const offsets = new Uint32Array(V + 1);
+  for (let i = 0; i < V; i++) offsets[i+1] = offsets[i] + counts[i];
+  // Fill flat neighbour array.
+  const flat = new Uint32Array(offsets[V]);
+  const cursor = new Uint32Array(V);
+  for (let t = 0; t < T; t++) {
+    const a = ix[t*3], b = ix[t*3+1], c = ix[t*3+2];
+    flat[offsets[a] + cursor[a]++] = b;
+    flat[offsets[a] + cursor[a]++] = c;
+    flat[offsets[b] + cursor[b]++] = a;
+    flat[offsets[b] + cursor[b]++] = c;
+    flat[offsets[c] + cursor[c]++] = a;
+    flat[offsets[c] + cursor[c]++] = b;
+  }
+
+  let cur = positions;
+  let next = new Float32Array(positions.length);
+  const damp = 0.5;
+  for (let p = 0; p < passes; p++) {
+    for (let v = 0; v < V; v++) {
+      const start = offsets[v], end = offsets[v+1];
+      const k = end - start;
+      const i3 = v * 3;
+      if (k === 0) {
+        next[i3] = cur[i3]; next[i3+1] = cur[i3+1]; next[i3+2] = cur[i3+2];
+        continue;
+      }
+      let sx = 0, sy = 0, sz = 0;
+      for (let i = start; i < end; i++) {
+        const n3 = flat[i] * 3;
+        sx += cur[n3]; sy += cur[n3+1]; sz += cur[n3+2];
+      }
+      const inv = 1 / k;
+      next[i3]   = (1 - damp) * cur[i3]   + damp * sx * inv;
+      next[i3+1] = (1 - damp) * cur[i3+1] + damp * sy * inv;
+      next[i3+2] = (1 - damp) * cur[i3+2] + damp * sz * inv;
+    }
+    const t = cur; cur = next; next = t;
+  }
+  if (cur !== positions) positions.set(cur);
+  posAttr.needsUpdate = true;
+  geom.computeVertexNormals();
+  return geom;
 }
 
 // Find the pair of vertices (one in the largest component, one in any
@@ -4299,6 +4535,30 @@ if (simplifyEl) {
   });
 }
 
+// Print compatibility (Chunk 1, v1.26.0): three independent cleanup
+// dropdowns running after simplify.
+const dropShellsEl = document.getElementById('dropShells');
+if (dropShellsEl) {
+  dropShellsEl.addEventListener('change', () => {
+    state.dropShells = dropShellsEl.value;
+    scheduleRegen();
+  });
+}
+const manifoldWeldEl = document.getElementById('manifoldWeld');
+if (manifoldWeldEl) {
+  manifoldWeldEl.addEventListener('change', () => {
+    state.manifoldWeld = manifoldWeldEl.value;
+    scheduleRegen();
+  });
+}
+const smoothSurfaceEl = document.getElementById('smoothSurface');
+if (smoothSurfaceEl) {
+  smoothSurfaceEl.addEventListener('change', () => {
+    state.smoothSurface = smoothSurfaceEl.value;
+    scheduleRegen();
+  });
+}
+
 // Body-mode dropdown (v1.24.0). Toggles between cast-friendly /
 // solid-with-tunnels / hollow geometries via effectiveState() at
 // generation time. The wall slider is greyed out in non-hollow modes
@@ -4353,6 +4613,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.26.0', date: '2026-05-01', n: 'Print compatibility section (chunk 1): drop tiny shells, manifold re-weld, surface smooth — post-simplify cleanup pipeline addressing i.materialise shells/bad-edges/rough-surface warnings.' },
   { v: 'v1.25.3', date: '2026-05-01', n: 'Added Obliterate (−98%) Mesh simplify tier for hardest upload limits.' },
   { v: 'v1.25.2', date: '2026-05-01', n: 'Added more aggressive Mesh simplify tiers: Extreme (−80%), Severe (−85%), Brutal (−90%), Maximum (−95%) for tight upload limits.' },
   { v: 'v1.25.1', date: '2026-05-01', n: 'Mesh simplify swapped from SimplifyModifier (OOM-crashed on 7M+ tris) to vertex-clustering decimation — O(n), ~100ms even on extreme meshes.' },
@@ -4554,6 +4815,9 @@ function refreshUIFromState() {
   if (qualityEl) qualityEl.value = state.quality;
   if (textureDetailEl) textureDetailEl.value = state.textureDetail;
   if (simplifyEl) simplifyEl.value = state.simplify;
+  if (dropShellsEl) dropShellsEl.value = state.dropShells;
+  if (manifoldWeldEl) manifoldWeldEl.value = state.manifoldWeld;
+  if (smoothSurfaceEl) smoothSurfaceEl.value = state.smoothSurface;
   if (bodyModeEl) bodyModeEl.value = state.bodyMode;
   refreshWallEnabled();
   refreshBodyModeWarn();
