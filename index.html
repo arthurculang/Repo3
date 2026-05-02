@@ -602,8 +602,8 @@
       <div class="ctrl">
         <label>Drop tiny shells</label>
         <select id="dropShells">
-          <option value="off" selected>Off</option>
-          <option value="light">Light (drop &lt; 10 tri)</option>
+          <option value="off">Off</option>
+          <option value="light" selected>Light (drop &lt; 10 tri)</option>
           <option value="medium">Medium (drop &lt; 50 tri)</option>
           <option value="aggressive">Aggressive (drop &lt; 200 tri)</option>
         </select>
@@ -613,8 +613,8 @@
       <div class="ctrl">
         <label>Manifold re-weld</label>
         <select id="manifoldWeld">
-          <option value="off" selected>Off</option>
-          <option value="tight">Tight (0.001 mm)</option>
+          <option value="off">Off</option>
+          <option value="tight" selected>Tight (0.001 mm)</option>
           <option value="loose">Loose (0.01 mm)</option>
         </select>
         <div class="ctrl-note">Closes near-duplicate vertices left by simplify. Reduces "Bad edges" warnings.</div>
@@ -623,8 +623,8 @@
       <div class="ctrl">
         <label>Surface smooth</label>
         <select id="smoothSurface">
-          <option value="off" selected>Off</option>
-          <option value="light">Light (1 pass)</option>
+          <option value="off">Off</option>
+          <option value="light" selected>Light (1 pass)</option>
           <option value="medium">Medium (3 passes)</option>
           <option value="heavy">Heavy (5 passes)</option>
         </select>
@@ -634,8 +634,8 @@
       <div class="ctrl">
         <label>Wall dilation</label>
         <select id="wallDilate">
-          <option value="off" selected>Off</option>
-          <option value="light">Light (+0.15 mm)</option>
+          <option value="off">Off</option>
+          <option value="light" selected>Light (+0.15 mm)</option>
           <option value="medium">Medium (+0.30 mm)</option>
           <option value="heavy">Heavy (+0.60 mm)</option>
         </select>
@@ -709,7 +709,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.28.0</span>
+        <span id="version">v1.28.1</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -761,7 +761,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.28.0";
+const VERSION = "v1.28.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -854,25 +854,34 @@ const DEFAULTS = {
   // default Off so existing output is unchanged. They run AFTER
   // simplify, in this order: dropShells → manifoldWeld → smoothSurface.
   // Each step is independent of the others; chaining them is fine.
-  dropShells: 'off',     // 'off' | 'light' | 'medium' | 'aggressive'
+  dropShells: 'light',   // 'off' | 'light' | 'medium' | 'aggressive'
                          // — removes small disconnected components
-                         //   below the threshold (largest is always kept)
-  manifoldWeld: 'off',   // 'off' | 'tight' (1e-3) | 'loose' (1e-2)
+                         //   below the threshold (largest is always
+                         //   kept). Default raised from 'off' to
+                         //   'light' in v1.28.1 — service-bureau-
+                         //   ready output by default.
+  manifoldWeld: 'tight', // 'off' | 'tight' (1e-3) | 'loose' (1e-2)
                          // — re-runs mergeVertices to close near-
-                         //   duplicate vertices left by simplify
-  smoothSurface: 'off',  // 'off' | 'light' (1 pass) | 'medium' (3) | 'heavy' (5)
-                         // — Laplacian smoothing; trades surface
-                         //   texture detail for cleaner topology
-  wallDilate: 'off',     // 'off' | 'light' | 'medium' | 'heavy' — SDF
+                         //   duplicate vertices left by simplify.
+                         //   Default raised from 'off' to 'tight' in
+                         //   v1.28.1.
+  smoothSurface: 'light', // 'off' | 'light' (1 pass) | 'medium' (3) | 'heavy' (5)
+                          // — Laplacian smoothing; trades surface
+                          //   texture detail for cleaner topology.
+                          //   Default raised from 'off' to 'light' in
+                          //   v1.28.1.
+  wallDilate: 'light',   // 'off' | 'light' | 'medium' | 'heavy' — SDF
                          // dilation before MC (chunk 2, v1.27.0).
                          // Subtracts a small constant from the field so
                          // every body surface grows outward by N mm,
                          // thickening sub-minWall walls. Tunnels shrink
                          // by N (caller's responsibility to keep N
                          // smaller than the smallest desired tunnel
-                         // radius). Most relevant for lost-wax brass
-                         // where i.materialise's analyzer flags walls
-                         // below the alloy minimum.
+                         // radius). Default raised from 'off' to
+                         // 'light' (+0.15mm) in v1.28.1 — small enough
+                         // to be morphologically near-invisible while
+                         // closing the Thin walls warning at brass
+                         // service bureaus.
   organicSupports: 'off', // 'off' | 'sparse' | 'medium' | 'dense' —
                           // adds tendril-cluster supports under
                           // unsupported overhangs (chunk 3, v1.28.0).
@@ -4879,6 +4888,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.28.1', date: '2026-05-01', n: 'Print compatibility defaults raised: Drop tiny shells → Light, Manifold re-weld → Tight, Surface smooth → Light, Wall dilation → Light. Service-bureau-ready output by default. Older saved configs unchanged (codec defaults stay at off for missing slots).' },
   { v: 'v1.28.0', date: '2026-05-01', n: 'Print compatibility chunk 3: Organic supports (Sparse/Medium/Dense). Detects unsupported overhangs, adds tendril-cluster capsules from body parts below up to each anchor; reduces "Bridges" warnings while reading as more sculpture.' },
   { v: 'v1.27.0', date: '2026-05-01', n: 'Print compatibility chunk 2: Wall dilation (Off/Light/Medium/Heavy). SDF-domain dilation thickens sub-minWall walls before MC; reduces "Thin walls" warnings.' },
   { v: 'v1.26.0', date: '2026-05-01', n: 'Print compatibility section (chunk 1): drop tiny shells, manifold re-weld, surface smooth — post-simplify cleanup pipeline addressing i.materialise shells/bad-edges/rough-surface warnings.' },
