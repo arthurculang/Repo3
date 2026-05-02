@@ -632,6 +632,17 @@
       </div>
 
       <div class="ctrl">
+        <label>Wall dilation</label>
+        <select id="wallDilate">
+          <option value="off" selected>Off</option>
+          <option value="light">Light (+0.15 mm)</option>
+          <option value="medium">Medium (+0.30 mm)</option>
+          <option value="heavy">Heavy (+0.60 mm)</option>
+        </select>
+        <div class="ctrl-note">Grows every body surface outward, thickening thin walls below material minimum. Tunnels shrink by the same amount. Reduces "Thin walls" warnings.</div>
+      </div>
+
+      <div class="ctrl">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
       </div>
@@ -687,7 +698,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.26.0</span>
+        <span id="version">v1.27.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -739,7 +750,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.26.0";
+const VERSION = "v1.27.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -841,6 +852,16 @@ const DEFAULTS = {
   smoothSurface: 'off',  // 'off' | 'light' (1 pass) | 'medium' (3) | 'heavy' (5)
                          // — Laplacian smoothing; trades surface
                          //   texture detail for cleaner topology
+  wallDilate: 'off',     // 'off' | 'light' | 'medium' | 'heavy' — SDF
+                         // dilation before MC (chunk 2, v1.27.0).
+                         // Subtracts a small constant from the field so
+                         // every body surface grows outward by N mm,
+                         // thickening sub-minWall walls. Tunnels shrink
+                         // by N (caller's responsibility to keep N
+                         // smaller than the smallest desired tunnel
+                         // radius). Most relevant for lost-wax brass
+                         // where i.materialise's analyzer flags walls
+                         // below the alloy minimum.
   simplify: 'off',     // 'off' | 'light' | 'medium' | 'aggressive' — runs
                        // quadric edge-collapse decimation on the final
                        // textured mesh before STL export (v1.25.0).
@@ -936,6 +957,12 @@ const MANIFOLDWELD_KEYS = ['off','tight','loose'];
 const MANIFOLDWELD_TOLS = { off: 0, tight: 1e-3, loose: 1e-2 };
 const SMOOTHSURFACE_KEYS = ['off','light','medium','heavy'];
 const SMOOTHSURFACE_PASSES = { off: 0, light: 1, medium: 3, heavy: 5 };
+const WALLDILATE_KEYS = ['off','light','medium','heavy'];
+// SDF dilation in mm. The body grows outward by this amount on every
+// surface; walls thicken by 2× this (per side), tunnels shrink by this.
+// Light barely visible; Medium is the recommended starting point for
+// brass minWall safety; Heavy bulks the body substantially.
+const WALLDILATE_AMOUNTS = { off: 0, light: 0.15, medium: 0.30, heavy: 0.60 };
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
@@ -951,6 +978,7 @@ function paramFields(s) {
   const ds = DROPSHELLS_KEYS.indexOf(s.dropShells);
   const mw = MANIFOLDWELD_KEYS.indexOf(s.manifoldWeld);
   const ss = SMOOTHSURFACE_KEYS.indexOf(s.smoothSurface);
+  const wd = WALLDILATE_KEYS.indexOf(s.wallDilate);
   return [
     m < 0 ? 0 : m,
     s.size,
@@ -994,6 +1022,9 @@ function paramFields(s) {
     ds < 0 ? 0 : ds,
     mw < 0 ? 0 : mw,
     ss < 0 ? 0 : ss,
+    // ↓ added in v1.27.0 (Print compatibility chunk 2). Defaults to
+    // 'off' so existing configs keep their morphology.
+    wd < 0 ? 0 : wd,
   ];
 }
 
@@ -1062,6 +1093,11 @@ function parseParamSlots(slots) {
   const ssIdx = slots.length > 26
     ? clamp(parseInt(slots[26], 10) || 0, 0, SMOOTHSURFACE_KEYS.length - 1)
     : 0;
+  // Wall dilation: new in v1.27.0 (chunk 2). Defaults to 'off' for
+  // older strings so reloaded configs render at original thickness.
+  const wdIdx = slots.length > 27
+    ? clamp(parseInt(slots[27], 10) || 0, 0, WALLDILATE_KEYS.length - 1)
+    : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1090,6 +1126,7 @@ function parseParamSlots(slots) {
     dropShells:  DROPSHELLS_KEYS[dsIdx],
     manifoldWeld: MANIFOLDWELD_KEYS[mwIdx],
     smoothSurface: SMOOTHSURFACE_KEYS[ssIdx],
+    wallDilate:  WALLDILATE_KEYS[wdIdx],
   };
 }
 
@@ -2478,6 +2515,19 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
   // direction by construction. Skipped for any other body mode.
   if (s.bodyMode === 'hollow-fill') {
     detectSealedCavities(field, nx, ny, nz, voxel, /* fill */ true);
+  }
+
+  // Wall dilation (chunk 2, v1.27.0). Subtracting a constant from
+  // every SDF voxel shifts the entire iso-surface outward by that
+  // amount: the outer body grows by N mm, tunnels shrink by N, the
+  // hollow-shell inner wall moves into the cavity by N (so the wall
+  // thickens by 2N total — N on each side). This runs AFTER cavity
+  // fill so dilation applies uniformly to the final geometry. Caller
+  // is responsible for picking N smaller than the smallest desired
+  // tunnel radius — at heavy (0.60mm) some narrow tunnels may close.
+  const dilateAmount = WALLDILATE_AMOUNTS[s.wallDilate] || 0;
+  if (dilateAmount > 0) {
+    for (let i = 0; i < field.length; i++) field[i] -= dilateAmount;
   }
 
   return { field, nx, ny, nz, ox, oy, oz, voxel };
@@ -4558,6 +4608,13 @@ if (smoothSurfaceEl) {
     scheduleRegen();
   });
 }
+const wallDilateEl = document.getElementById('wallDilate');
+if (wallDilateEl) {
+  wallDilateEl.addEventListener('change', () => {
+    state.wallDilate = wallDilateEl.value;
+    scheduleRegen();
+  });
+}
 
 // Body-mode dropdown (v1.24.0). Toggles between cast-friendly /
 // solid-with-tunnels / hollow geometries via effectiveState() at
@@ -4613,6 +4670,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.27.0', date: '2026-05-01', n: 'Print compatibility chunk 2: Wall dilation (Off/Light/Medium/Heavy). SDF-domain dilation thickens sub-minWall walls before MC; reduces "Thin walls" warnings.' },
   { v: 'v1.26.0', date: '2026-05-01', n: 'Print compatibility section (chunk 1): drop tiny shells, manifold re-weld, surface smooth — post-simplify cleanup pipeline addressing i.materialise shells/bad-edges/rough-surface warnings.' },
   { v: 'v1.25.3', date: '2026-05-01', n: 'Added Obliterate (−98%) Mesh simplify tier for hardest upload limits.' },
   { v: 'v1.25.2', date: '2026-05-01', n: 'Added more aggressive Mesh simplify tiers: Extreme (−80%), Severe (−85%), Brutal (−90%), Maximum (−95%) for tight upload limits.' },
@@ -4818,6 +4876,7 @@ function refreshUIFromState() {
   if (dropShellsEl) dropShellsEl.value = state.dropShells;
   if (manifoldWeldEl) manifoldWeldEl.value = state.manifoldWeld;
   if (smoothSurfaceEl) smoothSurfaceEl.value = state.smoothSurface;
+  if (wallDilateEl) wallDilateEl.value = state.wallDilate;
   if (bodyModeEl) bodyModeEl.value = state.bodyMode;
   refreshWallEnabled();
   refreshBodyModeWarn();
