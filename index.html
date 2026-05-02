@@ -643,6 +643,17 @@
       </div>
 
       <div class="ctrl">
+        <label>Organic supports</label>
+        <select id="organicSupports">
+          <option value="off" selected>Off</option>
+          <option value="sparse">Sparse (1 tendril/anchor)</option>
+          <option value="medium">Medium (2 tendrils/anchor)</option>
+          <option value="dense">Dense (4 tendrils/anchor)</option>
+        </select>
+        <div class="ctrl-note">Adds tendril-cluster supports under unsupported overhangs. Reduces "Bridges" warnings; reads as additional intricate structure. Adds 5–15 sec to regen.</div>
+      </div>
+
+      <div class="ctrl">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
       </div>
@@ -698,7 +709,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.27.0</span>
+        <span id="version">v1.28.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -750,7 +761,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.27.0";
+const VERSION = "v1.28.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -862,6 +873,18 @@ const DEFAULTS = {
                          // radius). Most relevant for lost-wax brass
                          // where i.materialise's analyzer flags walls
                          // below the alloy minimum.
+  organicSupports: 'off', // 'off' | 'sparse' | 'medium' | 'dense' —
+                          // adds tendril-cluster supports under
+                          // unsupported overhangs (chunk 3, v1.28.0).
+                          // Detects downward-facing mesh vertices, ray-
+                          // marches the SDF for body material below;
+                          // anchors with no body within a print-bridge
+                          // distance get a small bouquet of capsules
+                          // routed down to the nearest body part. The
+                          // capsules go through the same texture +
+                          // subdivision pipeline as the body so they
+                          // read as additional sculpture, not as
+                          // utilitarian printer scaffolding.
   simplify: 'off',     // 'off' | 'light' | 'medium' | 'aggressive' — runs
                        // quadric edge-collapse decimation on the final
                        // textured mesh before STL export (v1.25.0).
@@ -964,6 +987,15 @@ const WALLDILATE_KEYS = ['off','light','medium','heavy'];
 // brass minWall safety; Heavy bulks the body substantially.
 const WALLDILATE_AMOUNTS = { off: 0, light: 0.15, medium: 0.30, heavy: 0.60 };
 
+const SUPPORTS_KEYS = ['off','sparse','medium','dense'];
+// Organic-supports tier config (chunk 3, v1.28.0):
+//   tendrils:   per-anchor capsule count (more = denser bouquet)
+//   cellSize:   cluster grid cell in mm (smaller = more anchors total)
+//   fanRadius:  lateral offset of each tendril at the ground end
+const SUPPORTS_TENDRILS    = { off: 0, sparse: 1, medium: 2, dense: 4   };
+const SUPPORTS_CLUSTER_CELL = { off: 5, sparse: 8, medium: 5, dense: 3   };
+const SUPPORTS_FAN_RADIUS   = { off: 0, sparse: 0.5, medium: 1.0, dense: 1.5 };
+
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
 function paramFields(s) {
@@ -979,6 +1011,7 @@ function paramFields(s) {
   const mw = MANIFOLDWELD_KEYS.indexOf(s.manifoldWeld);
   const ss = SMOOTHSURFACE_KEYS.indexOf(s.smoothSurface);
   const wd = WALLDILATE_KEYS.indexOf(s.wallDilate);
+  const os = SUPPORTS_KEYS.indexOf(s.organicSupports);
   return [
     m < 0 ? 0 : m,
     s.size,
@@ -1025,6 +1058,9 @@ function paramFields(s) {
     // ↓ added in v1.27.0 (Print compatibility chunk 2). Defaults to
     // 'off' so existing configs keep their morphology.
     wd < 0 ? 0 : wd,
+    // ↓ added in v1.28.0 (Print compatibility chunk 3). Defaults to
+    // 'off' so existing configs render without supports.
+    os < 0 ? 0 : os,
   ];
 }
 
@@ -1098,6 +1134,11 @@ function parseParamSlots(slots) {
   const wdIdx = slots.length > 27
     ? clamp(parseInt(slots[27], 10) || 0, 0, WALLDILATE_KEYS.length - 1)
     : 0;
+  // Organic supports: new in v1.28.0 (chunk 3). Defaults to 'off' for
+  // older strings so reloaded configs render without supports.
+  const osIdx = slots.length > 28
+    ? clamp(parseInt(slots[28], 10) || 0, 0, SUPPORTS_KEYS.length - 1)
+    : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1127,6 +1168,7 @@ function parseParamSlots(slots) {
     manifoldWeld: MANIFOLDWELD_KEYS[mwIdx],
     smoothSurface: SMOOTHSURFACE_KEYS[ssIdx],
     wallDilate:  WALLDILATE_KEYS[wdIdx],
+    organicSupports: SUPPORTS_KEYS[osIdx],
   };
 }
 
@@ -3158,6 +3200,37 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     console.warn(`buildBodyMesh: still ${comp.nComp} components after Phase 1 + Phase 2 (seed=${s.seed})`);
   }
   geom.computeVertexNormals();
+
+  // Phase 3 (chunk 3, v1.28.0): organic supports for casting/printing.
+  // Detects overhang vertices on the Phase-2-repaired mesh, clusters
+  // them, generates tendril capsules from the closest body part below
+  // up to each anchor, then rebuilds the field with the supports
+  // appended to bridges so they go through the texture + subdivision
+  // + simplify + cleanup pipeline. Default Off.
+  if (s.organicSupports !== 'off' && geom && f) {
+    const overhangs = detectOverhangs(geom, f, s);
+    if (overhangs.length > 0) {
+      const anchors = clusterAnchors(overhangs, s);
+      const supportPaths = generateSupportPaths(anchors, f, s);
+      if (supportPaths.length > 0) {
+        for (const p of supportPaths) bridges.push(p);
+        nRepairs += supportPaths.length;
+        if (onPhase) await onPhase(
+          `Phase 3: routing ${supportPaths.length} organic support tendrils across ${anchors.length} anchors…`,
+          makePreviewMesh(geom)
+        );
+        geom.dispose();
+        rebuild();
+        if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs, fieldInfo: f };
+        geom.computeVertexNormals();
+        if (onPhase) await onPhase(
+          `Phase 3 complete: ${supportPaths.length} support tendrils added`,
+          makePreviewMesh(geom)
+        );
+      }
+    }
+  }
+
   // Subdivide the mesh BEFORE the texture pass (v1.23.0). Decouples
   // texture-mesh density from MC-mesh density, so the user can crank
   // texture detail without remeshing morphology. Skip entirely for
@@ -3700,6 +3773,135 @@ function checkNegSpaceSafety(s, branches) {
 // Cost: ~O(nx·ny·nz) per call. At Standard 96³ ≈ 0.65M voxels → ~50ms.
 // At Ultra 160³ ≈ 4M voxels → ~500ms. Cheap enough to run inside
 // analyzePrintability without noticeably slowing the auto-fix loop.
+// ---------- Organic supports (chunk 3, v1.28.0) ----------
+//
+// Adds tendril-cluster supports under unsupported mesh overhangs to
+// reduce the "Bridges" warning at service-bureau analyzers like
+// i.materialise. The tendrils are routed through the same
+// post-carve / texture / subdivision pipeline as the body, so they
+// read as additional intricate sculpture rather than utilitarian
+// scaffolding.
+//
+// Three-stage flow:
+//   detectOverhangs   — scans mesh for downward-facing vertices with
+//                       no body material directly below within N mm
+//   clusterAnchors    — grid-buckets the overhang vertices and picks
+//                       one anchor per bucket (the lowest-Y vertex)
+//   generateSupportPaths — for each anchor, ray-marches the SDF
+//                          downward to find the closest body part
+//                          below ("ground"), then emits N tendril
+//                          capsules from ground up to anchor with
+//                          a small lateral fan and slight wobble
+
+// Detect overhang vertices using the SDF for the "is there body
+// below me" test. Skipping the first ~2 voxels of the ray avoids
+// self-intersection with the body the vertex sits on.
+function detectOverhangs(geom, fieldInfo, _s) {
+  const positions = geom.getAttribute('position').array;
+  const normalAttr = geom.getAttribute('normal');
+  if (!normalAttr) return [];
+  const normals = normalAttr.array;
+  const V = geom.getAttribute('position').count;
+  const { field, nx, ny, nz, ox, oy, oz, voxel } = fieldInfo;
+  const stride = nx * ny;
+  const minNormalY = -0.3;        // surface tilt threshold for "overhang"
+  const maxDist = 4.0;            // mm; above this is the printer bridging limit
+  const stepSize = Math.max(0.4, voxel * 0.5);
+  const out = [];
+  const skipNear = voxel * 1.5;   // distance to step past before checking
+
+  for (let v = 0; v < V; v++) {
+    if (normals[v*3 + 1] > minNormalY) continue;
+    const px = positions[v*3], py = positions[v*3+1], pz = positions[v*3+2];
+    let supported = false;
+    for (let d = skipNear; d <= maxDist; d += stepSize) {
+      const probeY = py - d;
+      const xi = Math.round((px - ox) / voxel);
+      const yi = Math.round((probeY - oy) / voxel);
+      const zi = Math.round((pz - oz) / voxel);
+      if (xi < 0 || xi >= nx || yi < 0 || yi >= ny || zi < 0 || zi >= nz) continue;
+      if (field[zi * stride + yi * nx + xi] < 0) { supported = true; break; }
+    }
+    if (!supported) out.push({ x: px, y: py, z: pz });
+  }
+  return out;
+}
+
+// Group overhangs by 3D grid cell; keep the lowest-Y vertex per cell
+// as that cluster's anchor.
+function clusterAnchors(overhangs, s) {
+  if (overhangs.length === 0) return [];
+  const cellSize = SUPPORTS_CLUSTER_CELL[s.organicSupports] || 5.0;
+  const buckets = new Map();
+  for (const o of overhangs) {
+    const cx = Math.floor(o.x / cellSize);
+    const cy = Math.floor(o.y / cellSize);
+    const cz = Math.floor(o.z / cellSize);
+    const key = cx + ',' + cy + ',' + cz;
+    const prev = buckets.get(key);
+    if (!prev || o.y < prev.y) buckets.set(key, o);
+  }
+  return [...buckets.values()];
+}
+
+// For each anchor, generate a small bouquet of capsule SDFs from the
+// nearest body part below up to the anchor. Returns capsules in the
+// same shape the rest of the post-carve pipeline expects (start, end,
+// r0, r1, depth, parent, tangent, wobble).
+function generateSupportPaths(anchors, fieldInfo, s) {
+  const paths = [];
+  if (!anchors.length) return paths;
+  const { field, nx, ny, nz, ox, oy, oz, voxel } = fieldInfo;
+  const stride = nx * ny;
+  const tendrilsPerAnchor = SUPPORTS_TENDRILS[s.organicSupports] || 1;
+  const fanRadius = SUPPORTS_FAN_RADIUS[s.organicSupports] || 1.0;
+  // Tendrils are intentionally thin so the bouquet looks delicate;
+  // floor at 0.6mm so brass casting can still reproduce them.
+  const tendrilRadius = Math.max(0.6, voxel * 0.7);
+  const groundStep = Math.max(0.4, voxel * 0.5);
+  const bboxBottom = oy + voxel;
+  // Per-build RNG so the angular fan is deterministic for a given seed.
+  const rng = mulberry32((s.seed >>> 0) ^ 0xa17c83b9);
+
+  for (const a of anchors) {
+    // Ground search: ray-march downward from the anchor until we hit
+    // body. If nothing is found within the bbox, fall back to the
+    // bbox bottom — the tendril ends in mid-air, but at print orient-
+    // ation that's the build-plate level.
+    let groundY = bboxBottom;
+    for (let d = voxel * 2.0; d <= 200; d += groundStep) {
+      const probeY = a.y - d;
+      if (probeY < bboxBottom) break;
+      const xi = Math.round((a.x - ox) / voxel);
+      const yi = Math.round((probeY - oy) / voxel);
+      const zi = Math.round((a.z - oz) / voxel);
+      if (xi < 0 || xi >= nx || yi < 0 || yi >= ny || zi < 0 || zi >= nz) continue;
+      if (field[zi * stride + yi * nx + xi] < 0) { groundY = probeY; break; }
+    }
+    if (groundY >= a.y - voxel) continue;  // anchor too close to ground; skip
+
+    // Emit N tendrils. Each starts at a slightly offset point at
+    // ground level and converges at the anchor — visually like a
+    // splayed root system rooting up to the bridge.
+    const phaseOffset = rng() * Math.PI * 2;
+    for (let t = 0; t < tendrilsPerAnchor; t++) {
+      const angle = phaseOffset + (t / tendrilsPerAnchor) * Math.PI * 2;
+      const offsetX = Math.cos(angle) * fanRadius;
+      const offsetZ = Math.sin(angle) * fanRadius;
+      paths.push({
+        start: new THREE.Vector3(a.x + offsetX, groundY, a.z + offsetZ),
+        end:   new THREE.Vector3(a.x, a.y, a.z),
+        r0: tendrilRadius * 1.15,    // slightly thicker at the ground base
+        r1: tendrilRadius,            // tapers to thinner at the bridge tip
+        depth: 0, parent: null,
+        tangent: new THREE.Vector3(0, 1, 0),
+        wobble: 0.4,                  // small organic curvature
+      });
+    }
+  }
+  return paths;
+}
+
 function detectSealedCavities(field, nx, ny, nz, voxel, fill = false) {
   const stride = nx * ny;
   const total = nx * ny * nz;
@@ -4615,6 +4817,13 @@ if (wallDilateEl) {
     scheduleRegen();
   });
 }
+const organicSupportsEl = document.getElementById('organicSupports');
+if (organicSupportsEl) {
+  organicSupportsEl.addEventListener('change', () => {
+    state.organicSupports = organicSupportsEl.value;
+    scheduleRegen();
+  });
+}
 
 // Body-mode dropdown (v1.24.0). Toggles between cast-friendly /
 // solid-with-tunnels / hollow geometries via effectiveState() at
@@ -4670,6 +4879,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.28.0', date: '2026-05-01', n: 'Print compatibility chunk 3: Organic supports (Sparse/Medium/Dense). Detects unsupported overhangs, adds tendril-cluster capsules from body parts below up to each anchor; reduces "Bridges" warnings while reading as more sculpture.' },
   { v: 'v1.27.0', date: '2026-05-01', n: 'Print compatibility chunk 2: Wall dilation (Off/Light/Medium/Heavy). SDF-domain dilation thickens sub-minWall walls before MC; reduces "Thin walls" warnings.' },
   { v: 'v1.26.0', date: '2026-05-01', n: 'Print compatibility section (chunk 1): drop tiny shells, manifold re-weld, surface smooth — post-simplify cleanup pipeline addressing i.materialise shells/bad-edges/rough-surface warnings.' },
   { v: 'v1.25.3', date: '2026-05-01', n: 'Added Obliterate (−98%) Mesh simplify tier for hardest upload limits.' },
@@ -4877,6 +5087,7 @@ function refreshUIFromState() {
   if (manifoldWeldEl) manifoldWeldEl.value = state.manifoldWeld;
   if (smoothSurfaceEl) smoothSurfaceEl.value = state.smoothSurface;
   if (wallDilateEl) wallDilateEl.value = state.wallDilate;
+  if (organicSupportsEl) organicSupportsEl.value = state.organicSupports;
   if (bodyModeEl) bodyModeEl.value = state.bodyMode;
   refreshWallEnabled();
   refreshBodyModeWarn();
