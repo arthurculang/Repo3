@@ -38,7 +38,7 @@
 <title>Radiolaria</title>
 <style>
   :root {
-    --bg: #0b0d10;
+    --bg: #5a6068;
     --panel: #14181d;
     --panel-2: #1b2026;
     --ink: #e8ecf1;
@@ -72,7 +72,7 @@
 
   #stage {
     position: relative;
-    background: radial-gradient(ellipse at 50% 40%, #1a2028 0%, #0b0d10 70%);
+    background: radial-gradient(ellipse at 50% 40%, #7a818a 0%, #50565d 70%);
     min-width: 0; min-height: 0;
   }
   #canvas {
@@ -709,7 +709,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.28.2</span>
+        <span id="version">v1.28.3</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -761,7 +761,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.28.2";
+const VERSION = "v1.28.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1220,7 +1220,7 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0d10);
+scene.background = new THREE.Color(0x5a6068);
 
 const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 2000);
 camera.position.set(120, 90, 160);
@@ -4888,6 +4888,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.28.3', date: '2026-05-01', n: 'Canvas/scene background lightened from near-black to medium cool gray (studio-style backdrop). Panel and controls stay dark for contrast.' },
   { v: 'v1.28.2', date: '2026-05-01', n: 'Mesh simplify default raised to Extreme (−80%) — STL ships under typical service-bureau upload limits without manual tuning. Older saved configs unchanged.' },
   { v: 'v1.28.1', date: '2026-05-01', n: 'Print compatibility defaults raised: Drop tiny shells → Light, Manifold re-weld → Tight, Surface smooth → Light, Wall dilation → Light. Service-bureau-ready output by default. Older saved configs unchanged (codec defaults stay at off for missing slots).' },
   { v: 'v1.28.0', date: '2026-05-01', n: 'Print compatibility chunk 3: Organic supports (Sparse/Medium/Dense). Detects unsupported overhangs, adds tendril-cluster capsules from body parts below up to each anchor; reduces "Bridges" warnings while reading as more sculpture.' },
