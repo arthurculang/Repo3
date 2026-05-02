@@ -584,11 +584,11 @@
       <div class="ctrl">
         <label>Mesh simplify</label>
         <select id="simplify">
-          <option value="off" selected>Off (full fidelity)</option>
+          <option value="off">Off (full fidelity)</option>
           <option value="light">Light (−25% tris)</option>
           <option value="medium">Medium (−50% tris)</option>
           <option value="aggressive">Aggressive (−75% tris)</option>
-          <option value="extreme">Extreme (−80% tris)</option>
+          <option value="extreme" selected>Extreme (−80% tris)</option>
           <option value="severe">Severe (−85% tris)</option>
           <option value="brutal">Brutal (−90% tris)</option>
           <option value="maximum">Maximum (−95% tris)</option>
@@ -709,7 +709,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.28.1</span>
+        <span id="version">v1.28.2</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -761,7 +761,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.28.1";
+const VERSION = "v1.28.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -894,15 +894,15 @@ const DEFAULTS = {
                           // subdivision pipeline as the body so they
                           // read as additional sculpture, not as
                           // utilitarian printer scaffolding.
-  simplify: 'off',     // 'off' | 'light' | 'medium' | 'aggressive' — runs
-                       // quadric edge-collapse decimation on the final
-                       // textured mesh before STL export (v1.25.0).
-                       // Reduces triangle count + STL file size; preserves
-                       // overall morphology (low-curvature regions
-                       // collapsed first, silhouettes preserved). Off by
-                       // default so the print-fidelity output is the
-                       // baseline; opt in when a service-bureau upload
-                       // size limit forces the issue.
+  simplify: 'extreme',  // 'off' | 'light' | 'medium' | 'aggressive' | 'extreme'
+                       // | 'severe' | 'brutal' | 'maximum' | 'obliterate'.
+                       // Vertex-clustering decimation runs on the final
+                       // textured mesh before STL export (v1.25.1).
+                       // Default raised from 'off' to 'extreme' (~80%
+                       // tri reduction) in v1.28.2 — keeps STL size
+                       // under typical service-bureau upload limits
+                       // out of the box. Drop to 'off' or a lower tier
+                       // when full-fidelity output is needed.
   bodyMode: 'hollow-fill',  // 'cast' | 'solid' | 'hollow' | 'hollow-fill' — body composition
                        // toggle (v1.24.0). 'cast' forces wall=0 AND
                        // negStyle='none' for lost-wax-friendly geometry;
@@ -4888,6 +4888,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.28.2', date: '2026-05-01', n: 'Mesh simplify default raised to Extreme (−80%) — STL ships under typical service-bureau upload limits without manual tuning. Older saved configs unchanged.' },
   { v: 'v1.28.1', date: '2026-05-01', n: 'Print compatibility defaults raised: Drop tiny shells → Light, Manifold re-weld → Tight, Surface smooth → Light, Wall dilation → Light. Service-bureau-ready output by default. Older saved configs unchanged (codec defaults stay at off for missing slots).' },
   { v: 'v1.28.0', date: '2026-05-01', n: 'Print compatibility chunk 3: Organic supports (Sparse/Medium/Dense). Detects unsupported overhangs, adds tendril-cluster capsules from body parts below up to each anchor; reduces "Bridges" warnings while reading as more sculpture.' },
   { v: 'v1.27.0', date: '2026-05-01', n: 'Print compatibility chunk 2: Wall dilation (Off/Light/Medium/Heavy). SDF-domain dilation thickens sub-minWall walls before MC; reduces "Thin walls" warnings.' },
