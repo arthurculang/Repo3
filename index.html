@@ -890,7 +890,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.7</span>
+        <span id="version">v1.32.8</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -942,7 +942,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.7";
+const VERSION = "v1.32.8";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4563,16 +4563,24 @@ function generateForaminiferanStructure(s) {
     pointR.push(tubeStart * (1 - tt) + tubeEnd * tt);
   }
 
-  // Self-avoidance pass (v1.32.6). For each sample point, push it away
-  // from any non-adjacent prior sample whose tube would otherwise
-  // overlap with this one's tube. Skips immediate path neighbours
-  // (those are naturally close along the curve). Iterates a few times
-  // to converge — typically 2-3 passes is enough.
+  // Self-avoidance pass (v1.32.6 + v1.32.8). For each sample point,
+  // push it away from any non-adjacent prior sample whose tube would
+  // come closer than `safety × (r_i + r_j)` to this one's tube. As of
+  // v1.32.8 the user's selfAvoid param scales the safety multiplier
+  // itself, so it controls how VISIBLE the gap is rather than just
+  // whether overlap is permitted:
+  //   0   → safety 1.2 (just non-overlapping; edges touch)
+  //   0.5 → safety 2.7 (visible gap, ~half-radius separation)
+  //   0.6 → safety 3.0 (clear orbital separation, default)
+  //   1.0 → safety 4.2 (generous empty cavity in the middle)
+  // Step factor stays a constant 0.5 so push strength is stable across
+  // the slider range; max iterations bumped 5 → 12 to converge under
+  // the larger separation requirement.
   if (selfAvoid > 1e-3) {
     const skipNeighbors = 6;
-    const safety = 1.2;
-    const maxIters = 5;
-    const stepFactor = 0.5 * selfAvoid;
+    const safety = 1.2 + selfAvoid * 3.0;
+    const maxIters = 12;
+    const stepFactor = 0.5;
     for (let iter = 0; iter < maxIters; iter++) {
       let movedAny = false;
       for (let i = skipNeighbors + 1; i < points.length; i++) {
@@ -6012,6 +6020,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.8', date: '2026-05-03', n: 'Foraminiferan visible orbital separation: self-avoidance safety multiplier now scales with foramSelfAvoid (1.2 → 4.2 across the slider) so the param controls how much negative space sits between coils rather than just whether they overlap; max iterations bumped 5 → 12 to converge under the larger separation requirement. Result is a comet path orbiting a clear inner cavity, with edges that never touch.' },
   { v: 'v1.32.7', date: '2026-05-02', n: 'Acantharian density + per-spine bend: parent spine count default 24 → 36 (slider max 40 → 48); children inherit half the parent count so the parent radial pattern dominates; per-spine random bend on top of helical twist gives each spine a unique shape (random direction, random position, random magnitude).' },
   { v: 'v1.32.6', date: '2026-05-02', n: 'Foraminiferan comet trajectory: tube inverted (thick inner → thin outer), longer (4 turns) with slower taper, new wander parameter (multi-frequency 3D sin perturbation) and self-avoidance pass (iterative push-apart for non-adjacent samples) so the path threads gaps and feels like a knot winding itself. Codec slots 64-65.' },
   { v: 'v1.32.5', date: '2026-05-02', n: 'Acantharian density + cinnamon-twist: default spine count 18 → 24, length-jitter floor at 40% so high-jitter spines never disappear, new acanTwist parameter replacing straight spines with golden-angle-phased helical chains so neighbouring spines interleave near the body. Codec slot 63.' },
