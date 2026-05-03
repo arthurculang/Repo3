@@ -505,14 +505,14 @@
             <option value="copper">Copper (CuCr1Zr)</option>
           </optgroup>
           <optgroup label="Lost-wax cast (i.materialise)">
-            <option value="brass-cast-gold" selected>Brass + 18K Yellow Gold Plate</option>
+            <option value="brass-cast-gold">Brass + 18K Yellow Gold Plate</option>
             <option value="brass-cast">Brass (Natural PU)</option>
           </optgroup>
           <optgroup label="Plastics (FDM / SLA / SLS)">
             <option value="pla">PLA (FDM)</option>
             <option value="petg">PETG (FDM)</option>
             <option value="abs">ABS (FDM)</option>
-            <option value="nylon">Nylon PA12 (SLS)</option>
+            <option value="nylon" selected>Nylon PA12 (SLS)</option>
             <option value="resin">Resin (SLA)</option>
           </optgroup>
         </select>
@@ -717,7 +717,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.29.1</span>
+        <span id="version">v1.29.2</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -769,7 +769,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.29.1";
+const VERSION = "v1.29.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -831,9 +831,11 @@ const DEFAULTS = {
   sym: 'radial',
   radialN: 5,
   neg: 3.7,
-  material: 'brass-cast-gold',  // Default raised in v1.24.1 — most users
-                                 // here are casting via i.materialise lost-
-                                 // wax-cast brass with 18K yellow gold plate.
+  material: 'nylon',            // Default changed to Nylon PA12 (SLS) in
+                                 // v1.29.2 — bridges-rich morphology + SLS
+                                 // bureaus (Sculpteo, Shapeways) is now the
+                                 // primary path. Brass/lost-wax remains in
+                                 // the dropdown for users who want it.
   size: 80,  // target max bounding-box dimension (mm)
   wall: 1.0, // default hollow shell with 1mm wall — above every material's
              // minWall, sensible at default size/export-resolution.
@@ -4960,6 +4962,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.29.2', date: '2026-05-02', n: 'Default material → Nylon PA12 (SLS). SLS handles bridges natively without needing organic supports; aligns the default workflow with Sculpteo/Shapeways. Brass + gold plate stays in the dropdown.' },
   { v: 'v1.29.1', date: '2026-05-02', n: 'Creature-type UI (chunk 1B): creature dropdown at top of panel; controls grouped into Universal + "Radiolarian morphology" section with show/hide infrastructure ready for additional creature types.' },
   { v: 'v1.29.0', date: '2026-05-02', n: 'Creature-type infrastructure (chunk 1A): state + codec slot 29 + dispatcher refactor. Existing morphology renamed Radiolarian; chunks 2 and 3 add Acantharian and Coralline.' },
   { v: 'v1.28.3', date: '2026-05-01', n: 'Canvas/scene background lightened from near-black to medium cool gray (studio-style backdrop). Panel and controls stay dark for contrast.' },
