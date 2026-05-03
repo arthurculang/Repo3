@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.27</span>
+        <span id="version">v1.32.28</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.27";
+const VERSION = "v1.32.28";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4489,21 +4489,27 @@ function generateAcantharianStructure(s) {
         tangent: ps.dir.clone(),
         wobble: 0,
       });
-      // Spiral bumps along the surface (v1.32.27). Marks the seashell
-      // path where child spines will eventually emerge — same spiral
-      // helper + same phase as the parent so the pattern is visually
-      // matched. Bump radius = 50% of parent baseR (1.2 mm) = 0.6 mm.
-      // Each bump centered exactly on the child sphere surface, so it
-      // reads as a small swelling along the spiral line.
+      // Straight uniform child spines (v1.32.28). Each spine is a
+      // single tapered capsule from sR×0.85 (just inside the body
+      // sphere for clean fusion) outward to sR + spineLength along
+      // the seashell direction d. Same seashell helper + same
+      // phaseOffset as the parent so the emergence-spiral matches.
+      // Lengths and radii scale with childSR / sphereRadius so the
+      // child reads as a faithful smaller copy of the parent in
+      // proportion. No length jitter, no bend, no twist for now —
+      // we'll add those back once direction is confirmed good.
       const phaseOffset = ((s.seed >>> 0) * 1e-7) % (Math.PI * 2);
-      const bumpDirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, phaseOffset);
-      const bumpR = baseR * 0.5;
-      for (const d of bumpDirs) {
-        const bumpCenter = childCenter.clone().addScaledVector(d, childSR);
+      const childDirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, phaseOffset);
+      const childScale = childSR / sphereRadius;
+      const childSpineLen = spineLength * childScale;
+      const childBaseR = baseR * 0.5;
+      const childTipR  = Math.min(tipR * 0.5, childBaseR);
+      for (const d of childDirs) {
+        const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
+        const endPt   = childCenter.clone().addScaledVector(d, childSR + childSpineLen);
         branches.push({
-          start: bumpCenter.clone(),
-          end:   bumpCenter.clone().add(new THREE.Vector3(0, 0.01, 0)),
-          r0: bumpR, r1: bumpR,
+          start: startPt, end: endPt,
+          r0: childBaseR, r1: childTipR,
           depth: 1, parent: 0,
           tangent: d.clone(),
           wobble: 0,
@@ -6563,6 +6569,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.28', date: '2026-05-03', n: 'Acantharian child rebuild step 3 — replaced surface bumps with full straight spines emerging along each seashell direction. Each spine is a single tapered capsule from sR×0.85 outward to sR + childSpineLen. Lengths and radii scale with childSR/sphereRadius (so child spine length 15 mm at debug-oversized 50% node, baseR 0.6 mm, tipR 0.2 mm). No length jitter, no bend, no twist — confirming direction first; will add variability back once the radial pattern looks right.' },
   { v: 'v1.32.27', date: '2026-05-03', n: 'Acantharian child rebuild step 2 — added 36 spiral bumps along the child node surface, marking where spines will eventually emerge. Same seashellSpiralDirections + same phaseOffset as the parent so the spiral pattern matches. Each bump is a degenerate sphere at radius = baseR × 0.5 (0.6 mm), centered on the child sphere surface so it reads as a small swelling along the spiral line.' },
   { v: 'v1.32.26', date: '2026-05-03', n: 'Acantharian child node bumped to 50% of parent (4 mm at sphereRadius=8). At 25% the small ball was getting subsumed into the parent spine\'s tip taper via smooth-min.' },
   { v: 'v1.32.25', date: '2026-05-03', n: 'Acantharian child node dialed down — debug node now 25% of parent body sphere (2 mm at sphereRadius=8). Still hardcoded; will revert to recurScale-based sizing once spines reattach.' },
