@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.18</span>
+        <span id="version">v1.32.19</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.18";
+const VERSION = "v1.32.19";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4248,11 +4248,11 @@ function generateAcantharianStructure(s) {
   // the parent rather than a carbon-copy clone. SAME bend ratio for
   // all scales (no size-aware boost): a child is exactly a smaller
   // version of the parent's morphology.
-  function buildOneAcantharian(center, scale, salt) {
+  function buildOneAcantharian(center, scale, salt, thicknessMul = 1) {
     const sR = sphereRadius * scale;
     const sL = spineLength  * scale;
-    const bR = baseR        * scale;
-    const tR = tipR         * scale;
+    const bR = baseR        * scale * thicknessMul;
+    const tR = tipR         * scale * thicknessMul;
     const isFullScale = scale >= 0.99;
     const useCurl = isFullScale && curl > 1e-3;
     const useTipSplit = isFullScale && tipSplitN > 0;
@@ -4290,6 +4290,23 @@ function generateAcantharianStructure(s) {
     // on its body sphere.
     const phaseOffset = (localSeed * 1e-7) % (Math.PI * 2);
     const dirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, phaseOffset);
+    // Salt-derived rotation of the seashell's polar axis (v1.32.19).
+    // Without this, every child's "south pole" spines run along world
+    // -Y and parallel to the parent spine they emerge from — those
+    // spines fuse into the parent spine via smooth-min and become
+    // invisible, making the child read as "all spines pointing
+    // outward away from parent." A random rotation puts the polar
+    // axis somewhere arbitrary so the spines closest to the parent
+    // emerge at a non-parallel angle and stay visible.
+    if (salt !== 0) {
+      const rotAxisX = Math.cos(localSeed * 0.131);
+      const rotAxisY = Math.sin(localSeed * 0.071) + 0.001;
+      const rotAxisZ = Math.cos(localSeed * 0.197);
+      const rotAxis = new THREE.Vector3(rotAxisX, rotAxisY, rotAxisZ).normalize();
+      const rotAngle = ((localSeed * 0.0003) % 1) * Math.PI * 2;
+      const childQuat = new THREE.Quaternion().setFromAxisAngle(rotAxis, rotAngle);
+      for (const d of dirs) d.applyQuaternion(childQuat);
+    }
 
     const tipPositions = [];
     let spineIndex = 0;
@@ -4298,7 +4315,7 @@ function generateAcantharianStructure(s) {
       const thisLen = sL * lenScale;
       const startPt = center.clone().addScaledVector(d, sR * 0.85);
       const endPt   = center.clone().addScaledVector(d, sR + thisLen);
-      tipPositions.push(endPt.clone());
+      tipPositions.push({ tip: endPt.clone(), dir: d.clone() });
 
       if (useTwist) {
         const N = 7;
@@ -4418,27 +4435,40 @@ function generateAcantharianStructure(s) {
   }
 
   // Build parent.
-  const parentTips = buildOneAcantharian(new THREE.Vector3(0, 0, 0), 1, 0);
+  const parentSpines = buildOneAcantharian(new THREE.Vector3(0, 0, 0), 1, 0);
 
-  // Build child(ren) (v1.32.18). The child is built by the SAME
-  // helper — a literal smaller copy of the parent's logic — with a
-  // non-zero salt so its wind direction, ripple axis, and seashell-
-  // spiral starting orientation are different. The recurDepth slider
-  // gates whether children get emitted at all (≥ 2 = yes); the
-  // ACAN_DEBUG_SINGLE_CHILD_ONLY constant controls whether we emit
-  // one debug child (at parent's first spine tip) or one at every
-  // parent spine tip. The single-child mode is for visual iteration
-  // on child morphology; flip the constant off once we like the
-  // child's look to populate every tip.
-  if (recurDepth >= 2 && parentTips.length > 0) {
+  // Build child(ren) (v1.32.18 / v1.32.19). The child is built by the
+  // SAME helper as the parent at reduced scale + thinner spines, with
+  // a non-zero salt for subtle wind/phase variation.
+  //
+  // Center is offset OUTWARD along the parent spine direction by
+  // ≈ 0.7× child body radius so the parent spine connects to the
+  // child's "bottom pole" rather than burying itself inside the child's
+  // sphere. Without that offset, the half of the child's spines that
+  // point back toward the parent fuse into the parent spine via
+  // smooth-min and become visually invisible — making the child read
+  // as "all spines pointing away from parent." With the offset, every
+  // direction around the child is exposed.
+  //
+  // recurDepth ≥ 2 gates child emission; ACAN_DEBUG_SINGLE_CHILD_ONLY
+  // limits to a single child at parent's first spine tip for visual
+  // iteration. Flip it off to populate every parent spine tip.
+  const CHILD_THICKNESS_MUL = 0.7;
+  if (recurDepth >= 2 && parentSpines.length > 0) {
     if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
-      buildOneAcantharian(parentTips[0], recurScale, 0x9E37);
+      const ps = parentSpines[0];
+      const childSR = sphereRadius * recurScale;
+      const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * 0.7);
+      buildOneAcantharian(childCenter, recurScale, 0x9E37, CHILD_THICKNESS_MUL);
     } else {
-      for (let i = 0; i < parentTips.length; i++) {
+      for (let i = 0; i < parentSpines.length; i++) {
+        const ps = parentSpines[i];
         const variation = Math.pow(3, (rng() * 2 - 1) * recurVariation);
         const childScale = Math.min(0.9, recurScale * variation);
         if (childScale > 0.05) {
-          buildOneAcantharian(parentTips[i], childScale, 0x9E37 + i * 0x1A85);
+          const childSR = sphereRadius * childScale;
+          const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * 0.7);
+          buildOneAcantharian(childCenter, childScale, 0x9E37 + i * 0x1A85, CHILD_THICKNESS_MUL);
         }
       }
     }
@@ -6469,6 +6499,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.19', date: '2026-05-03', n: 'Acantharian child visibility fix: previous version produced child with seashell axis aligned to world Y, so spines near the south pole ran parallel to the parent spine and got absorbed into it via smooth-min. Visually the child read as "all spines pointing outward from parent center" because half its spines were invisible. Three fixes: (1) child center is offset OUTWARD along the parent spine\'s direction by 0.7×childSR so the parent spine connects to the child near its bottom pole rather than burying inside it; (2) child\'s seashell directions are rotated by a salt-derived random quaternion so its polar axis lands at a random angle relative to the parent spine — spines closest to the parent are no longer parallel to it; (3) child spine thickness multiplier 0.7 so children read as a daintier version of the parent rather than the same thickness.' },
   { v: 'v1.32.18', date: '2026-05-03', n: 'Acantharian children rebuilt as literal smaller copies. The recursive emitOne pattern with depth-conditional logic was producing children that visually didn\'t match the parent. Refactored: a single buildOneAcantharian(center, scale, salt) helper now contains all per-creature logic. The salt seeds a per-creature wind direction, ripple axis, and seashell-spiral phase so a child has subtle variation rather than being a carbon copy. Children use the SAME seashell spiral (was Fibonacci) and SAME bend formula (sizeBoost dropped) as the parent — so a child has the same emergence pattern, same bend ratio, just at smaller scale. Simulation confirms: parent bend ratio 12.0%, child bend ratio 11.1% — virtually identical, child mean-vec-length 0.048 = same direction-coverage as parent.' },
   { v: 'v1.32.17', date: '2026-05-03', n: 'Acantharian child bend dampened: at sizeMul=0.30 the wind-bend amplitude could reach ~62% of spine length, which combined with the globally-coherent wind direction was making child spines all sweep in one world-direction instead of fanning out from the child\'s own center. Coefficient 0.65 → 0.50 and size-boost halved (1 + (1/√sizeMul − 1)·0.5, so a sizeMul=0.30 child now gets 1.42× boost not 1.83×). Child max bend ratio drops from ~62% to ~37% so the radial direction dominates visually while children still mirror the parent\'s flowing-tentacle character. Parent slightly more contained too (max 19.9 → 11.1 mm, avg 4.7 → 4.0 mm) — still visibly wavy, no extreme outliers.' },
   { v: 'v1.32.16', date: '2026-05-03', n: 'Acantharian debug toggle: ACAN_DEBUG_SINGLE_CHILD_ONLY top-level constant. When true (current state), only the first parent spine emits a child at its tip — the rest of the parent spines are bare. Lets us iterate on child morphology without visual clutter; flip the constant back to false to restore full recursion once the child logic is dialed in.' },
