@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.15</span>
+        <span id="version">v1.32.16</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.15";
+const VERSION = "v1.32.16";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4199,6 +4199,13 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
   return true;
 }
 
+// DEBUG TOGGLE (v1.32.16). When true, only the FIRST parent spine
+// emits a child at its tip — the rest of the parent spines have no
+// children. Used for fast visual iteration on child morphology
+// without the visual clutter of 30+ children. Flip back to false
+// once child logic is dialed in to restore full recursion.
+const ACAN_DEBUG_SINGLE_CHILD_ONLY = true;
+
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
 //
 // A central sphere with N radiating tapered spines. No branching, no
@@ -4492,7 +4499,8 @@ function generateAcantharianStructure(s) {
       // range — true small/medium/large mix instead of a tight cluster
       // around the base scale. Capped at 0.9× the parent so children
       // can never rival the parent visually.
-      if (depth < recurDepth - 1) {
+      if (depth < recurDepth - 1
+          && (!ACAN_DEBUG_SINGLE_CHILD_ONLY || (depth === 0 && spineIndex === 0))) {
         const variationFactor = Math.pow(3, (rng() * 2 - 1) * recurVariation);
         let childMul = sizeMul * recurScale * variationFactor;
         const childCap = sizeMul * 0.9;
@@ -6530,6 +6538,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.16', date: '2026-05-03', n: 'Acantharian debug toggle: ACAN_DEBUG_SINGLE_CHILD_ONLY top-level constant. When true (current state), only the first parent spine emits a child at its tip — the rest of the parent spines are bare. Lets us iterate on child morphology without visual clutter; flip the constant back to false to restore full recursion once the child logic is dialed in.' },
   { v: 'v1.32.15', date: '2026-05-03', n: 'Default creature type changed from Radiolarian to Acantharian — fresh page loads now show the Acantharian immediately so iteration on it is faster.' },
   { v: 'v1.32.14', date: '2026-05-03', n: 'Acantharian deep-simulation diagnosis: harness measured parent spines at avg 3.2 mm perp deviation but children at 0.5 mm — 6× less wavy in absolute terms, even though the ratio per-unit-length was similar. Children\'s spines are simply too short for the proportional bend amplitude to read visually. Three fixes: (1) Inverse-sqrt(sizeMul) boost on bendOffset so smaller children get proportionally MORE perpendicular bend per unit length than the parent (a sizeMul=0.30 child gets 1.83× the amplitude scale). Re-run shows child waviness 0.48 → 1.69 mm with the same spine length, so children now visibly mirror the parent\'s flowing-jelly character. (2) Bend amplitude coefficient bumped 0.50 → 0.65; secondary 2× harmonic 0.35 → 0.50 — parent\'s avg perp 3.2 → 4.7 mm, max 8.7 → 19.9 mm, 17% → 34% have >5 mm bend. (3) Length jitter formula switched from additive (1+(rng-0.5)·jitter, ±25% range at default) to log-uniform (exp((rng-0.5)·jitter·2.5), ≈ 0.54×–1.87× range at default). Some parent spines are now dramatically longer than others — the "much more length variability" the user wanted, with no spine count change.' },
   { v: 'v1.32.13', date: '2026-05-03', n: 'Organic flow + targeted hairiness: (1) Acantharian — children reverted to fibonacciSphereDirections (was seashell) so their spines radiate in all directions like little pincushions of jelly tentacles, while the parent keeps the seashell spiral for a clear emergence-curve on its body. Spine waviness bumped: segments 5 → 7, secondary 2× harmonic at per-spine phase added on top of the sin(πt) arc, amplitude coefficient 0.32 → 0.50 — every spine still leans coherently with the wind but each one undulates in a slight S-shape so the field reads as drifting jelly rather than rigid wheat. (2) Foraminiferan — fuzz density now scales with local tube radius: bumpsPerPoint = round((1 + 2·tubeR)·fuzz). At fuzz=1 a 5 mm-thick section gets ~11 bumps per ring; a 1 mm-thin section gets ~3. Bumps spread evenly around the local circumference (b/N · 2π) plus slow per-point spiral jitter so they don\'t form aligned columns. Result: the thick inner end of the spiral is visibly hairy/furry, the thin outer end is sparser. (3) Coralline — branches now read as organic tendrils rather than a geometric graph: 3 → 4 segments per branch, secondary 0.4× 2× harmonic with per-branch random phase, per-branch wave-axis rotation around childDir (±15°), per-branch amplitude jitter (0.7-1.3×), and baseline amplitude bumped 0.15 → 0.18 (curl scales up to 0.40). Siblings within a patch flow in similar-but-non-identical directions — coherent without being repetitive.' },
