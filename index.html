@@ -453,8 +453,8 @@
       <div class="ctrl">
         <label>Creature type</label>
         <select id="creatureType">
-          <option value="radiolarian" selected>Radiolarian</option>
-          <option value="acantharian">Acantharian</option>
+          <option value="radiolarian">Radiolarian</option>
+          <option value="acantharian" selected>Acantharian</option>
           <option value="coralline">Coralline</option>
           <option value="foraminiferan">Foraminiferan</option>
         </select>
@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.14</span>
+        <span id="version">v1.32.15</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.14";
+const VERSION = "v1.32.15";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1012,7 +1012,7 @@ const DEFAULTS = {
   // pipeline calls; each creature owns its own subset of controls
   // shown in the panel. v1.30.0 added 'acantharian'; chunk 3 adds
   // 'coralline'.
-  creatureType: 'radiolarian',
+  creatureType: 'acantharian',
   // Acantharian-specific controls (chunk 2B, v1.30.1):
   acanSpines: 36,        // 6..48   how many spines radiate from the parent core.
                           //         18 (original) → 24 (v1.32.5) → 36 (v1.32.7) so the
@@ -6530,6 +6530,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.15', date: '2026-05-03', n: 'Default creature type changed from Radiolarian to Acantharian — fresh page loads now show the Acantharian immediately so iteration on it is faster.' },
   { v: 'v1.32.14', date: '2026-05-03', n: 'Acantharian deep-simulation diagnosis: harness measured parent spines at avg 3.2 mm perp deviation but children at 0.5 mm — 6× less wavy in absolute terms, even though the ratio per-unit-length was similar. Children\'s spines are simply too short for the proportional bend amplitude to read visually. Three fixes: (1) Inverse-sqrt(sizeMul) boost on bendOffset so smaller children get proportionally MORE perpendicular bend per unit length than the parent (a sizeMul=0.30 child gets 1.83× the amplitude scale). Re-run shows child waviness 0.48 → 1.69 mm with the same spine length, so children now visibly mirror the parent\'s flowing-jelly character. (2) Bend amplitude coefficient bumped 0.50 → 0.65; secondary 2× harmonic 0.35 → 0.50 — parent\'s avg perp 3.2 → 4.7 mm, max 8.7 → 19.9 mm, 17% → 34% have >5 mm bend. (3) Length jitter formula switched from additive (1+(rng-0.5)·jitter, ±25% range at default) to log-uniform (exp((rng-0.5)·jitter·2.5), ≈ 0.54×–1.87× range at default). Some parent spines are now dramatically longer than others — the "much more length variability" the user wanted, with no spine count change.' },
   { v: 'v1.32.13', date: '2026-05-03', n: 'Organic flow + targeted hairiness: (1) Acantharian — children reverted to fibonacciSphereDirections (was seashell) so their spines radiate in all directions like little pincushions of jelly tentacles, while the parent keeps the seashell spiral for a clear emergence-curve on its body. Spine waviness bumped: segments 5 → 7, secondary 2× harmonic at per-spine phase added on top of the sin(πt) arc, amplitude coefficient 0.32 → 0.50 — every spine still leans coherently with the wind but each one undulates in a slight S-shape so the field reads as drifting jelly rather than rigid wheat. (2) Foraminiferan — fuzz density now scales with local tube radius: bumpsPerPoint = round((1 + 2·tubeR)·fuzz). At fuzz=1 a 5 mm-thick section gets ~11 bumps per ring; a 1 mm-thin section gets ~3. Bumps spread evenly around the local circumference (b/N · 2π) plus slow per-point spiral jitter so they don\'t form aligned columns. Result: the thick inner end of the spiral is visibly hairy/furry, the thin outer end is sparser. (3) Coralline — branches now read as organic tendrils rather than a geometric graph: 3 → 4 segments per branch, secondary 0.4× 2× harmonic with per-branch random phase, per-branch wave-axis rotation around childDir (±15°), per-branch amplitude jitter (0.7-1.3×), and baseline amplitude bumped 0.15 → 0.18 (curl scales up to 0.40). Siblings within a patch flow in similar-but-non-identical directions — coherent without being repetitive.' },
   { v: 'v1.32.12', date: '2026-05-03', n: 'Surface complexity + coherent flow pass: (1) Acantharian — children now use the parent\'s full spine count (was halved) so every level has the same density of emergence-curve. Twist mode now active for ALL depths (was top-level only). Per-spine random Gaussian bend replaced with a coherent wheat-in-wind model: a global wind direction (per-seed) is projected into each spine\'s local perp basis to derive the bend phase, and a sin-wave along a perpendicular ripple axis modulates the magnitude — every spine on the creature leans toward the same world direction with smoothly varying strength, like wheat with a wave moving across the field. Bend profile changed Gaussian → sin(πt) for a cleaner single-arc shape; amplitude coefficient bumped 0.18 → 0.32 so curves are visibly wavy. (2) Foraminiferan — new "Surface fuzz" slider (default 0.5) controls additive surface complexity on every polyline (main + every sub). Two layers: short perpendicular fuzz bumps (1-4 per stride sample, hard 0.5 mm radius floor + 1.6-2.6× length so they print) and helical wrap filaments (1-4 thin coils that spiral around the tube on its surface like a braided rope, grooves between them = trenches). Codec slot 69. (3) Coralline — primary count bumped to max(20, branchesPerNode × 7) for much denser plumage and less negative space. Per-primary patchDecayMul (0.7×-1.4×) creates patches: some primaries decay aggressively for short dense plumage clusters, others decay slowly for long extensions. Per-primary patchWaveAxis is threaded through the entire subtree so all branches in one patch flow coherently in the same wave direction. Every non-trunk branch is now a 3-segment sin-arc wavy path with baseline amplitude 0.15× length (corCurl scales up to 0.35×), so extensions waver instead of being sticks.' },
