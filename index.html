@@ -709,7 +709,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.28.3</span>
+        <span id="version">v1.29.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -761,7 +761,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.28.3";
+const VERSION = "v1.29.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -806,6 +806,10 @@ const MATERIALS = {
 };
 
 const DEFAULTS = {
+  // Creature-type dispatcher (v1.29.0). Selects which generator the
+  // pipeline calls; each creature owns its own subset of controls
+  // shown in the panel. Chunks 2/3 add 'acantharian' and 'coralline'.
+  creatureType: 'radiolarian',
   seed: 1,
   complexity: 4,
   branchCount: 3,
@@ -1005,6 +1009,12 @@ const SUPPORTS_TENDRILS    = { off: 0, sparse: 1, medium: 2, dense: 4   };
 const SUPPORTS_CLUSTER_CELL = { off: 5, sparse: 8, medium: 5, dense: 3   };
 const SUPPORTS_FAN_RADIUS   = { off: 0, sparse: 0.5, medium: 1.0, dense: 1.5 };
 
+// Creature-type registry (v1.29.0). Append-only, like all the other
+// KEY arrays — chunks 2 and 3 will add 'acantharian' and 'coralline'
+// at indices 1 and 2 respectively. Codec stores the index (slot 29)
+// so older config strings without the slot decode to 'radiolarian'.
+const CREATURE_KEYS = ['radiolarian'];
+
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
 function paramFields(s) {
@@ -1021,6 +1031,7 @@ function paramFields(s) {
   const ss = SMOOTHSURFACE_KEYS.indexOf(s.smoothSurface);
   const wd = WALLDILATE_KEYS.indexOf(s.wallDilate);
   const os = SUPPORTS_KEYS.indexOf(s.organicSupports);
+  const ct = CREATURE_KEYS.indexOf(s.creatureType);
   return [
     m < 0 ? 0 : m,
     s.size,
@@ -1070,6 +1081,10 @@ function paramFields(s) {
     // ↓ added in v1.28.0 (Print compatibility chunk 3). Defaults to
     // 'off' so existing configs render without supports.
     os < 0 ? 0 : os,
+    // ↓ added in v1.29.0 (creature-type dispatcher). Defaults to
+    // 'radiolarian' (index 0) for older strings without the slot,
+    // matching the only creature available pre-v1.29.
+    ct < 0 ? 0 : ct,
   ];
 }
 
@@ -1148,6 +1163,12 @@ function parseParamSlots(slots) {
   const osIdx = slots.length > 28
     ? clamp(parseInt(slots[28], 10) || 0, 0, SUPPORTS_KEYS.length - 1)
     : 0;
+  // Creature type: new in v1.29.0. Defaults to 'radiolarian' (index 0)
+  // for older strings; that was the only creature pre-v1.29 so reloaded
+  // configs render the same morphology they were saved with.
+  const ctIdx = slots.length > 29
+    ? clamp(parseInt(slots[29], 10) || 0, 0, CREATURE_KEYS.length - 1)
+    : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1178,6 +1199,7 @@ function parseParamSlots(slots) {
     smoothSurface: SMOOTHSURFACE_KEYS[ssIdx],
     wallDilate:  WALLDILATE_KEYS[wdIdx],
     organicSupports: SUPPORTS_KEYS[osIdx],
+    creatureType: CREATURE_KEYS[ctIdx],
   };
 }
 
@@ -1533,7 +1555,26 @@ function fibonacciSphereDirections(n, phaseOffset) {
   return out;
 }
 
+// Creature-type dispatcher (v1.29.0). The single generateStructure
+// entry point now switches on s.creatureType and delegates to the
+// per-creature builder. Each builder returns the same shape
+// ({ branches, accents }) so downstream pipeline (symmetry,
+// scaleStructureToSize, buildField, MC, repair, texture, simplify,
+// cleanup) is uniform across creature types.
 function generateStructure(s) {
+  switch (s.creatureType) {
+    // case 'acantharian': return generateAcantharianStructure(s);  // chunk 2
+    // case 'coralline':   return generateCorallineStructure(s);    // chunk 3
+    case 'radiolarian':
+    default:
+      return generateRadiolarianStructure(s);
+  }
+}
+
+// The Radiolarian builder — formerly the body of generateStructure.
+// Renamed in v1.29.0 to make room for additional creature types in
+// chunks 2 and 3.
+function generateRadiolarianStructure(s) {
   const rng = mulberry32(s.seed);
   const branches = [];
   const accents = [];
@@ -4888,6 +4929,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.29.0', date: '2026-05-02', n: 'Creature-type infrastructure (chunk 1A): state + codec slot 29 + dispatcher refactor. Existing morphology renamed Radiolarian; chunks 2 and 3 add Acantharian and Coralline.' },
   { v: 'v1.28.3', date: '2026-05-01', n: 'Canvas/scene background lightened from near-black to medium cool gray (studio-style backdrop). Panel and controls stay dark for contrast.' },
   { v: 'v1.28.2', date: '2026-05-01', n: 'Mesh simplify default raised to Extreme (−80%) — STL ships under typical service-bureau upload limits without manual tuning. Older saved configs unchanged.' },
   { v: 'v1.28.1', date: '2026-05-01', n: 'Print compatibility defaults raised: Drop tiny shells → Light, Manifold re-weld → Tight, Surface smooth → Light, Wall dilation → Light. Service-bureau-ready output by default. Older saved configs unchanged (codec defaults stay at off for missing slots).' },
