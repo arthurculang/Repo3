@@ -679,6 +679,19 @@
           <option value="cluster">Cluster (4 sub-tips)</option>
         </select>
       </div>
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Recursion depth <span class="val" id="acanRecurDepthVal">2</span></label>
+        <input type="range" id="acanRecurDepth" min="1" max="3" step="1" value="2">
+        <div class="ctrl-note">Number of acantharian generations: 1 = single creature, 2 = main + babies at every spine tip, 3 = + grand-babies (heavy).</div>
+      </div>
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Recursion scale <span class="val" id="acanRecurScaleVal">0.30</span></label>
+        <input type="range" id="acanRecurScale" min="0.15" max="0.50" step="0.01" value="0.30">
+      </div>
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Recursion variation <span class="val" id="acanRecurVariationVal">0.20</span></label>
+        <input type="range" id="acanRecurVariation" min="0" max="0.5" step="0.05" value="0.2">
+      </div>
 
       <div class="section-header" data-creature-section="coralline">Coralline morphology</div>
 
@@ -805,7 +818,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.31.3</span>
+        <span id="version">v1.31.4</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -857,7 +870,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.31.3";
+const VERSION = "v1.31.4";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -919,6 +932,19 @@ const DEFAULTS = {
   acanTipSplit: 'none',  // 'none' | 'fork' | 'cluster' — optional tip branching:
                          //         fork = 2 sub-tips at each spine end,
                          //         cluster = 4 sub-tips fanning outward.
+  // Recursive Acantharian (chunk 2D, v1.31.4): at the tip of each
+  // spine, place a smaller acantharian. Default depth 2 produces a
+  // main creature plus a constellation of small ones at every spine
+  // tip, each with their own little spines.
+  acanRecurDepth: 2,     // 1..3      recursion levels. 1 = current single acantharian,
+                          //           2 = main + children at each tip, 3 = + grandchildren.
+                          //           Geometry grows ~spineCount× per level — depth 3 at
+                          //           18 spines is ~6500 capsules, pipeline-OK but heavy.
+  acanRecurScale: 0.30,  // 0.15..0.5 each child is N× the parent's size (sphere + spine
+                          //           length both scale linearly).
+  acanRecurVariation: 0.2, // 0..0.5  per-child random scale jitter so children aren't
+                          //           uniform; 0 → all children identical, 0.5 → ±25%
+                          //           variance from the base scale.
   // Coralline-specific controls (chunk 3B, v1.31.1):
   corTrunkLen: 18,       // 6..40    initial vertical trunk length (mm)
   corTrunkR: 3.0,        // 1..6     base trunk radius (mm)
@@ -1242,6 +1268,12 @@ function paramFields(s) {
     s.corRadiusDecay.toFixed(2),
     s.corAsymmetry.toFixed(2),
     s.corCurl.toFixed(2),
+    // ↓ added in v1.31.4 (chunk 2D — recursive Acantharian). Older
+    // saved configs default to depth=1 (no recursion = pre-2D
+    // single-acantharian look).
+    s.acanRecurDepth | 0,
+    s.acanRecurScale.toFixed(2),
+    s.acanRecurVariation.toFixed(2),
   ];
 }
 
@@ -1350,6 +1382,12 @@ function parseParamSlots(slots) {
   const corRadiusDecayV     = slots.length > 46 ? clamp(parseFloat(slots[46]) || 0.60, 0.4, 0.85)      : 0.60;
   const corAsymmetryV       = slots.length > 47 ? clamp(parseFloat(slots[47]) || 0.30, 0, 1)           : 0.30;
   const corCurlV            = slots.length > 48 ? clamp(parseFloat(slots[48]) || 0, 0, 1)              : 0;
+  // Recursive Acantharian: new in v1.31.4 (chunk 2D). Older configs
+  // default to depth=1 (no recursion) so a saved Acantharian looks
+  // identical when reloaded.
+  const acanRecurDepthV     = slots.length > 49 ? clamp(parseInt(slots[49], 10) || 1, 1, 3)            : 1;
+  const acanRecurScaleV     = slots.length > 50 ? clamp(parseFloat(slots[50]) || 0.30, 0.15, 0.50)     : 0.30;
+  const acanRecurVariationV = slots.length > 51 ? clamp(parseFloat(slots[51]) || 0.20, 0, 0.5)         : 0.20;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1400,6 +1438,9 @@ function parseParamSlots(slots) {
     corRadiusDecay:     corRadiusDecayV,
     corAsymmetry:       corAsymmetryV,
     corCurl:            corCurlV,
+    acanRecurDepth:     acanRecurDepthV,
+    acanRecurScale:     acanRecurScaleV,
+    acanRecurVariation: acanRecurVariationV,
   };
 }
 
@@ -3887,7 +3928,7 @@ function generateAcantharianStructure(s) {
   const accents = [];
   const rng = mulberry32(s.seed);
 
-  // User-tunable controls (v1.30.1).
+  // User-tunable controls (v1.30.1 + v1.30.2 + v1.31.4).
   const spineCount   = s.acanSpines      || 18;
   const sphereRadius = s.acanSphereR     || 8;
   const spineLength  = s.acanSpineLen    || 30;
@@ -3895,121 +3936,125 @@ function generateAcantharianStructure(s) {
   // Tip radius is clamped to ≤ base so spines never invert.
   const tipR         = Math.min(s.acanSpineTipR ?? 0.4, baseR);
   const jitter       = s.acanJitter      ?? 0.2;
+  const curl         = s.acanCurl        ?? 0;
+  const tipSplitN    = ACAN_TIPSPLIT_COUNTS[s.acanTipSplit] || 0;
+  // Recursion (chunk 2D, v1.31.4):
+  const recurDepth     = Math.max(1, s.acanRecurDepth ?? 1);
+  const recurScale     = s.acanRecurScale ?? 0.30;
+  const recurVariation = s.acanRecurVariation ?? 0.20;
 
-  // Central sphere — degenerate capsule rendered as a fused ball at
-  // origin via the smooth-min union pipeline downstream.
-  branches.push({
-    start: new THREE.Vector3(0, 0, 0),
-    end:   new THREE.Vector3(0, 0.01, 0),
-    r0: sphereRadius, r1: sphereRadius,
-    depth: 0, parent: null,
-    tangent: new THREE.Vector3(0, 1, 0),
-    wobble: 0,
-  });
-
-  // Curl + tip-split params (chunk 2C, v1.30.2):
-  const curl = s.acanCurl ?? 0;
-  const tipSplitN = ACAN_TIPSPLIT_COUNTS[s.acanTipSplit] || 0;
-
-  // Radiating spines via Fibonacci sphere directions — even angular
-  // coverage, no pole clustering. Per-spine length jitter adds organic
-  // asymmetry; curl bends each spine into a 3-segment arc; tip-split
-  // adds a small fan of sub-tips at each spine's distal end.
-  const phaseOffset = ((s.seed >>> 0) * 1e-7) % (Math.PI * 2);
-  const dirs = fibonacciSphereDirections(spineCount, phaseOffset);
-  // _temp vectors reused inside the loop
+  // _temp vectors reused inside the per-spine loop.
   const tmp = new THREE.Vector3();
   const perp1 = new THREE.Vector3(), perp2 = new THREE.Vector3();
-  for (const d of dirs) {
-    const lenScale = 1 + (rng() - 0.5) * jitter;
-    const thisLen = spineLength * lenScale;
-    const startPt = new THREE.Vector3().copy(d).multiplyScalar(sphereRadius * 0.85);
-    const endPt   = new THREE.Vector3().copy(d).multiplyScalar(sphereRadius + thisLen);
 
-    if (curl < 1e-3) {
-      // Straight spine — single capsule.
-      branches.push({
-        start: startPt, end: endPt,
-        r0: baseR, r1: tipR,
-        depth: 1, parent: 0,
-        tangent: d.clone(), wobble: 0,
-      });
-    } else {
-      // Curved spine — 3 capsules with a midpoint nudged perpendicular
-      // to the radial direction. Find an arbitrary perpendicular axis,
-      // rotate by a seeded random angle, scale by curl × thisLen × 0.25.
-      // Result: each spine arcs gracefully like a sea-urchin-spine
-      // bend or a stylized Art Nouveau curve.
-      tmp.set(d.x, d.y, d.z);
-      // Pick a stable perpendicular: cross with (0,1,0) or (1,0,0) if
-      // d is too vertical.
-      if (Math.abs(d.y) < 0.9) {
-        perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
-      } else {
-        perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
-      }
-      perp2.crossVectors(tmp, perp1).normalize();
-      const angle = rng() * Math.PI * 2;
-      const bendDir = new THREE.Vector3()
-        .addScaledVector(perp1, Math.cos(angle))
-        .addScaledVector(perp2, Math.sin(angle));
-      const bendMag = curl * thisLen * 0.25;
-      // Two waypoints along the spine.
-      const t1 = 1/3, t2 = 2/3;
-      const wp1 = startPt.clone().lerp(endPt, t1).addScaledVector(bendDir, bendMag * 0.6);
-      const wp2 = startPt.clone().lerp(endPt, t2).addScaledVector(bendDir, bendMag * 0.6);
-      const r1Mid = baseR * (1 - t1) + tipR * t1;
-      const r2Mid = baseR * (1 - t2) + tipR * t2;
-      branches.push({
-        start: startPt, end: wp1,
-        r0: baseR, r1: r1Mid,
-        depth: 1, parent: 0,
-        tangent: bendDir.clone(), wobble: 0,
-      });
-      branches.push({
-        start: wp1, end: wp2,
-        r0: r1Mid, r1: r2Mid,
-        depth: 1, parent: 0,
-        tangent: bendDir.clone(), wobble: 0,
-      });
-      branches.push({
-        start: wp2, end: endPt,
-        r0: r2Mid, r1: tipR,
-        depth: 1, parent: 0,
-        tangent: bendDir.clone(), wobble: 0,
-      });
-    }
+  // Recursive emitter. depth=0 is the root acantharian; each level
+  // places child acantharians at every spine tip until depth reaches
+  // recurDepth - 1. Children inherit spineCount and jitter but skip
+  // curl + tip-split (those are kept top-level-only to control
+  // geometry growth — at depth 2 with 18 spines, a curled+tipsplit
+  // version of every child would multiply capsule count by ~7×).
+  function emitOne(center, sizeMul, depth) {
+    const sR = sphereRadius * sizeMul;
+    const sL = spineLength  * sizeMul;
+    const bR = baseR        * sizeMul;
+    const tR = tipR         * sizeMul;
+    const isTop = depth === 0;
+    const useCurl = isTop && curl > 1e-3;
+    const useTipSplit = isTop && tipSplitN > 0;
 
-    // Tip split — fan of small sub-spines at the distal end.
-    if (tipSplitN > 0) {
-      // Pick two perpendicular axes to the spine direction for the fan.
-      tmp.set(d.x, d.y, d.z);
-      if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
-      else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
-      perp2.crossVectors(tmp, perp1).normalize();
-      const subLen = thisLen * 0.18;
-      const fanAngle = Math.PI / 4; // 45° from spine axis
-      const cosF = Math.cos(fanAngle), sinF = Math.sin(fanAngle);
-      for (let k = 0; k < tipSplitN; k++) {
-        const a = (k / tipSplitN) * Math.PI * 2 + rng() * 0.3;
-        const lateralX = Math.cos(a) * sinF;
-        const lateralZ = Math.sin(a) * sinF;
-        const subDir = new THREE.Vector3()
-          .copy(d).multiplyScalar(cosF)
-          .addScaledVector(perp1, lateralX)
-          .addScaledVector(perp2, lateralZ)
-          .normalize();
-        const subEnd = endPt.clone().addScaledVector(subDir, subLen);
+    // Central sphere — degenerate capsule rendered as a fused ball at
+    // the emit center via the smooth-min union pipeline downstream.
+    branches.push({
+      start: center.clone(),
+      end:   center.clone().add(new THREE.Vector3(0, 0.01, 0)),
+      r0: sR, r1: sR,
+      depth: 0, parent: null,
+      tangent: new THREE.Vector3(0, 1, 0),
+      wobble: 0,
+    });
+
+    // Radiating spines via Fibonacci sphere directions. Adding
+    // depth × 0.41 to the phase offset keeps every recursion level's
+    // spine distribution from aligning identically — children look
+    // organically rotated relative to their parent.
+    const phaseOffset = ((s.seed >>> 0) * 1e-7 + depth * 0.41) % (Math.PI * 2);
+    const dirs = fibonacciSphereDirections(spineCount, phaseOffset);
+
+    for (const d of dirs) {
+      const lenScale = 1 + (rng() - 0.5) * jitter;
+      const thisLen = sL * lenScale;
+      const startPt = center.clone().addScaledVector(d, sR * 0.85);
+      const endPt   = center.clone().addScaledVector(d, sR + thisLen);
+
+      if (!useCurl) {
         branches.push({
-          start: endPt.clone(),
-          end: subEnd,
-          r0: tipR, r1: tipR * 0.5,
-          depth: 2, parent: 0,
-          tangent: subDir, wobble: 0,
+          start: startPt, end: endPt,
+          r0: bR, r1: tR,
+          depth: 1, parent: 0,
+          tangent: d.clone(), wobble: 0,
         });
+      } else {
+        // Curved spine — 3 capsules with a midpoint nudged perpendicular
+        // to the radial direction. Find an arbitrary perpendicular axis,
+        // rotate by a seeded random angle, scale by curl × thisLen × 0.25.
+        tmp.set(d.x, d.y, d.z);
+        if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
+        else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
+        perp2.crossVectors(tmp, perp1).normalize();
+        const angle = rng() * Math.PI * 2;
+        const bendDir = new THREE.Vector3()
+          .addScaledVector(perp1, Math.cos(angle))
+          .addScaledVector(perp2, Math.sin(angle));
+        const bendMag = curl * thisLen * 0.25;
+        const t1 = 1/3, t2 = 2/3;
+        const wp1 = startPt.clone().lerp(endPt, t1).addScaledVector(bendDir, bendMag * 0.6);
+        const wp2 = startPt.clone().lerp(endPt, t2).addScaledVector(bendDir, bendMag * 0.6);
+        const r1Mid = bR * (1 - t1) + tR * t1;
+        const r2Mid = bR * (1 - t2) + tR * t2;
+        branches.push({ start: startPt, end: wp1, r0: bR,    r1: r1Mid, depth: 1, parent: 0, tangent: bendDir.clone(), wobble: 0 });
+        branches.push({ start: wp1,    end: wp2, r0: r1Mid, r1: r2Mid, depth: 1, parent: 0, tangent: bendDir.clone(), wobble: 0 });
+        branches.push({ start: wp2,    end: endPt, r0: r2Mid, r1: tR,    depth: 1, parent: 0, tangent: bendDir.clone(), wobble: 0 });
+      }
+
+      // Tip split — fan of small sub-spines at the distal end.
+      if (useTipSplit) {
+        tmp.set(d.x, d.y, d.z);
+        if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
+        else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
+        perp2.crossVectors(tmp, perp1).normalize();
+        const subLen = thisLen * 0.18;
+        const fanAngle = Math.PI / 4;
+        const cosF = Math.cos(fanAngle), sinF = Math.sin(fanAngle);
+        for (let k = 0; k < tipSplitN; k++) {
+          const a = (k / tipSplitN) * Math.PI * 2 + rng() * 0.3;
+          const lateralX = Math.cos(a) * sinF;
+          const lateralZ = Math.sin(a) * sinF;
+          const subDir = new THREE.Vector3()
+            .copy(d).multiplyScalar(cosF)
+            .addScaledVector(perp1, lateralX)
+            .addScaledVector(perp2, lateralZ)
+            .normalize();
+          const subEnd = endPt.clone().addScaledVector(subDir, subLen);
+          branches.push({
+            start: endPt.clone(),
+            end: subEnd,
+            r0: tR, r1: tR * 0.5,
+            depth: 2, parent: 0,
+            tangent: subDir, wobble: 0,
+          });
+        }
+      }
+
+      // Recurse — place a smaller acantharian at the spine tip with
+      // per-child random scale jitter. Skipped at the deepest level.
+      if (depth < recurDepth - 1) {
+        const childMul = sizeMul * recurScale * (1 + (rng() - 0.5) * recurVariation * 2);
+        if (childMul > 0.05) emitOne(endPt, childMul, depth + 1);
       }
     }
   }
+
+  emitOne(new THREE.Vector3(0, 0, 0), 1, 0);
 
   return { branches, accents };
 }
@@ -5254,6 +5299,10 @@ const bindings = {
   acanJitter:     bindSlider('acanJitter',     'acanJitter',     v => v.toFixed(2)),
   acanCurl:       bindSlider('acanCurl',       'acanCurl',       v => v.toFixed(2)),
   acanTipSplit:   bindSelect('acanTipSplit',   'acanTipSplit'),
+  // Recursive acantharian (chunk 2D, v1.31.4):
+  acanRecurDepth:     bindSlider('acanRecurDepth',     'acanRecurDepth',     v => v),
+  acanRecurScale:     bindSlider('acanRecurScale',     'acanRecurScale',     v => v.toFixed(2)),
+  acanRecurVariation: bindSlider('acanRecurVariation', 'acanRecurVariation', v => v.toFixed(2)),
   // Coralline-specific (v1.31.1, chunk 3B):
   corTrunkLen:        bindSlider('corTrunkLen',        'corTrunkLen',        v => v),
   corTrunkR:          bindSlider('corTrunkR',          'corTrunkR',          v => v.toFixed(1)),
@@ -5463,6 +5512,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.31.4', date: '2026-05-02', n: 'Recursive Acantharian (chunk 2D): each spine tip can spawn a smaller acantharian, ranging in size. New depth/scale/variation controls; default depth 2 produces a main creature with a constellation of small ones at every tip.' },
   { v: 'v1.31.3', date: '2026-05-02', n: 'Inner links are now Radiolarian-only — Acantharian and Coralline no longer get the meandering snake-vein capsules connecting random branch tips. Other creatures kept the radiolarian-specific lattice geometry.' },
   { v: 'v1.31.2', date: '2026-05-02', n: 'Coralline polish (chunk 3C): length/radius decay knobs, asymmetry, branch curl. Codec slots 45-48. Three-creature plan complete (Radiolarian, Acantharian, Coralline).' },
   { v: 'v1.31.1', date: '2026-05-02', n: 'Coralline UI controls (chunk 3B): trunk length/radius, tip radius, max depth, branches/node, branch angle, vertical bias. Codec slots 38-44.' },
