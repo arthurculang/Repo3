@@ -640,6 +640,33 @@
         <div class="ctrl-note">Adds tendril-cluster supports under unsupported overhangs. Reduces "Bridges" warnings; reads as additional intricate structure. Adds 5–15 sec to regen.</div>
       </div>
 
+      <div class="section-header" data-creature-section="acantharian">Acantharian morphology</div>
+
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Spine count <span class="val" id="acanSpinesVal">18</span></label>
+        <input type="range" id="acanSpines" min="6" max="40" step="1" value="18">
+      </div>
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Sphere radius (mm) <span class="val" id="acanSphereRVal">8.0</span></label>
+        <input type="range" id="acanSphereR" min="4" max="16" step="0.5" value="8">
+      </div>
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Spine length (mm) <span class="val" id="acanSpineLenVal">30</span></label>
+        <input type="range" id="acanSpineLen" min="10" max="60" step="1" value="30">
+      </div>
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Spine base radius (mm) <span class="val" id="acanSpineBaseRVal">1.2</span></label>
+        <input type="range" id="acanSpineBaseR" min="0.5" max="3" step="0.05" value="1.2">
+      </div>
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Spine tip radius (mm) <span class="val" id="acanSpineTipRVal">0.4</span></label>
+        <input type="range" id="acanSpineTipR" min="0.1" max="2" step="0.05" value="0.4">
+      </div>
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Length jitter <span class="val" id="acanJitterVal">0.20</span></label>
+        <input type="range" id="acanJitter" min="0" max="1" step="0.05" value="0.2">
+      </div>
+
       <div class="section-header" data-creature-section="radiolarian">Radiolarian morphology</div>
 
       <div class="ctrl" data-creature-section="radiolarian">
@@ -718,7 +745,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.30.0</span>
+        <span id="version">v1.30.1</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -770,7 +797,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.30.0";
+const VERSION = "v1.30.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -817,8 +844,16 @@ const MATERIALS = {
 const DEFAULTS = {
   // Creature-type dispatcher (v1.29.0). Selects which generator the
   // pipeline calls; each creature owns its own subset of controls
-  // shown in the panel. Chunks 2/3 add 'acantharian' and 'coralline'.
+  // shown in the panel. v1.30.0 added 'acantharian'; chunk 3 adds
+  // 'coralline'.
   creatureType: 'radiolarian',
+  // Acantharian-specific controls (chunk 2B, v1.30.1):
+  acanSpines: 18,        // 6..40   how many spines radiate from the core
+  acanSphereR: 8,        // 4..16   central-sphere radius (mm)
+  acanSpineLen: 30,      // 10..60  spine length beyond the sphere (mm)
+  acanSpineBaseR: 1.2,   // 0.5..3  spine base radius (mm)
+  acanSpineTipR: 0.4,    // 0.1..2  spine tip radius (mm) — must be ≤ baseR
+  acanJitter: 0.2,       // 0..1    fractional per-spine length jitter for organic asymmetry
   seed: 1,
   complexity: 4,
   branchCount: 3,
@@ -1096,6 +1131,16 @@ function paramFields(s) {
     // 'radiolarian' (index 0) for older strings without the slot,
     // matching the only creature available pre-v1.29.
     ct < 0 ? 0 : ct,
+    // ↓ added in v1.30.1 (chunk 2B). Acantharian-specific morphology
+    // params. Older strings default these to the chunk-2A hardcoded
+    // values when decoded, so a saved Acantharian config without
+    // these slots renders the same way it always did.
+    s.acanSpines | 0,
+    s.acanSphereR.toFixed(1),
+    s.acanSpineLen | 0,
+    s.acanSpineBaseR.toFixed(2),
+    s.acanSpineTipR.toFixed(2),
+    s.acanJitter.toFixed(2),
   ];
 }
 
@@ -1180,6 +1225,15 @@ function parseParamSlots(slots) {
   const ctIdx = slots.length > 29
     ? clamp(parseInt(slots[29], 10) || 0, 0, CREATURE_KEYS.length - 1)
     : 0;
+  // Acantharian-specific: new in v1.30.1 (chunk 2B). Defaults match
+  // the original chunk-2A hardcoded values so an Acantharian saved
+  // before these slots existed renders identically when reloaded.
+  const acanSpinesV     = slots.length > 30 ? clamp(parseInt(slots[30], 10) || 18, 6, 40)        : 18;
+  const acanSphereRV    = slots.length > 31 ? clamp(parseFloat(slots[31]) || 8, 4, 16)            : 8;
+  const acanSpineLenV   = slots.length > 32 ? clamp(parseInt(slots[32], 10) || 30, 10, 60)        : 30;
+  const acanSpineBaseRV = slots.length > 33 ? clamp(parseFloat(slots[33]) || 1.2, 0.5, 3)         : 1.2;
+  const acanSpineTipRV  = slots.length > 34 ? clamp(parseFloat(slots[34]) || 0.4, 0.1, 2)         : 0.4;
+  const acanJitterV     = slots.length > 35 ? clamp(parseFloat(slots[35]) || 0.2, 0, 1)           : 0.2;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1211,6 +1265,12 @@ function parseParamSlots(slots) {
     wallDilate:  WALLDILATE_KEYS[wdIdx],
     organicSupports: SUPPORTS_KEYS[osIdx],
     creatureType: CREATURE_KEYS[ctIdx],
+    acanSpines:     acanSpinesV,
+    acanSphereR:    acanSphereRV,
+    acanSpineLen:   acanSpineLenV,
+    acanSpineBaseR: acanSpineBaseRV,
+    acanSpineTipR:  acanSpineTipRV,
+    acanJitter:     acanJitterV,
   };
 }
 
@@ -3689,17 +3749,19 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
 function generateAcantharianStructure(s) {
   const branches = [];
   const accents = [];
+  const rng = mulberry32(s.seed);
 
-  // Hardcoded chunk-2A defaults; chunk 2B exposes user controls.
-  const spineCount = 18;
-  const sphereRadius = 8;
-  const spineLength = 30;
-  const baseR = 1.2;
-  const tipR = 0.4;
+  // User-tunable controls (v1.30.1).
+  const spineCount   = s.acanSpines      || 18;
+  const sphereRadius = s.acanSphereR     || 8;
+  const spineLength  = s.acanSpineLen    || 30;
+  const baseR        = s.acanSpineBaseR  || 1.2;
+  // Tip radius is clamped to ≤ base so spines never invert.
+  const tipR         = Math.min(s.acanSpineTipR ?? 0.4, baseR);
+  const jitter       = s.acanJitter      ?? 0.2;
 
-  // Central sphere — represented as a degenerate capsule (start ≈ end,
-  // large radius). The smooth-min union pipeline downstream renders it
-  // as a single fused ball at origin.
+  // Central sphere — degenerate capsule rendered as a fused ball at
+  // origin via the smooth-min union pipeline downstream.
   branches.push({
     start: new THREE.Vector3(0, 0, 0),
     end:   new THREE.Vector3(0, 0.01, 0),
@@ -3709,14 +3771,17 @@ function generateAcantharianStructure(s) {
     wobble: 0,
   });
 
-  // Radiating spines via Fibonacci sphere distribution — even angular
-  // coverage, no clustering at poles. Each spine starts just inside the
-  // sphere surface and extends outward, tapering from base to tip.
+  // Radiating spines via Fibonacci sphere directions — even angular
+  // coverage, no pole clustering. Per-spine length jitter adds organic
+  // asymmetry; jitter=0 → perfectly uniform sun, jitter=1 → ±50% length
+  // variation.
   const phaseOffset = ((s.seed >>> 0) * 1e-7) % (Math.PI * 2);
   const dirs = fibonacciSphereDirections(spineCount, phaseOffset);
   for (const d of dirs) {
+    const lenScale = 1 + (rng() - 0.5) * jitter;
+    const thisLen = spineLength * lenScale;
     const startPt = new THREE.Vector3().copy(d).multiplyScalar(sphereRadius * 0.85);
-    const endPt   = new THREE.Vector3().copy(d).multiplyScalar(sphereRadius + spineLength);
+    const endPt   = new THREE.Vector3().copy(d).multiplyScalar(sphereRadius + thisLen);
     branches.push({
       start: startPt,
       end:   endPt,
@@ -4835,6 +4900,13 @@ const bindings = {
   innerLinks: bindSlider('innerLinks', 'innerLinks', v => v),
   sym: bindSelect('sym', 'sym', onSymChange),
   negStyle: bindSelect('negStyle', 'negStyle', onNegChange),
+  // Acantharian-specific (v1.30.1, chunk 2B):
+  acanSpines:     bindSlider('acanSpines',     'acanSpines',     v => v),
+  acanSphereR:    bindSlider('acanSphereR',    'acanSphereR',    v => v.toFixed(1)),
+  acanSpineLen:   bindSlider('acanSpineLen',   'acanSpineLen',   v => v),
+  acanSpineBaseR: bindSlider('acanSpineBaseR', 'acanSpineBaseR', v => v.toFixed(2)),
+  acanSpineTipR:  bindSlider('acanSpineTipR',  'acanSpineTipR',  v => v.toFixed(2)),
+  acanJitter:     bindSlider('acanJitter',     'acanJitter',     v => v.toFixed(2)),
 };
 
 function onSymChange() {
@@ -5031,6 +5103,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.30.1', date: '2026-05-02', n: 'Acantharian UI controls (chunk 2B): spine count, sphere radius, spine length/base/tip, length jitter. Codec slots 30-35.' },
   { v: 'v1.30.0', date: '2026-05-02', n: 'New creature: Acantharian (chunk 2A). Central sphere + N evenly-distributed radiating tapered spines. Hardcoded defaults; per-creature controls land in chunk 2B.' },
   { v: 'v1.29.2', date: '2026-05-02', n: 'Default material → Nylon PA12 (SLS). SLS handles bridges natively without needing organic supports; aligns the default workflow with Sculpteo/Shapeways. Brass + gold plate stays in the dropdown.' },
   { v: 'v1.29.1', date: '2026-05-02', n: 'Creature-type UI (chunk 1B): creature dropdown at top of panel; controls grouped into Universal + "Radiolarian morphology" section with show/hide infrastructure ready for additional creature types.' },
