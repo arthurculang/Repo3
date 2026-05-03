@@ -645,8 +645,9 @@
       <div class="section-header" data-creature-section="acantharian">Acantharian morphology</div>
 
       <div class="ctrl" data-creature-section="acantharian">
-        <label>Spine count <span class="val" id="acanSpinesVal">24</span></label>
-        <input type="range" id="acanSpines" min="6" max="40" step="1" value="24">
+        <label>Spine count <span class="val" id="acanSpinesVal">36</span></label>
+        <input type="range" id="acanSpines" min="6" max="48" step="1" value="36">
+        <div class="ctrl-note">Parent radiates this many; children inherit half so the parent radial pattern dominates.</div>
       </div>
       <div class="ctrl" data-creature-section="acantharian">
         <label>Sphere radius (mm) <span class="val" id="acanSphereRVal">8.0</span></label>
@@ -889,7 +890,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.6</span>
+        <span id="version">v1.32.7</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -941,7 +942,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.6";
+const VERSION = "v1.32.7";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -992,9 +993,12 @@ const DEFAULTS = {
   // 'coralline'.
   creatureType: 'radiolarian',
   // Acantharian-specific controls (chunk 2B, v1.30.1):
-  acanSpines: 24,        // 6..40   how many spines radiate from the core. Default
-                          //         bumped 18 → 24 in v1.32.5 — restores the dense
-                          //         radial-spirality look the user remembers.
+  acanSpines: 36,        // 6..48   how many spines radiate from the parent core.
+                          //         18 (original) → 24 (v1.32.5) → 36 (v1.32.7) so the
+                          //         parent radial pattern dominates over the recursive
+                          //         babies. Children inherit half the parent count
+                          //         (~18) so each baby is visually lighter than the
+                          //         parent — preserves the spirality silhouette.
   acanSphereR: 8,        // 4..16   central-sphere radius (mm)
   acanSpineLen: 30,      // 10..60  spine length beyond the sphere (mm)
   acanSpineBaseR: 1.2,   // 0.5..3  spine base radius (mm)
@@ -1521,7 +1525,7 @@ function parseParamSlots(slots) {
   // Acantharian-specific: new in v1.30.1 (chunk 2B). Defaults match
   // the original chunk-2A hardcoded values so an Acantharian saved
   // before these slots existed renders identically when reloaded.
-  const acanSpinesV     = slots.length > 30 ? clamp(parseInt(slots[30], 10) || 18, 6, 40)        : 18;
+  const acanSpinesV     = slots.length > 30 ? clamp(parseInt(slots[30], 10) || 18, 6, 48)        : 18;
   const acanSphereRV    = slots.length > 31 ? clamp(parseFloat(slots[31]) || 8, 4, 16)            : 8;
   const acanSpineLenV   = slots.length > 32 ? clamp(parseInt(slots[32], 10) || 30, 10, 60)        : 30;
   const acanSpineBaseRV = slots.length > 33 ? clamp(parseFloat(slots[33]) || 1.2, 0.5, 3)         : 1.2;
@@ -4182,8 +4186,13 @@ function generateAcantharianStructure(s) {
     // depth × 0.41 to the phase offset keeps every recursion level's
     // spine distribution from aligning identically — children look
     // organically rotated relative to their parent.
+    // Children use half the parent's spine count (v1.32.7) so the
+    // parent radial pattern visually dominates instead of being drowned
+    // in baby-noise. Floored at 6 so even very-small parent counts
+    // give plausible babies.
     const phaseOffset = ((s.seed >>> 0) * 1e-7 + depth * 0.41) % (Math.PI * 2);
-    const dirs = fibonacciSphereDirections(spineCount, phaseOffset);
+    const localSpineCount = depth === 0 ? spineCount : Math.max(6, Math.floor(spineCount * 0.5));
+    const dirs = fibonacciSphereDirections(localSpineCount, phaseOffset);
 
     let spineIndex = 0;
     for (const d of dirs) {
@@ -4215,16 +4224,35 @@ function generateAcantharianStructure(s) {
         // Amplitude proportional to base-radius × twist control. Decays
         // linearly to zero at the tip so spine pointiness is preserved.
         const ampBase = bR * 1.6 * twist;
+
+        // Per-spine bend variability (v1.32.7). On top of the helical
+        // twist, each spine gets a unique Gaussian-shaped bend in a
+        // random direction at a random position with a random magnitude.
+        // Adjacent spines' helices are now further differentiated, so
+        // the morphology reads as discrete varied spikes rather than a
+        // uniform helical grid.
+        const bendPhase = rng() * Math.PI * 2;
+        const bendMag = (0.10 + rng() * 0.40) * twist;  // 0.10..0.50 × twist control
+        const bendCenter = 0.30 + rng() * 0.40;          // peak of the bend along spine length, 0.3..0.7
+        const bendCosP = Math.cos(bendPhase), bendSinP = Math.sin(bendPhase);
+
         const wp = [];
         for (let k = 0; k <= N; k++) {
           const t = k / N;
+          // Helical twist contribution
           const ph = phase0 + t * turnsAlongSpine * Math.PI * 2;
-          const amp = ampBase * (1 - t);
-          const dx = Math.cos(ph) * amp;
-          const dy = Math.sin(ph) * amp;
+          const ampTwist = ampBase * (1 - t);
+          const twistDX = Math.cos(ph) * ampTwist;
+          const twistDY = Math.sin(ph) * ampTwist;
+          // Per-spine bend contribution — Gaussian peak at bendCenter,
+          // sigma ≈ 0.25 of spine length so the bend is localized.
+          const bendStrength = Math.exp(-(((t - bendCenter) * 4) ** 2));
+          const bendOffset = thisLen * 0.18 * bendMag * bendStrength;
+          const bendDX = bendCosP * bendOffset;
+          const bendDY = bendSinP * bendOffset;
           wp.push(startPt.clone().lerp(endPt, t)
-            .addScaledVector(perp1, dx)
-            .addScaledVector(perp2, dy));
+            .addScaledVector(perp1, twistDX + bendDX)
+            .addScaledVector(perp2, twistDY + bendDY));
         }
         for (let k = 0; k < N; k++) {
           const t1 = k / N, t2 = (k + 1) / N;
@@ -5984,6 +6012,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.7', date: '2026-05-02', n: 'Acantharian density + per-spine bend: parent spine count default 24 → 36 (slider max 40 → 48); children inherit half the parent count so the parent radial pattern dominates; per-spine random bend on top of helical twist gives each spine a unique shape (random direction, random position, random magnitude).' },
   { v: 'v1.32.6', date: '2026-05-02', n: 'Foraminiferan comet trajectory: tube inverted (thick inner → thin outer), longer (4 turns) with slower taper, new wander parameter (multi-frequency 3D sin perturbation) and self-avoidance pass (iterative push-apart for non-adjacent samples) so the path threads gaps and feels like a knot winding itself. Codec slots 64-65.' },
   { v: 'v1.32.5', date: '2026-05-02', n: 'Acantharian density + cinnamon-twist: default spine count 18 → 24, length-jitter floor at 40% so high-jitter spines never disappear, new acanTwist parameter replacing straight spines with golden-angle-phased helical chains so neighbouring spines interleave near the body. Codec slot 63.' },
   { v: 'v1.32.4', date: '2026-05-02', n: 'Foraminiferan 3D unwinding: spiral now grows asymmetrically (foramAspect ratios X vs Z) and the spiral plane gradually rotates over its length (foramTilt) — true 3D corkscrew rather than a flat planar coil. Codec slots 61-62.' },
