@@ -455,6 +455,7 @@
         <select id="creatureType">
           <option value="radiolarian" selected>Radiolarian</option>
           <option value="acantharian">Acantharian</option>
+          <option value="coralline">Coralline</option>
         </select>
         <div class="ctrl-note">Selects which morphology generator runs. Each type has its own dedicated controls below the universal section.</div>
       </div>
@@ -757,7 +758,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.30.2</span>
+        <span id="version">v1.31.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -809,7 +810,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.30.2";
+const VERSION = "v1.31.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1076,7 +1077,7 @@ const SUPPORTS_FAN_RADIUS   = { off: 0, sparse: 0.5, medium: 1.0, dense: 1.5 };
 // KEY arrays — chunks 2 and 3 will add 'acantharian' and 'coralline'
 // at indices 1 and 2 respectively. Codec stores the index (slot 29)
 // so older config strings without the slot decode to 'radiolarian'.
-const CREATURE_KEYS = ['radiolarian','acantharian'];
+const CREATURE_KEYS = ['radiolarian','acantharian','coralline'];
 const ACAN_TIPSPLIT_KEYS = ['none','fork','cluster'];
 const ACAN_TIPSPLIT_COUNTS = { none: 0, fork: 2, cluster: 4 };
 
@@ -1662,7 +1663,7 @@ function fibonacciSphereDirections(n, phaseOffset) {
 function generateStructure(s) {
   switch (s.creatureType) {
     case 'acantharian': return generateAcantharianStructure(s);
-    // case 'coralline':   return generateCorallineStructure(s);    // chunk 3
+    case 'coralline':   return generateCorallineStructure(s);
     case 'radiolarian':
     default:
       return generateRadiolarianStructure(s);
@@ -3905,6 +3906,99 @@ function generateAcantharianStructure(s) {
   return { branches, accents };
 }
 
+// ---------- Coralline creature (chunk 3A, v1.31.0) ----------
+//
+// Asymmetric branching tree with vertical bias (+Y growth direction).
+// Each parent branch spawns N child branches at randomized angles
+// around its tip; recursion produces a fractal-like dendritic
+// structure. No smooth-min fusion (each branch reads as a separate
+// stem); no rings; no negative-space tunnels (effectiveState forces
+// negStyle='none' for non-radiolarian creatures).
+//
+// Inspired by stony coral colonies (Acropora, Pocillopora) — the
+// Y-bias gives the upward-reaching habit characteristic of branching
+// hard corals, while the random angular splay gives the genus-level
+// diversity of growth patterns.
+//
+// Returns the same { branches, accents } shape as the other
+// generators so the rest of the pipeline is uniform.
+function generateCorallineStructure(s) {
+  const branches = [];
+  const accents = [];
+  const rng = mulberry32(s.seed);
+
+  // Hardcoded chunk-3A defaults; chunk 3B adds user controls.
+  const trunkLen   = 18;       // mm — length of the initial vertical trunk
+  const trunkR     = 3.0;      // mm — base trunk radius
+  const tipR       = 0.5;      // mm — finest branch tip radius
+  const maxDepth   = 5;        // recursion levels (incl. trunk = 0)
+  const branchesPerNode = 3;   // splits per node
+  const branchAngle = 35;      // degrees from parent direction
+  const verticalBias = 0.45;   // 0..1 — fraction of upward (+Y) blend
+                                //        on each child direction
+  const lengthDecay = 0.72;    // each child is N× the parent's length
+  const radiusDecay = 0.60;    // each child is N× the parent's radius
+
+  // Trunk: vertical capsule from origin going up.
+  const trunkStart = new THREE.Vector3(0, -trunkLen * 0.5, 0);
+  const trunkEnd   = new THREE.Vector3(0,  trunkLen * 0.5, 0);
+  branches.push({
+    start: trunkStart, end: trunkEnd,
+    r0: trunkR, r1: trunkR * radiusDecay,
+    depth: 0, parent: null,
+    tangent: new THREE.Vector3(0, 1, 0),
+    wobble: 0,
+  });
+
+  // Recursive branch growth. Each call generates N children at the
+  // given parent endpoint, then recurses on each child.
+  function grow(parentEnd, parentDir, parentLen, parentR, depth) {
+    if (depth >= maxDepth) return;
+    const childLen = parentLen * lengthDecay;
+    const childR0  = parentR * radiusDecay;
+    const childR1  = Math.max(tipR, childR0 * radiusDecay);
+    const angleRad = branchAngle * Math.PI / 180;
+    // Pick a stable perpendicular axis to parentDir for the splay plane.
+    const tmpAxis = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(parentDir.dot(tmpAxis)) > 0.9) tmpAxis.set(1, 0, 0);
+    const perp1 = new THREE.Vector3().crossVectors(parentDir, tmpAxis).normalize();
+    const perp2 = new THREE.Vector3().crossVectors(parentDir, perp1).normalize();
+    const phaseShift = rng() * Math.PI * 2;
+    for (let i = 0; i < branchesPerNode; i++) {
+      const aroundAngle = phaseShift + (i / branchesPerNode) * Math.PI * 2 + (rng() - 0.5) * 0.6;
+      // Angular jitter on the cone half-angle so each branch isn't
+      // perfectly conical — gives organic asymmetry.
+      const coneAngle = angleRad * (0.7 + rng() * 0.6);
+      const lateral = new THREE.Vector3()
+        .addScaledVector(perp1, Math.cos(aroundAngle) * Math.sin(coneAngle))
+        .addScaledVector(perp2, Math.sin(aroundAngle) * Math.sin(coneAngle));
+      // Child direction = parentDir cone + verticalBias blend toward +Y.
+      const childDir = new THREE.Vector3()
+        .copy(parentDir).multiplyScalar(Math.cos(coneAngle))
+        .add(lateral)
+        .normalize();
+      // Apply vertical bias by lerping the unit direction toward +Y.
+      childDir.lerp(new THREE.Vector3(0, 1, 0), verticalBias).normalize();
+
+      const childEnd = parentEnd.clone().addScaledVector(childDir, childLen);
+      branches.push({
+        start: parentEnd.clone(),
+        end: childEnd,
+        r0: childR0, r1: childR1,
+        depth, parent: 0,
+        tangent: childDir.clone(),
+        wobble: 0,
+      });
+      grow(childEnd, childDir, childLen, childR0, depth + 1);
+    }
+  }
+
+  // Start recursion at the trunk top, with the initial direction = +Y.
+  grow(trunkEnd, new THREE.Vector3(0, 1, 0), trunkLen, trunkR, 1);
+
+  return { branches, accents };
+}
+
 const _ringPerp = new THREE.Vector3(), _ringBi = new THREE.Vector3();
 function generateRings(branches, s, rng) {
   const rings = [];
@@ -5215,6 +5309,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.31.0', date: '2026-05-02', n: 'New creature: Coralline (chunk 3A). Recursive branching tree with vertical bias — asymmetric dendritic growth, no rings, no fusion. Hardcoded defaults; per-creature controls land in chunk 3B.' },
   { v: 'v1.30.2', date: '2026-05-02', n: 'Acantharian polish (chunk 2C): spine curl (3-segment arc per spine) + tip branching (none/fork/cluster). Codec slots 36-37.' },
   { v: 'v1.30.1', date: '2026-05-02', n: 'Acantharian UI controls (chunk 2B): spine count, sphere radius, spine length/base/tip, length jitter. Codec slots 30-35.' },
   { v: 'v1.30.0', date: '2026-05-02', n: 'New creature: Acantharian (chunk 2A). Central sphere + N evenly-distributed radiating tapered spines. Hardcoded defaults; per-creature controls land in chunk 2B.' },
