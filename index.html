@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.21</span>
+        <span id="version">v1.32.22</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.21";
+const VERSION = "v1.32.22";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4199,11 +4199,13 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
   return true;
 }
 
-// DEBUG TOGGLE (v1.32.16). When true, only the FIRST parent spine
-// emits a child at its tip — the rest of the parent spines have no
-// children. Used for fast visual iteration on child morphology
-// without the visual clutter of 30+ children. Flip back to false
-// once child logic is dialed in to restore full recursion.
+// DEBUG TOGGLES (v1.32.16, v1.32.22).
+// ACAN_DEBUG_NO_CHILDREN: when true, no children at all — just the
+// parent. Useful when iterating on parent morphology in isolation.
+// ACAN_DEBUG_SINGLE_CHILD_ONLY: when true (and NO_CHILDREN false),
+// only the first parent spine emits a child at its tip. Flip both
+// back to false once child logic is dialed in.
+const ACAN_DEBUG_NO_CHILDREN       = true;
 const ACAN_DEBUG_SINGLE_CHILD_ONLY = true;
 
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
@@ -4461,7 +4463,7 @@ function generateAcantharianStructure(s) {
   // iteration. Flip it off to populate every parent spine tip.
   const CHILD_THICKNESS_MUL = 0.7;
   const CHILD_OFFSET_MUL    = 1.0;
-  if (recurDepth >= 2 && parentSpines.length > 0) {
+  if (!ACAN_DEBUG_NO_CHILDREN && recurDepth >= 2 && parentSpines.length > 0) {
     if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
       const ps = parentSpines[0];
       const childSR = sphereRadius * recurScale;
@@ -6506,6 +6508,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.22', date: '2026-05-03', n: 'Acantharian — added ACAN_DEBUG_NO_CHILDREN top-level flag (currently true). Suppresses child generation entirely so we can iterate on parent morphology in isolation. Flip back to false to restore children.' },
   { v: 'v1.32.21', date: '2026-05-03', n: 'Acantharian child geometry — child sphere offset 0.7×SR → 1.0×SR. Deep simulation showed: although the child math correctly placed 18/36 spines pointing toward the parent, those parent-facing spines started at base positions ~0.6 mm from the parent spine line, which is INSIDE the parent spine\'s ~0.4-0.8 mm radius near its tip. Smooth-min then absorbed the bases of every parent-facing spine into the parent spine, making the child read as "all spines pointing outward from parent." With offset 1.0×childSR, the child sphere bottom sits exactly at parent.tip; every child spine starts above parent.tip in free space, so spines pointing back toward the parent are fully visible (they just travel back down PAST the parent spine without overlapping it).' },
   { v: 'v1.32.20', date: '2026-05-03', n: 'Acantharian "sharp turn at 20%" fix: bend profile was sin(πt) + 0.50·sin(2πt+phase). At t=0 the first term is zero but the secondary is 0.50·sin(phase), which is non-zero for every spine after index 0 — so each spine emerged from the sphere surface with an immediate perpendicular offset, traversed the first 20% at an off-axis angle, then snapped toward the main bend direction at midspan. Visible as a sharp kink near the base of every child spine. Switched to multiplicative form sin(πt) · (1 + 0.40·sin(2πt+phase)) which is GUARANTEED zero at both endpoints, so every spine truly emerges from its Fibonacci point with zero offset and tapers cleanly back to the tip.' },
   { v: 'v1.32.19', date: '2026-05-03', n: 'Acantharian child visibility fix: previous version produced child with seashell axis aligned to world Y, so spines near the south pole ran parallel to the parent spine and got absorbed into it via smooth-min. Visually the child read as "all spines pointing outward from parent center" because half its spines were invisible. Three fixes: (1) child center is offset OUTWARD along the parent spine\'s direction by 0.7×childSR so the parent spine connects to the child near its bottom pole rather than burying inside it; (2) child\'s seashell directions are rotated by a salt-derived random quaternion so its polar axis lands at a random angle relative to the parent spine — spines closest to the parent are no longer parallel to it; (3) child spine thickness multiplier 0.7 so children read as a daintier version of the parent rather than the same thickness.' },
