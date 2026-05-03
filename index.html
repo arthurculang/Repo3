@@ -890,7 +890,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.8</span>
+        <span id="version">v1.32.9</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -942,7 +942,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.8";
+const VERSION = "v1.32.9";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4239,9 +4239,14 @@ function generateAcantharianStructure(s) {
         const wp = [];
         for (let k = 0; k <= N; k++) {
           const t = k / N;
-          // Helical twist contribution
+          // Helical twist contribution. Amplitude profile is sin(πt) so
+          // wobble is ZERO at the sphere surface (k=0) and at the tip
+          // (k=N), peaking at midspan. This preserves the Fibonacci-
+          // spiral emergence pattern on the body — every spine truly
+          // starts where its Fibonacci direction lands on the sphere,
+          // rather than being shoved off-axis by the helical wobble.
           const ph = phase0 + t * turnsAlongSpine * Math.PI * 2;
-          const ampTwist = ampBase * (1 - t);
+          const ampTwist = ampBase * Math.sin(t * Math.PI);
           const twistDX = Math.cos(ph) * ampTwist;
           const twistDY = Math.sin(ph) * ampTwist;
           // Per-spine bend contribution — Gaussian peak at bendCenter,
@@ -4382,16 +4387,54 @@ function generateCorallineStructure(s) {
   const asymmetry       = s.corAsymmetry       ?? 0.3;
   const curl            = s.corCurl            ?? 0;
 
-  // Trunk: vertical capsule from origin going up.
-  const trunkStart = new THREE.Vector3(0, -trunkLen * 0.5, 0);
-  const trunkEnd   = new THREE.Vector3(0,  trunkLen * 0.5, 0);
-  branches.push({
-    start: trunkStart, end: trunkEnd,
-    r0: trunkR, r1: trunkR * radiusDecay,
-    depth: 0, parent: null,
-    tangent: new THREE.Vector3(0, 1, 0),
-    wobble: 0,
-  });
+  // Half-dome layout (v1.32.9). Instead of a single tall vertical
+  // trunk, emit a ring of N "primary" branches from a flat base, each
+  // angled outward and slightly upward. Every primary then drives the
+  // existing dendritic recursion via grow(); verticalBias takes over
+  // at deeper levels and pulls children up, so tips curl skyward and
+  // the silhouette reads as a dome that lies flat on a table rather
+  // than a tree.
+  //
+  // Primary count is derived from branchesPerNode (×2, floor 4) so the
+  // existing slider naturally controls how dense the dome is. Per-
+  // azimuth length lobing (two sin harmonics with seeded phase) gives
+  // some sectors of the dome much taller branches than others, so the
+  // overall shape is a lobed/wavy dome instead of a uniform cap.
+  const primaryCount = Math.max(4, branchesPerNode * 2);
+  const lobePhase1 = rng() * Math.PI * 2;
+  const lobePhase2 = rng() * Math.PI * 2;
+  const azimuthLengthMul = (az) => {
+    const a = Math.sin(az * 2 + lobePhase1) * 0.5
+            + Math.sin(az * 3 + lobePhase2) * 0.3;
+    return 1 + a * 0.7;  // ≈ 0.4× to ≈ 1.6×
+  };
+
+  for (let pi = 0; pi < primaryCount; pi++) {
+    const az = ((pi + 0.5) / primaryCount) * Math.PI * 2
+             + (rng() - 0.5) * 0.4;
+    // Lift angle measured from horizontal; average ≈ 30°, jitter ±20°.
+    // Small lift = nearly horizontal → flat fringe of the dome; larger
+    // lift = more upright → centre of the dome.
+    const liftAng = (30 + (rng() - 0.5) * 40) * Math.PI / 180;
+    const cAz = Math.cos(az), sAz = Math.sin(az);
+    const cL = Math.cos(liftAng), sL = Math.sin(liftAng);
+    const dir = new THREE.Vector3(cAz * cL, sL, sAz * cL).normalize();
+    const lenMul = azimuthLengthMul(az) * (0.7 + rng() * 0.6);
+    const primaryLen = trunkLen * lenMul;
+    // Anchor each primary on a small base ring so the inner ends fuse
+    // into a thick disc-shaped foot via the smooth-min union pipeline.
+    const baseRingR = trunkR * 0.5;
+    const startPt = new THREE.Vector3(cAz * baseRingR, 0, sAz * baseRingR);
+    const endPt = startPt.clone().addScaledVector(dir, primaryLen);
+    branches.push({
+      start: startPt, end: endPt,
+      r0: trunkR, r1: trunkR * radiusDecay,
+      depth: 0, parent: null,
+      tangent: dir.clone(),
+      wobble: 0,
+    });
+    grow(endPt, dir, primaryLen, trunkR, 1);
+  }
 
   // Recursive branch growth. Each call generates N children at the
   // given parent endpoint, then recurses on each child.
@@ -4467,9 +4510,6 @@ function generateCorallineStructure(s) {
       grow(childEnd, childDir, childLen, childR0, depth + 1);
     }
   }
-
-  // Start recursion at the trunk top, with the initial direction = +Y.
-  grow(trunkEnd, new THREE.Vector3(0, 1, 0), trunkLen, trunkR, 1);
 
   return { branches, accents };
 }
@@ -4563,44 +4603,57 @@ function generateForaminiferanStructure(s) {
     pointR.push(tubeStart * (1 - tt) + tubeEnd * tt);
   }
 
-  // Self-avoidance pass (v1.32.6 + v1.32.8). For each sample point,
-  // push it away from any non-adjacent prior sample whose tube would
-  // come closer than `safety × (r_i + r_j)` to this one's tube. As of
-  // v1.32.8 the user's selfAvoid param scales the safety multiplier
-  // itself, so it controls how VISIBLE the gap is rather than just
-  // whether overlap is permitted:
+  // Self-avoidance + smoothing pass (v1.32.6 + v1.32.8 + v1.32.9). Each
+  // outer iteration does (a) a push-apart step that enforces visible
+  // separation between non-adjacent samples, then (b) a light Laplacian
+  // smoothing step that pulls each interior point toward the midpoint
+  // of its neighbours. The smoothing step rounds out the kinks the
+  // push step introduces — without it, the path develops sharp angles
+  // wherever it dodges around a prior coil. Low lambda (0.18) keeps the
+  // overall spiral character intact while erasing local sharp corners.
+  //
+  // Safety multiplier scales with the user's selfAvoid param so the
+  // slider controls how VISIBLE the orbital gap is:
   //   0   → safety 1.2 (just non-overlapping; edges touch)
   //   0.5 → safety 2.7 (visible gap, ~half-radius separation)
   //   0.6 → safety 3.0 (clear orbital separation, default)
   //   1.0 → safety 4.2 (generous empty cavity in the middle)
-  // Step factor stays a constant 0.5 so push strength is stable across
-  // the slider range; max iterations bumped 5 → 12 to converge under
-  // the larger separation requirement.
-  if (selfAvoid > 1e-3) {
+  {
     const skipNeighbors = 6;
     const safety = 1.2 + selfAvoid * 3.0;
-    const maxIters = 12;
+    const maxIters = 16;
     const stepFactor = 0.5;
+    const smoothLambda = 0.18;
     for (let iter = 0; iter < maxIters; iter++) {
       let movedAny = false;
-      for (let i = skipNeighbors + 1; i < points.length; i++) {
-        const pi = points[i];
-        for (let j = 0; j < i - skipNeighbors; j++) {
-          const pj = points[j];
-          const minDist = (pointR[i] + pointR[j]) * safety;
-          const dx = pi.x - pj.x, dy = pi.y - pj.y, dz = pi.z - pj.z;
-          const distSq = dx*dx + dy*dy + dz*dz;
-          if (distSq >= minDist * minDist || distSq < 1e-12) continue;
-          const dist = Math.sqrt(distSq);
-          const push = (minDist - dist) * stepFactor;
-          const inv = 1 / dist;
-          pi.x += dx * inv * push;
-          pi.y += dy * inv * push;
-          pi.z += dz * inv * push;
-          movedAny = true;
+      if (selfAvoid > 1e-3) {
+        for (let i = skipNeighbors + 1; i < points.length; i++) {
+          const pi = points[i];
+          for (let j = 0; j < i - skipNeighbors; j++) {
+            const pj = points[j];
+            const minDist = (pointR[i] + pointR[j]) * safety;
+            const dx = pi.x - pj.x, dy = pi.y - pj.y, dz = pi.z - pj.z;
+            const distSq = dx*dx + dy*dy + dz*dz;
+            if (distSq >= minDist * minDist || distSq < 1e-12) continue;
+            const dist = Math.sqrt(distSq);
+            const push = (minDist - dist) * stepFactor;
+            const inv = 1 / dist;
+            pi.x += dx * inv * push;
+            pi.y += dy * inv * push;
+            pi.z += dz * inv * push;
+            movedAny = true;
+          }
         }
       }
-      if (!movedAny) break;
+      // Laplacian smoothing — interior points only; endpoints stay pinned
+      // so the spiral's start and end positions are preserved.
+      for (let i = 1; i < points.length - 1; i++) {
+        const p0 = points[i-1], p1 = points[i], p2 = points[i+1];
+        p1.x += ((p0.x + p2.x) * 0.5 - p1.x) * smoothLambda;
+        p1.y += ((p0.y + p2.y) * 0.5 - p1.y) * smoothLambda;
+        p1.z += ((p0.z + p2.z) * 0.5 - p1.z) * smoothLambda;
+      }
+      if (selfAvoid > 1e-3 && !movedAny && iter > 5) break;
     }
   }
 
@@ -6020,6 +6073,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.9', date: '2026-05-03', n: 'Three creature refinements: (1) Foraminiferan path now interleaves Laplacian smoothing with self-avoidance per iteration so the dodging coil reads as a continuous curve instead of a polyline of kinks; (2) Acantharian helical-twist amplitude profile changed from (1−t) to sin(πt) so each spine truly emerges from its Fibonacci-spiral position on the sphere surface (zero wobble at the base, peak at midspan, zero at tip), restoring the spiral pattern of emergence; (3) Coralline replaced single vertical trunk with a ring of N=2× branchesPerNode primary branches radiating outward from a flat base ring, each with per-azimuth length lobing (two seeded sin harmonics) and ±20° lift jitter, producing a half-dome silhouette that lies flat on a table with regional growth variability instead of a uniform tree.' },
   { v: 'v1.32.8', date: '2026-05-03', n: 'Foraminiferan visible orbital separation: self-avoidance safety multiplier now scales with foramSelfAvoid (1.2 → 4.2 across the slider) so the param controls how much negative space sits between coils rather than just whether they overlap; max iterations bumped 5 → 12 to converge under the larger separation requirement. Result is a comet path orbiting a clear inner cavity, with edges that never touch.' },
   { v: 'v1.32.7', date: '2026-05-02', n: 'Acantharian density + per-spine bend: parent spine count default 24 → 36 (slider max 40 → 48); children inherit half the parent count so the parent radial pattern dominates; per-spine random bend on top of helical twist gives each spine a unique shape (random direction, random position, random magnitude).' },
   { v: 'v1.32.6', date: '2026-05-02', n: 'Foraminiferan comet trajectory: tube inverted (thick inner → thin outer), longer (4 turns) with slower taper, new wander parameter (multi-frequency 3D sin perturbation) and self-avoidance pass (iterative push-apart for non-adjacent samples) so the path threads gaps and feels like a knot winding itself. Codec slots 64-65.' },
