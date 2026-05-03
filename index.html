@@ -454,6 +454,7 @@
         <label>Creature type</label>
         <select id="creatureType">
           <option value="radiolarian" selected>Radiolarian</option>
+          <option value="acantharian">Acantharian</option>
         </select>
         <div class="ctrl-note">Selects which morphology generator runs. Each type has its own dedicated controls below the universal section.</div>
       </div>
@@ -717,7 +718,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.29.2</span>
+        <span id="version">v1.30.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -769,7 +770,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.29.2";
+const VERSION = "v1.30.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1023,7 +1024,7 @@ const SUPPORTS_FAN_RADIUS   = { off: 0, sparse: 0.5, medium: 1.0, dense: 1.5 };
 // KEY arrays — chunks 2 and 3 will add 'acantharian' and 'coralline'
 // at indices 1 and 2 respectively. Codec stores the index (slot 29)
 // so older config strings without the slot decode to 'radiolarian'.
-const CREATURE_KEYS = ['radiolarian'];
+const CREATURE_KEYS = ['radiolarian','acantharian'];
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 
@@ -1573,7 +1574,7 @@ function fibonacciSphereDirections(n, phaseOffset) {
 // cleanup) is uniform across creature types.
 function generateStructure(s) {
   switch (s.creatureType) {
-    // case 'acantharian': return generateAcantharianStructure(s);  // chunk 2
+    case 'acantharian': return generateAcantharianStructure(s);
     // case 'coralline':   return generateCorallineStructure(s);    // chunk 3
     case 'radiolarian':
     default:
@@ -3672,6 +3673,63 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
   return true;
 }
 
+// ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
+//
+// A central sphere with N radiating tapered spines. No branching, no
+// fusion between spines, no rings. Visually distinct from Radiolarian:
+// "spiky sun" rather than "branching lattice."
+//
+// Inspired by acantharians — marine plankton with strontium-sulfate
+// spines arranged in 20-fold radial symmetry around a central protoplasm.
+//
+// Returns the same { branches, accents } shape as
+// generateRadiolarianStructure so the rest of the pipeline (symmetry,
+// scaling, buildField, MC, repair, texture, simplify, cleanup) is
+// uniform across creature types.
+function generateAcantharianStructure(s) {
+  const branches = [];
+  const accents = [];
+
+  // Hardcoded chunk-2A defaults; chunk 2B exposes user controls.
+  const spineCount = 18;
+  const sphereRadius = 8;
+  const spineLength = 30;
+  const baseR = 1.2;
+  const tipR = 0.4;
+
+  // Central sphere — represented as a degenerate capsule (start ≈ end,
+  // large radius). The smooth-min union pipeline downstream renders it
+  // as a single fused ball at origin.
+  branches.push({
+    start: new THREE.Vector3(0, 0, 0),
+    end:   new THREE.Vector3(0, 0.01, 0),
+    r0: sphereRadius, r1: sphereRadius,
+    depth: 0, parent: null,
+    tangent: new THREE.Vector3(0, 1, 0),
+    wobble: 0,
+  });
+
+  // Radiating spines via Fibonacci sphere distribution — even angular
+  // coverage, no clustering at poles. Each spine starts just inside the
+  // sphere surface and extends outward, tapering from base to tip.
+  const phaseOffset = ((s.seed >>> 0) * 1e-7) % (Math.PI * 2);
+  const dirs = fibonacciSphereDirections(spineCount, phaseOffset);
+  for (const d of dirs) {
+    const startPt = new THREE.Vector3().copy(d).multiplyScalar(sphereRadius * 0.85);
+    const endPt   = new THREE.Vector3().copy(d).multiplyScalar(sphereRadius + spineLength);
+    branches.push({
+      start: startPt,
+      end:   endPt,
+      r0: baseR, r1: tipR,
+      depth: 1, parent: 0,
+      tangent: d.clone(),
+      wobble: 0,
+    });
+  }
+
+  return { branches, accents };
+}
+
 const _ringPerp = new THREE.Vector3(), _ringBi = new THREE.Vector3();
 function generateRings(branches, s, rng) {
   const rings = [];
@@ -4434,16 +4492,27 @@ function formatCost(mat, volumeMM3) {
 // mutate state.wall and have it reflected in the slider; in cast/solid
 // modes we return a shallow clone so overrides don't leak into user state.
 function effectiveState(s) {
+  // Negative-space tunnels (helix / colony) are radiolarian-specific
+  // morphology — they'd carve at random angles through Acantharian
+  // spines or Coralline branches and look terrible. Force negStyle
+  // off for any non-radiolarian creature regardless of bodyMode
+  // (v1.30.0). The user's negStyle preference is preserved on
+  // state.negStyle so switching back to Radiolarian restores it.
+  const creatureNegStyle = s.creatureType === 'radiolarian' ? s.negStyle : 'none';
+
   // Hollow and Hollow + Fill both go through the full hollow pipeline
   // (shell + tunnels + bridges); the difference is only in the
   // post-build cavity fill step inside buildField. Both return state
   // itself so the auto-fix loop can mutate state.wall and have it
   // reflected in the slider.
-  if (s.bodyMode === 'hollow' || s.bodyMode === 'hollow-fill') return s;
+  if (s.bodyMode === 'hollow' || s.bodyMode === 'hollow-fill') {
+    if (creatureNegStyle === s.negStyle) return s;
+    return { ...s, negStyle: creatureNegStyle };
+  }
   return {
     ...s,
     wall: 0,
-    negStyle: s.bodyMode === 'cast' ? 'none' : s.negStyle,
+    negStyle: s.bodyMode === 'cast' ? 'none' : creatureNegStyle,
     // Preserve the user's slider wall value so the texture pass can
     // still cap coral pit depth uniformly across modes (v1.24.5).
     // Without this, cast/solid would see s.wall=0 and skip the cap,
@@ -4962,6 +5031,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.30.0', date: '2026-05-02', n: 'New creature: Acantharian (chunk 2A). Central sphere + N evenly-distributed radiating tapered spines. Hardcoded defaults; per-creature controls land in chunk 2B.' },
   { v: 'v1.29.2', date: '2026-05-02', n: 'Default material → Nylon PA12 (SLS). SLS handles bridges natively without needing organic supports; aligns the default workflow with Sculpteo/Shapeways. Brass + gold plate stays in the dropdown.' },
   { v: 'v1.29.1', date: '2026-05-02', n: 'Creature-type UI (chunk 1B): creature dropdown at top of panel; controls grouped into Universal + "Radiolarian morphology" section with show/hide infrastructure ready for additional creature types.' },
   { v: 'v1.29.0', date: '2026-05-02', n: 'Creature-type infrastructure (chunk 1A): state + codec slot 29 + dispatcher refactor. Existing morphology renamed Radiolarian; chunks 2 and 3 add Acantharian and Coralline.' },
