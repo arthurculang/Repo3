@@ -738,6 +738,16 @@
         <input type="range" id="foramSpines" min="0" max="16" step="1" value="0">
         <div class="ctrl-note">Small radial spines along the outer half of the spiral, evenly distributed.</div>
       </div>
+      <div class="ctrl" data-creature-section="foraminiferan">
+        <label>Aspect (X / Z) <span class="val" id="foramAspectVal">1.40</span></label>
+        <input type="range" id="foramAspect" min="0.4" max="2.5" step="0.05" value="1.4">
+        <div class="ctrl-note">1.0 = round coil; > 1 elongates along X, < 1 along Z. Asymmetric growth in 3D.</div>
+      </div>
+      <div class="ctrl" data-creature-section="foraminiferan">
+        <label>Plane tilt (rad) <span class="val" id="foramTiltVal">1.00</span></label>
+        <input type="range" id="foramTilt" min="0" max="3.14" step="0.05" value="1.0">
+        <div class="ctrl-note">0 = flat planar coil; π/2 ≈ 1.57 rotates plane 90° over the spiral length; π flips fully. Higher = more 3D corkscrew.</div>
+      </div>
 
       <div class="section-header" data-creature-section="coralline">Coralline morphology</div>
 
@@ -864,7 +874,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.3</span>
+        <span id="version">v1.32.4</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -916,7 +926,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.3";
+const VERSION = "v1.32.4";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1017,6 +1027,20 @@ const DEFAULTS = {
                             //            of the spiral. Adds a feathered, biological
                             //            ornament reminiscent of certain foraminifera and
                             //            ammonite ribbing.
+  // 3D-unwinding parameters (v1.32.4): break the spiral out of a flat
+  // X-Z plane. Together they produce a coil that twists and stretches
+  // through 3D space rather than lying as a 2D spiral.
+  foramAspect: 1.4,        // 0.4..2.5  X-vs-Z growth ratio. 1.0 = circular cross-section
+                            //            (round coil, looks flat from above). >1 = X grows
+                            //            faster than Z (elongated ellipse). <1 = Z grows
+                            //            faster (squashed ellipse). Default 1.4 = mildly
+                            //            asymmetric out of the box.
+  foramTilt: 1.0,          // 0..3.14   radians of spiral-plane rotation accumulated over
+                            //            the full spiral length. 0 = flat planar coil
+                            //            (or simple helix if pitch>0). π/2 ≈ 1.57 = the
+                            //            plane has rotated 90° by the end. π ≈ 3.14 = it
+                            //            has fully flipped. Default 1.0 (≈57°) = visibly
+                            //            3D without being chaotic.
   // Coralline-specific controls (chunk 3B, v1.31.1):
   corTrunkLen: 18,       // 6..40    initial vertical trunk length (mm)
   corTrunkR: 3.0,        // 1..6     base trunk radius (mm)
@@ -1359,6 +1383,10 @@ function paramFields(s) {
     s.foramChambers | 0,
     s.foramBulge.toFixed(2),
     s.foramSpines | 0,
+    // ↓ added in v1.32.4 — 3D unwinding params. Defaults preserve
+    // chunk-4A flat planar coil look for older saved configs.
+    s.foramAspect.toFixed(2),
+    s.foramTilt.toFixed(2),
   ];
 }
 
@@ -1485,6 +1513,11 @@ function parseParamSlots(slots) {
   const foramChambersV  = slots.length > 58 ? clamp(parseInt(slots[58], 10) || 0, 0, 12)              : 0;
   const foramBulgeV     = slots.length > 59 ? clamp(parseFloat(slots[59]) || 0.4, 0, 1)               : 0.4;
   const foramSpinesV    = slots.length > 60 ? clamp(parseInt(slots[60], 10) || 0, 0, 16)              : 0;
+  // 3D-unwinding params: new in v1.32.4. Older configs (slots absent)
+  // default to aspect=1.0, tilt=0 — i.e. the original flat planar coil
+  // look — so reloaded configs render unchanged.
+  const foramAspectV    = slots.length > 61 ? clamp(parseFloat(slots[61]) || 1.0, 0.4, 2.5)           : 1.0;
+  const foramTiltV      = slots.length > 62 ? clamp(parseFloat(slots[62]) || 0, 0, 3.14)              : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1547,6 +1580,8 @@ function parseParamSlots(slots) {
     foramChambers:  foramChambersV,
     foramBulge:     foramBulgeV,
     foramSpines:    foramSpinesV,
+    foramAspect:    foramAspectV,
+    foramTilt:      foramTiltV,
   };
 }
 
@@ -4322,7 +4357,7 @@ function generateForaminiferanStructure(s) {
   const branches = [];
   const accents = [];
 
-  // User-tunable controls (chunk 4B + 4C, v1.32.1 + v1.32.2).
+  // User-tunable controls (chunks 4B/4C/v1.32.4).
   const turns      = s.foramTurns     ?? 2.5;
   const growth     = s.foramGrowth    ?? 0.10;
   const tubeStart  = s.foramTubeStart ?? 0.8;
@@ -4332,19 +4367,37 @@ function generateForaminiferanStructure(s) {
   const chambers   = s.foramChambers  ?? 0;
   const bulge      = s.foramBulge     ?? 0.4;
   const spineCount = s.foramSpines    ?? 0;
+  const aspect     = s.foramAspect    ?? 1.4;
+  const tiltMax    = s.foramTilt      ?? 1.0;
   const samplesPerTurn = 24;
 
   const totalAngle = turns * Math.PI * 2;
   const totalSamples = Math.max(8, Math.round(turns * samplesPerTurn));
 
-  // Generate sample points along the spiral curve.
+  // Generate sample points along the spiral curve. Two 3D-unwinding
+  // effects (v1.32.4) layered on the base log-spiral:
+  //   1) anisotropic radius — x and z scale with `aspect` and `1/aspect`
+  //      respectively, producing an elliptical cross-section that
+  //      elongates more in one axis than the other.
+  //   2) tilt — as t progresses, the (y, z) coordinates rotate around
+  //      the X axis by an accumulating tiltAngle. So the spiral plane
+  //      itself rotates over the spiral's length, producing a corkscrew
+  //      rather than a flat coil.
   const points = [];
   for (let i = 0; i <= totalSamples; i++) {
     const t = (i / totalSamples) * totalAngle;
     const r = r0 * Math.exp(growth * t);
-    const x = Math.cos(t) * r;
-    const z = Math.sin(t) * r;
-    const y = pitch * t / (Math.PI * 2);  // axial offset per turn
+    let x = Math.cos(t) * r * aspect;
+    let y = pitch * t / (Math.PI * 2);
+    let z = Math.sin(t) * r / aspect;
+    if (tiltMax > 1e-6) {
+      const tiltAngle = (i / totalSamples) * tiltMax;
+      const cT = Math.cos(tiltAngle), sT = Math.sin(tiltAngle);
+      const yRot = y * cT - z * sT;
+      const zRot = y * sT + z * cT;
+      y = yRot;
+      z = zRot;
+    }
     points.push(new THREE.Vector3(x, y, z));
   }
 
@@ -5550,6 +5603,8 @@ const bindings = {
   foramChambers:   bindSlider('foramChambers',   'foramChambers',   v => v),
   foramBulge:      bindSlider('foramBulge',      'foramBulge',      v => v.toFixed(2)),
   foramSpines:     bindSlider('foramSpines',     'foramSpines',     v => v),
+  foramAspect:     bindSlider('foramAspect',     'foramAspect',     v => v.toFixed(2)),
+  foramTilt:       bindSlider('foramTilt',       'foramTilt',       v => v.toFixed(2)),
   // Coralline-specific (v1.31.1, chunk 3B):
   corTrunkLen:        bindSlider('corTrunkLen',        'corTrunkLen',        v => v),
   corTrunkR:          bindSlider('corTrunkR',          'corTrunkR',          v => v.toFixed(1)),
@@ -5759,6 +5814,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.4', date: '2026-05-02', n: 'Foraminiferan 3D unwinding: spiral now grows asymmetrically (foramAspect ratios X vs Z) and the spiral plane gradually rotates over its length (foramTilt) — true 3D corkscrew rather than a flat planar coil. Codec slots 61-62.' },
   { v: 'v1.32.3', date: '2026-05-02', n: 'Acantharian variability bumps: parent spines now show real per-spine length variation by default (jitter 0.2→0.5, max 1→1.5); recursive children use multiplicative size jitter (pow(3, ±N)) for true small/medium/large spread instead of tight cluster. Capped at 0.9× parent so children never rival the main creature.' },
   { v: 'v1.32.2', date: '2026-05-02', n: 'Foraminiferan polish (chunk 4C): chamber bulges (cos²-modulated tube radius) + outer-half radial spines. Codec slots 58-60. Four-creature plan complete (Radiolarian, Acantharian, Coralline, Foraminiferan).' },
   { v: 'v1.32.1', date: '2026-05-02', n: 'Foraminiferan UI controls (chunk 4B): turns, growth rate, tube start/end, pitch, starting radius. Codec slots 52-57.' },
