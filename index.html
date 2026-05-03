@@ -451,6 +451,14 @@
     </div>
     <div id="panelBody">
       <div class="ctrl">
+        <label>Creature type</label>
+        <select id="creatureType">
+          <option value="radiolarian" selected>Radiolarian</option>
+        </select>
+        <div class="ctrl-note">Selects which morphology generator runs. Each type has its own dedicated controls below the universal section.</div>
+      </div>
+
+      <div class="ctrl">
         <label>
           Full configuration
           <button class="field-btn" id="fullCopyBtn" type="button" title="Copy" aria-label="Copy full configuration">⧉</button>
@@ -530,28 +538,6 @@
         <label>Wall thickness (mm) <span class="val" id="wallVal">1.0</span></label>
         <input type="range" id="wall" min="0" max="5" step="0.1" value="1.0">
         <div class="ctrl-note">Carves the shell in Hollow mode; also caps coral pit depth in all modes.</div>
-      </div>
-
-      <div class="ctrl">
-        <label>Inner links <span class="val" id="innerLinksVal">2</span></label>
-        <input type="range" id="innerLinks" min="0" max="12" step="1" value="2">
-      </div>
-
-      <div class="ctrl">
-        <label>Negative space</label>
-        <select id="negStyle">
-          <option value="none">None</option>
-          <option value="helix" selected>N-Helix (DNA-like spiral)</option>
-          <option value="colony">Colony pathways</option>
-        </select>
-      </div>
-      <div class="ctrl" id="negStrandsWrap">
-        <label>Strands <span class="val" id="negStrandsVal">4</span></label>
-        <input type="range" id="negStrands" min="1" max="6" step="1" value="4">
-      </div>
-      <div class="ctrl" id="negDensityWrap">
-        <label>Negative-space density <span class="val" id="negDensityVal">0.70</span></label>
-        <input type="range" id="negDensity" min="0" max="1" step="0.05" value="0.7">
       </div>
 
       <div class="ctrl">
@@ -653,43 +639,69 @@
         <div class="ctrl-note">Adds tendril-cluster supports under unsupported overhangs. Reduces "Bridges" warnings; reads as additional intricate structure. Adds 5–15 sec to regen.</div>
       </div>
 
-      <div class="ctrl">
+      <div class="section-header" data-creature-section="radiolarian">Radiolarian morphology</div>
+
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
         <input type="range" id="complexity" min="1" max="7" step="1" value="4">
       </div>
-      <div class="ctrl">
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Branches / node <span class="val" id="branchCountVal">3</span></label>
         <input type="range" id="branchCount" min="1" max="5" step="1" value="3">
       </div>
-      <div class="ctrl">
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Branch angle (°) <span class="val" id="branchAngleVal">35</span></label>
         <input type="range" id="branchAngle" min="10" max="80" step="1" value="35">
       </div>
-      <div class="ctrl">
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Radius taper <span class="val" id="taperVal">0.60</span></label>
         <input type="range" id="taper" min="0.4" max="0.95" step="0.01" value="0.60">
       </div>
-      <div class="ctrl">
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Core thickness (mm) <span class="val" id="trunkVal">6.0</span></label>
         <input type="range" id="trunk" min="2" max="14" step="0.1" value="6">
       </div>
-      <div class="ctrl">
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Smoothness <span class="val" id="smoothVal">0.25</span></label>
         <input type="range" id="smooth" min="0" max="1" step="0.01" value="0.25">
       </div>
-      <div class="ctrl">
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Polyhedral accents <span class="val" id="polyVal">0.4</span></label>
         <input type="range" id="poly" min="0" max="1" step="0.01" value="0.4">
       </div>
-      <div class="ctrl">
+      <div class="ctrl" data-creature-section="radiolarian">
+        <label>Inner links <span class="val" id="innerLinksVal">2</span></label>
+        <input type="range" id="innerLinks" min="0" max="12" step="1" value="2">
+      </div>
+      <div class="ctrl" data-creature-section="radiolarian">
+        <label>Negative space</label>
+        <select id="negStyle">
+          <option value="none">None</option>
+          <option value="helix" selected>N-Helix (DNA-like spiral)</option>
+          <option value="colony">Colony pathways</option>
+        </select>
+      </div>
+      <div class="ctrl" id="negStrandsWrap" data-creature-section="radiolarian">
+        <label>Strands <span class="val" id="negStrandsVal">4</span></label>
+        <input type="range" id="negStrands" min="1" max="6" step="1" value="4">
+      </div>
+      <div class="ctrl" id="negDensityWrap" data-creature-section="radiolarian">
+        <label>Negative-space density <span class="val" id="negDensityVal">0.70</span></label>
+        <input type="range" id="negDensity" min="0" max="1" step="0.05" value="0.7">
+      </div>
+      <div class="ctrl" data-creature-section="radiolarian">
+        <label>Min negative space (mm) <span class="val" id="negVal">3.7</span></label>
+        <input type="range" id="neg" min="0.5" max="5" step="0.1" value="3.7">
+      </div>
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Rings <span class="val" id="ringsVal">2</span></label>
         <input type="range" id="rings" min="0" max="6" step="1" value="2">
       </div>
-      <div class="ctrl">
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Ring tightness (mm) <span class="val" id="ringGapVal">0.7</span></label>
         <input type="range" id="ringGap" min="0.5" max="2.5" step="0.05" value="0.7">
       </div>
-      <div class="ctrl">
+      <div class="ctrl" data-creature-section="radiolarian">
         <label>Symmetry</label>
         <select id="sym">
           <option value="none">None</option>
@@ -697,19 +709,15 @@
           <option value="radial" selected>Radial N-fold</option>
         </select>
       </div>
-      <div class="ctrl" id="radialWrap">
+      <div class="ctrl" id="radialWrap" data-creature-section="radiolarian">
         <label>Radial N <span class="val" id="radialNVal">5</span></label>
         <input type="range" id="radialN" min="2" max="8" step="1" value="5">
-      </div>
-      <div class="ctrl">
-        <label>Min negative space (mm) <span class="val" id="negVal">3.7</span></label>
-        <input type="range" id="neg" min="0.5" max="5" step="0.1" value="3.7">
       </div>
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.29.0</span>
+        <span id="version">v1.29.1</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -761,7 +769,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.29.0";
+const VERSION = "v1.29.1";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4875,6 +4883,29 @@ if (organicSupportsEl) {
   });
 }
 
+// Creature-type dropdown (v1.29.0). Switches which generator the
+// pipeline calls. The data-creature-section attribute on each ctrl
+// div marks which morphology section it belongs to; this handler
+// shows the matching section and hides the others. With only one
+// creature option in chunk 1, the show/hide is a no-op — chunks 2
+// and 3 add 'acantharian' and 'coralline' which exercise it.
+const creatureTypeEl = document.getElementById('creatureType');
+function refreshCreatureSection() {
+  const active = state.creatureType;
+  const sections = document.querySelectorAll('[data-creature-section]');
+  for (const el of sections) {
+    const owner = el.getAttribute('data-creature-section');
+    el.classList.toggle('hidden', owner !== active);
+  }
+}
+if (creatureTypeEl) {
+  creatureTypeEl.addEventListener('change', () => {
+    state.creatureType = creatureTypeEl.value;
+    refreshCreatureSection();
+    scheduleRegen();
+  });
+}
+
 // Body-mode dropdown (v1.24.0). Toggles between cast-friendly /
 // solid-with-tunnels / hollow geometries via effectiveState() at
 // generation time. The wall slider is greyed out in non-hollow modes
@@ -4929,6 +4960,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.29.1', date: '2026-05-02', n: 'Creature-type UI (chunk 1B): creature dropdown at top of panel; controls grouped into Universal + "Radiolarian morphology" section with show/hide infrastructure ready for additional creature types.' },
   { v: 'v1.29.0', date: '2026-05-02', n: 'Creature-type infrastructure (chunk 1A): state + codec slot 29 + dispatcher refactor. Existing morphology renamed Radiolarian; chunks 2 and 3 add Acantharian and Coralline.' },
   { v: 'v1.28.3', date: '2026-05-01', n: 'Canvas/scene background lightened from near-black to medium cool gray (studio-style backdrop). Panel and controls stay dark for contrast.' },
   { v: 'v1.28.2', date: '2026-05-01', n: 'Mesh simplify default raised to Extreme (−80%) — STL ships under typical service-bureau upload limits without manual tuning. Older saved configs unchanged.' },
@@ -5143,6 +5175,8 @@ function refreshUIFromState() {
   if (wallDilateEl) wallDilateEl.value = state.wallDilate;
   if (organicSupportsEl) organicSupportsEl.value = state.organicSupports;
   if (bodyModeEl) bodyModeEl.value = state.bodyMode;
+  if (creatureTypeEl) creatureTypeEl.value = state.creatureType;
+  refreshCreatureSection();
   refreshWallEnabled();
   refreshBodyModeWarn();
   updateQualityLabels();
