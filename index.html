@@ -645,8 +645,8 @@
       <div class="section-header" data-creature-section="acantharian">Acantharian morphology</div>
 
       <div class="ctrl" data-creature-section="acantharian">
-        <label>Spine count <span class="val" id="acanSpinesVal">18</span></label>
-        <input type="range" id="acanSpines" min="6" max="40" step="1" value="18">
+        <label>Spine count <span class="val" id="acanSpinesVal">24</span></label>
+        <input type="range" id="acanSpines" min="6" max="40" step="1" value="24">
       </div>
       <div class="ctrl" data-creature-section="acantharian">
         <label>Sphere radius (mm) <span class="val" id="acanSphereRVal">8.0</span></label>
@@ -680,6 +680,11 @@
           <option value="fork">Fork (2 sub-tips)</option>
           <option value="cluster">Cluster (4 sub-tips)</option>
         </select>
+      </div>
+      <div class="ctrl" data-creature-section="acantharian">
+        <label>Helical twist <span class="val" id="acanTwistVal">0.40</span></label>
+        <input type="range" id="acanTwist" min="0" max="1" step="0.05" value="0.4">
+        <div class="ctrl-note">Replaces straight spines with 5-segment helical chains. Adjacent spines twist out of phase, so where they bunch near the body they spatially interleave like cinnamon-twist strands.</div>
       </div>
       <div class="ctrl" data-creature-section="acantharian">
         <label>Recursion depth <span class="val" id="acanRecurDepthVal">2</span></label>
@@ -874,7 +879,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.4</span>
+        <span id="version">v1.32.5</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -926,7 +931,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.4";
+const VERSION = "v1.32.5";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -977,7 +982,9 @@ const DEFAULTS = {
   // 'coralline'.
   creatureType: 'radiolarian',
   // Acantharian-specific controls (chunk 2B, v1.30.1):
-  acanSpines: 18,        // 6..40   how many spines radiate from the core
+  acanSpines: 24,        // 6..40   how many spines radiate from the core. Default
+                          //         bumped 18 → 24 in v1.32.5 — restores the dense
+                          //         radial-spirality look the user remembers.
   acanSphereR: 8,        // 4..16   central-sphere radius (mm)
   acanSpineLen: 30,      // 10..60  spine length beyond the sphere (mm)
   acanSpineBaseR: 1.2,   // 0.5..3  spine base radius (mm)
@@ -1007,6 +1014,14 @@ const DEFAULTS = {
                           //           3× the base scale. Capped at 0.9× parent size so
                           //           children never read as siblings of the main creature.
                           //           Default raised + range widened in v1.32.3.
+  // Twist (v1.32.5): replaces the straight-spine capsule with a 5-segment
+  // helical chain. Each spine gets a golden-angle-offset per-spine phase
+  // so neighbouring fibonacci-sphere directions twist out-of-phase — where
+  // their cones overlap near the base, they spatially interleave like
+  // strands in a cinnamon twist. Amplitude decays linearly from base to
+  // tip so far ends stay clean and pointed.
+  acanTwist: 0.4,        // 0..1     helical twist amount. 0 = straight spines,
+                          //          1 = strong helical winding (radius-scale amplitude).
   // Foraminiferan-specific controls (chunk 4B, v1.32.1):
   foramTurns: 2.5,         // 1..5      total spiral rotations
   foramGrowth: 0.10,       // 0.04..0.30 exponential growth rate per radian.
@@ -1387,6 +1402,9 @@ function paramFields(s) {
     // chunk-4A flat planar coil look for older saved configs.
     s.foramAspect.toFixed(2),
     s.foramTilt.toFixed(2),
+    // ↓ added in v1.32.5 — Acantharian helical twist. Defaults to
+    // 0 for older saved configs so they reload as straight-spine.
+    s.acanTwist.toFixed(2),
   ];
 }
 
@@ -1518,6 +1536,10 @@ function parseParamSlots(slots) {
   // look — so reloaded configs render unchanged.
   const foramAspectV    = slots.length > 61 ? clamp(parseFloat(slots[61]) || 1.0, 0.4, 2.5)           : 1.0;
   const foramTiltV      = slots.length > 62 ? clamp(parseFloat(slots[62]) || 0, 0, 3.14)              : 0;
+  // Acantharian twist: new in v1.32.5. Older configs (slot absent)
+  // default to 0 — straight-spine look matching the pre-1.32.5
+  // default behavior.
+  const acanTwistV      = slots.length > 63 ? clamp(parseFloat(slots[63]) || 0, 0, 1)                 : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1582,6 +1604,7 @@ function parseParamSlots(slots) {
     foramSpines:    foramSpinesV,
     foramAspect:    foramAspectV,
     foramTilt:      foramTiltV,
+    acanTwist:      acanTwistV,
   };
 }
 
@@ -4070,20 +4093,25 @@ function generateAcantharianStructure(s) {
   const accents = [];
   const rng = mulberry32(s.seed);
 
-  // User-tunable controls (v1.30.1 + v1.30.2 + v1.31.4).
-  const spineCount   = s.acanSpines      || 18;
+  // User-tunable controls (v1.30.1 + v1.30.2 + v1.31.4 + v1.32.5).
+  const spineCount   = s.acanSpines      || 24;
   const sphereRadius = s.acanSphereR     || 8;
   const spineLength  = s.acanSpineLen    || 30;
   const baseR        = s.acanSpineBaseR  || 1.2;
   // Tip radius is clamped to ≤ base so spines never invert.
   const tipR         = Math.min(s.acanSpineTipR ?? 0.4, baseR);
-  const jitter       = s.acanJitter      ?? 0.2;
+  const jitter       = s.acanJitter      ?? 0.5;
   const curl         = s.acanCurl        ?? 0;
   const tipSplitN    = ACAN_TIPSPLIT_COUNTS[s.acanTipSplit] || 0;
+  const twist        = s.acanTwist       ?? 0.4;
   // Recursion (chunk 2D, v1.31.4):
   const recurDepth     = Math.max(1, s.acanRecurDepth ?? 1);
   const recurScale     = s.acanRecurScale ?? 0.30;
-  const recurVariation = s.acanRecurVariation ?? 0.20;
+  const recurVariation = s.acanRecurVariation ?? 0.60;
+  // Floor for the per-spine length jitter so high jitter doesn't produce
+  // invisible-tiny stubs. 0.4 means no spine is ever shorter than 40% of
+  // the base length, regardless of jitter setting.
+  const LEN_SCALE_FLOOR = 0.4;
 
   // _temp vectors reused inside the per-spine loop.
   const tmp = new THREE.Vector3();
@@ -4122,13 +4150,59 @@ function generateAcantharianStructure(s) {
     const phaseOffset = ((s.seed >>> 0) * 1e-7 + depth * 0.41) % (Math.PI * 2);
     const dirs = fibonacciSphereDirections(spineCount, phaseOffset);
 
+    let spineIndex = 0;
     for (const d of dirs) {
-      const lenScale = 1 + (rng() - 0.5) * jitter;
+      const lenScale = Math.max(LEN_SCALE_FLOOR, 1 + (rng() - 0.5) * jitter);
       const thisLen = sL * lenScale;
       const startPt = center.clone().addScaledVector(d, sR * 0.85);
       const endPt   = center.clone().addScaledVector(d, sR + thisLen);
 
-      if (!useCurl) {
+      // Twist mode (v1.32.5) — replaces a straight or curled spine with
+      // a 5-segment helical chain. Per-spine golden-angle phase offset
+      // means adjacent Fibonacci-sphere directions twist out of phase,
+      // so where they bunch near the base they spatially interleave
+      // like cinnamon-twist strands. Top-level spines only.
+      const useTwist = isTop && twist > 1e-3;
+
+      if (useTwist) {
+        const N = 5;
+        // Stable perpendicular axes to the spine direction for the helix.
+        tmp.set(d.x, d.y, d.z);
+        if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
+        else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
+        perp2.crossVectors(tmp, perp1).normalize();
+        // Golden-angle (≈ 137.5°) phase offset per spine — irrational,
+        // so adjacent spines never align in phase regardless of count.
+        const phase0 = spineIndex * 2.39996323;
+        // 1.5 helical wavelengths along the spine — visible twist
+        // without becoming a chaotic spring.
+        const turnsAlongSpine = 1.5;
+        // Amplitude proportional to base-radius × twist control. Decays
+        // linearly to zero at the tip so spine pointiness is preserved.
+        const ampBase = bR * 1.6 * twist;
+        const wp = [];
+        for (let k = 0; k <= N; k++) {
+          const t = k / N;
+          const ph = phase0 + t * turnsAlongSpine * Math.PI * 2;
+          const amp = ampBase * (1 - t);
+          const dx = Math.cos(ph) * amp;
+          const dy = Math.sin(ph) * amp;
+          wp.push(startPt.clone().lerp(endPt, t)
+            .addScaledVector(perp1, dx)
+            .addScaledVector(perp2, dy));
+        }
+        for (let k = 0; k < N; k++) {
+          const t1 = k / N, t2 = (k + 1) / N;
+          const r1 = bR * (1 - t1) + tR * t1;
+          const r2 = bR * (1 - t2) + tR * t2;
+          branches.push({
+            start: wp[k], end: wp[k + 1],
+            r0: r1, r1: r2,
+            depth: 1, parent: 0,
+            tangent: d.clone(), wobble: 0,
+          });
+        }
+      } else if (!useCurl) {
         branches.push({
           start: startPt, end: endPt,
           r0: bR, r1: tR,
@@ -4202,6 +4276,7 @@ function generateAcantharianStructure(s) {
         if (childMul > childCap) childMul = childCap;
         if (childMul > 0.05) emitOne(endPt, childMul, depth + 1);
       }
+      spineIndex++;
     }
   }
 
@@ -5589,6 +5664,7 @@ const bindings = {
   acanJitter:     bindSlider('acanJitter',     'acanJitter',     v => v.toFixed(2)),
   acanCurl:       bindSlider('acanCurl',       'acanCurl',       v => v.toFixed(2)),
   acanTipSplit:   bindSelect('acanTipSplit',   'acanTipSplit'),
+  acanTwist:      bindSlider('acanTwist',      'acanTwist',      v => v.toFixed(2)),
   // Recursive acantharian (chunk 2D, v1.31.4):
   acanRecurDepth:     bindSlider('acanRecurDepth',     'acanRecurDepth',     v => v),
   acanRecurScale:     bindSlider('acanRecurScale',     'acanRecurScale',     v => v.toFixed(2)),
@@ -5814,6 +5890,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.5', date: '2026-05-02', n: 'Acantharian density + cinnamon-twist: default spine count 18 → 24, length-jitter floor at 40% so high-jitter spines never disappear, new acanTwist parameter replacing straight spines with golden-angle-phased helical chains so neighbouring spines interleave near the body. Codec slot 63.' },
   { v: 'v1.32.4', date: '2026-05-02', n: 'Foraminiferan 3D unwinding: spiral now grows asymmetrically (foramAspect ratios X vs Z) and the spiral plane gradually rotates over its length (foramTilt) — true 3D corkscrew rather than a flat planar coil. Codec slots 61-62.' },
   { v: 'v1.32.3', date: '2026-05-02', n: 'Acantharian variability bumps: parent spines now show real per-spine length variation by default (jitter 0.2→0.5, max 1→1.5); recursive children use multiplicative size jitter (pow(3, ±N)) for true small/medium/large spread instead of tight cluster. Capped at 0.9× parent so children never rival the main creature.' },
   { v: 'v1.32.2', date: '2026-05-02', n: 'Foraminiferan polish (chunk 4C): chamber bulges (cos²-modulated tube radius) + outer-half radial spines. Codec slots 58-60. Four-creature plan complete (Radiolarian, Acantharian, Coralline, Foraminiferan).' },
