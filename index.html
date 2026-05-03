@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.16</span>
+        <span id="version">v1.32.17</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.16";
+const VERSION = "v1.32.17";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4396,25 +4396,21 @@ function generateAcantharianStructure(s) {
           const ampTwist = ampBase * Math.sin(t * Math.PI);
           const twistDX = Math.cos(ph) * ampTwist;
           const twistDY = Math.sin(ph) * ampTwist;
-          // Wind-bend contribution (v1.32.14) — primary sin(πt) arc
-          // (peak at midspan, zero at base/tip) plus a secondary 2×
-          // harmonic with a per-spine phase offset for a slight
-          // S-shape. Coefficient bumped 0.50 → 0.65; secondary
-          // amplitude 0.35 → 0.50 so the curve reads as a flowing
-          // jelly tentacle rather than a clean parabola.
-          //
-          // Inverse-sqrt(sizeMul) boost so child creatures get
-          // proportionally MORE bend per unit length than the parent.
-          // Without this, children's short spines have visually
-          // negligible bend (simulation showed avg 0.5 mm vs parent's
-          // 3.2 mm). With it, a child at sizeMul=0.30 gets 1.83× the
-          // amplitude scale so its spines mirror the parent's
-          // wavy character.
+          // Wind-bend contribution (v1.32.14, dampened in v1.32.17).
+          // Primary sin(πt) arc + secondary 2× harmonic at per-spine
+          // phase for a slight S-shape. Coefficient 0.50 (was 0.65)
+          // and HALF-strength size boost: at sizeMul=0.30 the boost
+          // is now 1.42× rather than 1.83×, capping child bend ratio
+          // at ~37% of spine length instead of ~62%. Higher amplitudes
+          // were swamping the radial direction — child spines all
+          // appeared to bend in the same world-wind direction instead
+          // of fanning out from the child's center.
           const harmonicPhase = spineIndex * 1.7321;  // √3, irrational
           const bendStrength = Math.sin(t * Math.PI)
                              + 0.50 * Math.sin(t * Math.PI * 2 + harmonicPhase);
-          const sizeBoost = 1 / Math.sqrt(Math.max(0.05, sizeMul));
-          const bendOffset = thisLen * 0.65 * bendMag * bendStrength * sizeBoost;
+          const rawSizeBoost = 1 / Math.sqrt(Math.max(0.05, sizeMul));
+          const sizeBoost = 1 + (rawSizeBoost - 1) * 0.5;
+          const bendOffset = thisLen * 0.50 * bendMag * bendStrength * sizeBoost;
           const bendDX = bendCosP * bendOffset;
           const bendDY = bendSinP * bendOffset;
           wp.push(startPt.clone().lerp(endPt, t)
@@ -6538,6 +6534,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.17', date: '2026-05-03', n: 'Acantharian child bend dampened: at sizeMul=0.30 the wind-bend amplitude could reach ~62% of spine length, which combined with the globally-coherent wind direction was making child spines all sweep in one world-direction instead of fanning out from the child\'s own center. Coefficient 0.65 → 0.50 and size-boost halved (1 + (1/√sizeMul − 1)·0.5, so a sizeMul=0.30 child now gets 1.42× boost not 1.83×). Child max bend ratio drops from ~62% to ~37% so the radial direction dominates visually while children still mirror the parent\'s flowing-tentacle character. Parent slightly more contained too (max 19.9 → 11.1 mm, avg 4.7 → 4.0 mm) — still visibly wavy, no extreme outliers.' },
   { v: 'v1.32.16', date: '2026-05-03', n: 'Acantharian debug toggle: ACAN_DEBUG_SINGLE_CHILD_ONLY top-level constant. When true (current state), only the first parent spine emits a child at its tip — the rest of the parent spines are bare. Lets us iterate on child morphology without visual clutter; flip the constant back to false to restore full recursion once the child logic is dialed in.' },
   { v: 'v1.32.15', date: '2026-05-03', n: 'Default creature type changed from Radiolarian to Acantharian — fresh page loads now show the Acantharian immediately so iteration on it is faster.' },
   { v: 'v1.32.14', date: '2026-05-03', n: 'Acantharian deep-simulation diagnosis: harness measured parent spines at avg 3.2 mm perp deviation but children at 0.5 mm — 6× less wavy in absolute terms, even though the ratio per-unit-length was similar. Children\'s spines are simply too short for the proportional bend amplitude to read visually. Three fixes: (1) Inverse-sqrt(sizeMul) boost on bendOffset so smaller children get proportionally MORE perpendicular bend per unit length than the parent (a sizeMul=0.30 child gets 1.83× the amplitude scale). Re-run shows child waviness 0.48 → 1.69 mm with the same spine length, so children now visibly mirror the parent\'s flowing-jelly character. (2) Bend amplitude coefficient bumped 0.50 → 0.65; secondary 2× harmonic 0.35 → 0.50 — parent\'s avg perp 3.2 → 4.7 mm, max 8.7 → 19.9 mm, 17% → 34% have >5 mm bend. (3) Length jitter formula switched from additive (1+(rng-0.5)·jitter, ±25% range at default) to log-uniform (exp((rng-0.5)·jitter·2.5), ≈ 0.54×–1.87× range at default). Some parent spines are now dramatically longer than others — the "much more length variability" the user wanted, with no spine count change.' },
