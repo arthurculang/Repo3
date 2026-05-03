@@ -805,7 +805,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.31.2</span>
+        <span id="version">v1.31.3</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -857,7 +857,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.31.2";
+const VERSION = "v1.31.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -3337,8 +3337,15 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   // RNG, deterministic per state.seed) and passed to every retry. They
   // sit in the same post-carve slot as auto-repair bridges so they
   // survive any neg-space tunnels.
+  // Radiolarian-only: inner links are meandering capsules between
+  // random branch tips. They make morphological sense for radiolarian
+  // (decorative/structural lattice) but produce alien-looking snakes
+  // crossing through Acantharian spines or Coralline branches. Empty
+  // array for non-radiolarian creatures (v1.31.3).
   const linkRng = mulberry32((s.seed >>> 0) ^ 0x4e54c0de);
-  const innerLinks = generateInnerLinks(branches, s, linkRng);
+  const innerLinks = s.creatureType === 'radiolarian'
+    ? generateInnerLinks(branches, s, linkRng)
+    : [];
   const bridgeRng = mulberry32((s.seed >>> 0) ^ 0x9d7e2c8a);
   const snakeRng  = mulberry32((s.seed >>> 0) ^ 0x5c69e3a1);
   const bridges = [];
@@ -5456,6 +5463,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.31.3', date: '2026-05-02', n: 'Inner links are now Radiolarian-only — Acantharian and Coralline no longer get the meandering snake-vein capsules connecting random branch tips. Other creatures kept the radiolarian-specific lattice geometry.' },
   { v: 'v1.31.2', date: '2026-05-02', n: 'Coralline polish (chunk 3C): length/radius decay knobs, asymmetry, branch curl. Codec slots 45-48. Three-creature plan complete (Radiolarian, Acantharian, Coralline).' },
   { v: 'v1.31.1', date: '2026-05-02', n: 'Coralline UI controls (chunk 3B): trunk length/radius, tip radius, max depth, branches/node, branch angle, vertical bias. Codec slots 38-44.' },
   { v: 'v1.31.0', date: '2026-05-02', n: 'New creature: Coralline (chunk 3A). Recursive branching tree with vertical bias — asymmetric dendritic growth, no rings, no fusion. Hardcoded defaults; per-creature controls land in chunk 3B.' },
