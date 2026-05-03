@@ -665,8 +665,9 @@
         <input type="range" id="acanSpineTipR" min="0.1" max="2" step="0.05" value="0.4">
       </div>
       <div class="ctrl" data-creature-section="acantharian">
-        <label>Length jitter <span class="val" id="acanJitterVal">0.20</span></label>
-        <input type="range" id="acanJitter" min="0" max="1" step="0.05" value="0.2">
+        <label>Length jitter <span class="val" id="acanJitterVal">0.50</span></label>
+        <input type="range" id="acanJitter" min="0" max="1.5" step="0.05" value="0.5">
+        <div class="ctrl-note">Per-spine length variation. 0 = all spines identical; 1.5 = some very short, some very long.</div>
       </div>
       <div class="ctrl" data-creature-section="acantharian">
         <label>Spine curl <span class="val" id="acanCurlVal">0.00</span></label>
@@ -690,8 +691,9 @@
         <input type="range" id="acanRecurScale" min="0.15" max="0.50" step="0.01" value="0.30">
       </div>
       <div class="ctrl" data-creature-section="acantharian">
-        <label>Recursion variation <span class="val" id="acanRecurVariationVal">0.20</span></label>
-        <input type="range" id="acanRecurVariation" min="0" max="0.5" step="0.05" value="0.2">
+        <label>Recursion variation <span class="val" id="acanRecurVariationVal">0.60</span></label>
+        <input type="range" id="acanRecurVariation" min="0" max="1" step="0.05" value="0.6">
+        <div class="ctrl-note">Per-child size variability (multiplicative). 0 = identical clones; 1 = wide small/medium/large mix.</div>
       </div>
 
       <div class="section-header" data-creature-section="foraminiferan">Foraminiferan morphology</div>
@@ -862,7 +864,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.2</span>
+        <span id="version">v1.32.3</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -914,7 +916,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.2";
+const VERSION = "v1.32.3";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -970,7 +972,9 @@ const DEFAULTS = {
   acanSpineLen: 30,      // 10..60  spine length beyond the sphere (mm)
   acanSpineBaseR: 1.2,   // 0.5..3  spine base radius (mm)
   acanSpineTipR: 0.4,    // 0.1..2  spine tip radius (mm) — must be ≤ baseR
-  acanJitter: 0.2,       // 0..1    fractional per-spine length jitter for organic asymmetry
+  acanJitter: 0.5,       // 0..1.5  per-spine length jitter for organic asymmetry. At 0.5
+                          //         spines vary ±25%; at 1.0 ±50%; at 1.5 ±75% (some very
+                          //         short, some very long). Default raised in v1.32.3.
   acanCurl: 0,           // 0..1    spine arc — 0 straight, 1 strong curve. Each spine gets a
                          //         seeded perpendicular bend at midspan; 3 capsules per spine.
   acanTipSplit: 'none',  // 'none' | 'fork' | 'cluster' — optional tip branching:
@@ -986,9 +990,13 @@ const DEFAULTS = {
                           //           18 spines is ~6500 capsules, pipeline-OK but heavy.
   acanRecurScale: 0.30,  // 0.15..0.5 each child is N× the parent's size (sphere + spine
                           //           length both scale linearly).
-  acanRecurVariation: 0.2, // 0..0.5  per-child random scale jitter so children aren't
-                          //           uniform; 0 → all children identical, 0.5 → ±25%
-                          //           variance from the base scale.
+  acanRecurVariation: 0.6, // 0..1     multiplicative size jitter per child. 0 → all
+                          //           identical clones, 1 → wide range from very small
+                          //           to nearly-as-large-as-parent. Uses pow(3, (rng×2-1)×N)
+                          //           so children sample log-uniformly between 1/3× and
+                          //           3× the base scale. Capped at 0.9× parent size so
+                          //           children never read as siblings of the main creature.
+                          //           Default raised + range widened in v1.32.3.
   // Foraminiferan-specific controls (chunk 4B, v1.32.1):
   foramTurns: 2.5,         // 1..5      total spiral rotations
   foramGrowth: 0.10,       // 0.04..0.30 exponential growth rate per radian.
@@ -1443,7 +1451,7 @@ function parseParamSlots(slots) {
   const acanSpineLenV   = slots.length > 32 ? clamp(parseInt(slots[32], 10) || 30, 10, 60)        : 30;
   const acanSpineBaseRV = slots.length > 33 ? clamp(parseFloat(slots[33]) || 1.2, 0.5, 3)         : 1.2;
   const acanSpineTipRV  = slots.length > 34 ? clamp(parseFloat(slots[34]) || 0.4, 0.1, 2)         : 0.4;
-  const acanJitterV     = slots.length > 35 ? clamp(parseFloat(slots[35]) || 0.2, 0, 1)           : 0.2;
+  const acanJitterV     = slots.length > 35 ? clamp(parseFloat(slots[35]) || 0.5, 0, 1.5)         : 0.5;
   const acanCurlV       = slots.length > 36 ? clamp(parseFloat(slots[36]) || 0, 0, 1)              : 0;
   const acanTipSplitIdx = slots.length > 37 ? clamp(parseInt(slots[37], 10) || 0, 0, ACAN_TIPSPLIT_KEYS.length - 1) : 0;
   // Coralline-specific: new in v1.31.1 (chunk 3B). Defaults match the
@@ -1464,7 +1472,7 @@ function parseParamSlots(slots) {
   // identical when reloaded.
   const acanRecurDepthV     = slots.length > 49 ? clamp(parseInt(slots[49], 10) || 1, 1, 3)            : 1;
   const acanRecurScaleV     = slots.length > 50 ? clamp(parseFloat(slots[50]) || 0.30, 0.15, 0.50)     : 0.30;
-  const acanRecurVariationV = slots.length > 51 ? clamp(parseFloat(slots[51]) || 0.20, 0, 0.5)         : 0.20;
+  const acanRecurVariationV = slots.length > 51 ? clamp(parseFloat(slots[51]) || 0.60, 0, 1)            : 0.60;
   // Foraminiferan-specific: new in v1.32.1 (chunk 4B). Defaults match
   // chunk-4A hardcoded values so a saved Foraminiferan without these
   // slots renders identically when reloaded.
@@ -4145,9 +4153,18 @@ function generateAcantharianStructure(s) {
       }
 
       // Recurse — place a smaller acantharian at the spine tip with
-      // per-child random scale jitter. Skipped at the deepest level.
+      // per-child multiplicative size jitter. v1.32.3 changed the
+      // formula from linear additive ((1 + ±recurVariation)) to log-
+      // uniform multiplicative (pow(3, ±recurVariation)) so a single
+      // generation can produce children spanning a much wider size
+      // range — true small/medium/large mix instead of a tight cluster
+      // around the base scale. Capped at 0.9× the parent so children
+      // can never rival the parent visually.
       if (depth < recurDepth - 1) {
-        const childMul = sizeMul * recurScale * (1 + (rng() - 0.5) * recurVariation * 2);
+        const variationFactor = Math.pow(3, (rng() * 2 - 1) * recurVariation);
+        let childMul = sizeMul * recurScale * variationFactor;
+        const childCap = sizeMul * 0.9;
+        if (childMul > childCap) childMul = childCap;
         if (childMul > 0.05) emitOne(endPt, childMul, depth + 1);
       }
     }
@@ -5742,6 +5759,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.3', date: '2026-05-02', n: 'Acantharian variability bumps: parent spines now show real per-spine length variation by default (jitter 0.2→0.5, max 1→1.5); recursive children use multiplicative size jitter (pow(3, ±N)) for true small/medium/large spread instead of tight cluster. Capped at 0.9× parent so children never rival the main creature.' },
   { v: 'v1.32.2', date: '2026-05-02', n: 'Foraminiferan polish (chunk 4C): chamber bulges (cos²-modulated tube radius) + outer-half radial spines. Codec slots 58-60. Four-creature plan complete (Radiolarian, Acantharian, Coralline, Foraminiferan).' },
   { v: 'v1.32.1', date: '2026-05-02', n: 'Foraminiferan UI controls (chunk 4B): turns, growth rate, tube start/end, pitch, starting radius. Codec slots 52-57.' },
   { v: 'v1.32.0', date: '2026-05-02', n: 'New creature: Foraminiferan (chunk 4A). 3D logarithmic spiral tube growing exponentially outward — nautilus / ammonite morphology. Hardcoded defaults; per-creature controls land in chunk 4B.' },
