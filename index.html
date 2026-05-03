@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.28</span>
+        <span id="version">v1.32.29</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.28";
+const VERSION = "v1.32.29";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4451,20 +4451,21 @@ function generateAcantharianStructure(s) {
   // spines, with a non-zero salt for subtle wind/phase variation.
   //
   // Center is offset OUTWARD along the parent spine direction by
-  // EXACTLY childSR so the child sphere sits with its bottom touching
-  // parent.tip. Simulation showed that with the previous 0.7× offset,
-  // the parent spine pokes 0.72 mm INTO the child sphere — and
-  // child spines pointing back toward the parent then start INSIDE
-  // the parent spine's geometry, getting absorbed via smooth-min.
-  // With 1.0× the child sphere bottom is exactly at parent.tip;
-  // every child spine starts in free space and stays visible, no
-  // matter how parallel to the parent spine its direction is.
+  // 0.7 × childSR (v1.32.29). Parent spine pokes into the child
+  // sphere by 30% of its radius so smooth-min has enough overlap
+  // to fuse them into a visible connected joint. (At 1.0× the
+  // child sphere only touches parent.tip at a single point — no
+  // overlap meant no visible smooth-min fillet, so the child read
+  // as floating off the parent spine.) Back-facing child spines
+  // that run collinear with the parent spine WILL get absorbed
+  // here, but we'll handle that later when we add the bend back —
+  // a slight bend will route them clear of the parent path.
   //
   // recurDepth ≥ 2 gates child emission; ACAN_DEBUG_SINGLE_CHILD_ONLY
   // limits to a single child at parent's first spine tip for visual
   // iteration. Flip it off to populate every parent spine tip.
   const CHILD_THICKNESS_MUL = 0.7;
-  const CHILD_OFFSET_MUL    = 1.0;
+  const CHILD_OFFSET_MUL    = 0.7;
   if (!ACAN_DEBUG_NO_CHILDREN && recurDepth >= 2 && parentSpines.length > 0) {
     // Helper: emit just a child's body sphere (degenerate capsule)
     // at the tip of a parent spine. Center is offset along the
@@ -6569,6 +6570,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.29', date: '2026-05-03', n: 'Acantharian child rebuild step 4 — child node now visibly connected to the parent spine. Reduced CHILD_OFFSET_MUL from 1.0 to 0.7 so the parent spine pokes 30% of childSR into the child sphere; smooth-min has enough overlap to fuse them into a visible joint instead of leaving a single-point tangent. Back-facing child spines that run collinear with parent will get absorbed for now — we\'ll add a slight bend later to route them clear.' },
   { v: 'v1.32.28', date: '2026-05-03', n: 'Acantharian child rebuild step 3 — replaced surface bumps with full straight spines emerging along each seashell direction. Each spine is a single tapered capsule from sR×0.85 outward to sR + childSpineLen. Lengths and radii scale with childSR/sphereRadius (so child spine length 15 mm at debug-oversized 50% node, baseR 0.6 mm, tipR 0.2 mm). No length jitter, no bend, no twist — confirming direction first; will add variability back once the radial pattern looks right.' },
   { v: 'v1.32.27', date: '2026-05-03', n: 'Acantharian child rebuild step 2 — added 36 spiral bumps along the child node surface, marking where spines will eventually emerge. Same seashellSpiralDirections + same phaseOffset as the parent so the spiral pattern matches. Each bump is a degenerate sphere at radius = baseR × 0.5 (0.6 mm), centered on the child sphere surface so it reads as a small swelling along the spiral line.' },
   { v: 'v1.32.26', date: '2026-05-03', n: 'Acantharian child node bumped to 50% of parent (4 mm at sphereRadius=8). At 25% the small ball was getting subsumed into the parent spine\'s tip taper via smooth-min.' },
