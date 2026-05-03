@@ -710,6 +710,22 @@
         <label>Vertical bias <span class="val" id="corVerticalBiasVal">0.45</span></label>
         <input type="range" id="corVerticalBias" min="0" max="1" step="0.05" value="0.45">
       </div>
+      <div class="ctrl" data-creature-section="coralline">
+        <label>Length decay <span class="val" id="corLengthDecayVal">0.72</span></label>
+        <input type="range" id="corLengthDecay" min="0.5" max="0.9" step="0.01" value="0.72">
+      </div>
+      <div class="ctrl" data-creature-section="coralline">
+        <label>Radius decay <span class="val" id="corRadiusDecayVal">0.60</span></label>
+        <input type="range" id="corRadiusDecay" min="0.4" max="0.85" step="0.01" value="0.60">
+      </div>
+      <div class="ctrl" data-creature-section="coralline">
+        <label>Asymmetry <span class="val" id="corAsymmetryVal">0.30</span></label>
+        <input type="range" id="corAsymmetry" min="0" max="1" step="0.05" value="0.3">
+      </div>
+      <div class="ctrl" data-creature-section="coralline">
+        <label>Branch curl <span class="val" id="corCurlVal">0.00</span></label>
+        <input type="range" id="corCurl" min="0" max="1" step="0.05" value="0">
+      </div>
 
       <div class="section-header" data-creature-section="radiolarian">Radiolarian morphology</div>
 
@@ -789,7 +805,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.31.1</span>
+        <span id="version">v1.31.2</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -841,7 +857,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.31.1";
+const VERSION = "v1.31.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -911,6 +927,12 @@ const DEFAULTS = {
   corBranchesPerNode: 3, // 2..5     splits per node
   corBranchAngle: 35,    // 10..70   degrees from parent direction
   corVerticalBias: 0.45, // 0..1     fraction of upward (+Y) blend per child
+  // Coralline polish (chunk 3C, v1.31.2):
+  corLengthDecay: 0.72,  // 0.5..0.9 child branch length scale per recursion level
+  corRadiusDecay: 0.60,  // 0.4..0.85 child branch radius scale per recursion level
+  corAsymmetry: 0.3,     // 0..1     per-branch length/angle jitter for organic asymmetry
+  corCurl: 0,            // 0..1     branch arc — 0 straight, 1 strong curve. Each non-trunk branch
+                          //          gets a seeded perpendicular bend at midspan; 3 capsules per branch.
   seed: 1,
   complexity: 4,
   branchCount: 3,
@@ -1214,6 +1236,12 @@ function paramFields(s) {
     s.corBranchesPerNode | 0,
     s.corBranchAngle | 0,
     s.corVerticalBias.toFixed(2),
+    // ↓ added in v1.31.2 (chunk 3C). Defaults preserve chunk-3B
+    // straight-branch-no-asymmetry look for older saved configs.
+    s.corLengthDecay.toFixed(2),
+    s.corRadiusDecay.toFixed(2),
+    s.corAsymmetry.toFixed(2),
+    s.corCurl.toFixed(2),
   ];
 }
 
@@ -1318,6 +1346,10 @@ function parseParamSlots(slots) {
   const corBranchesPerNodeV = slots.length > 42 ? clamp(parseInt(slots[42], 10) || 3, 2, 5)            : 3;
   const corBranchAngleV     = slots.length > 43 ? clamp(parseInt(slots[43], 10) || 35, 10, 70)         : 35;
   const corVerticalBiasV    = slots.length > 44 ? clamp(parseFloat(slots[44]) || 0.45, 0, 1)           : 0.45;
+  const corLengthDecayV     = slots.length > 45 ? clamp(parseFloat(slots[45]) || 0.72, 0.5, 0.9)       : 0.72;
+  const corRadiusDecayV     = slots.length > 46 ? clamp(parseFloat(slots[46]) || 0.60, 0.4, 0.85)      : 0.60;
+  const corAsymmetryV       = slots.length > 47 ? clamp(parseFloat(slots[47]) || 0.30, 0, 1)           : 0.30;
+  const corCurlV            = slots.length > 48 ? clamp(parseFloat(slots[48]) || 0, 0, 1)              : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1364,6 +1396,10 @@ function parseParamSlots(slots) {
     corBranchesPerNode: corBranchesPerNodeV,
     corBranchAngle:     corBranchAngleV,
     corVerticalBias:    corVerticalBiasV,
+    corLengthDecay:     corLengthDecayV,
+    corRadiusDecay:     corRadiusDecayV,
+    corAsymmetry:       corAsymmetryV,
+    corCurl:            corCurlV,
   };
 }
 
@@ -3992,7 +4028,7 @@ function generateCorallineStructure(s) {
   const accents = [];
   const rng = mulberry32(s.seed);
 
-  // User-tunable controls (v1.31.1).
+  // User-tunable controls (v1.31.1 + chunk 3C v1.31.2).
   const trunkLen        = s.corTrunkLen        ?? 18;
   const trunkR          = s.corTrunkR          ?? 3.0;
   const tipR            = s.corTipR            ?? 0.5;
@@ -4000,8 +4036,10 @@ function generateCorallineStructure(s) {
   const branchesPerNode = s.corBranchesPerNode ?? 3;
   const branchAngle     = s.corBranchAngle     ?? 35;
   const verticalBias    = s.corVerticalBias    ?? 0.45;
-  const lengthDecay     = 0.72;    // not user-exposed yet — chunk 3C
-  const radiusDecay     = 0.60;    // not user-exposed yet — chunk 3C
+  const lengthDecay     = s.corLengthDecay     ?? 0.72;
+  const radiusDecay     = s.corRadiusDecay     ?? 0.60;
+  const asymmetry       = s.corAsymmetry       ?? 0.3;
+  const curl            = s.corCurl            ?? 0;
 
   // Trunk: vertical capsule from origin going up.
   const trunkStart = new THREE.Vector3(0, -trunkLen * 0.5, 0);
@@ -4018,7 +4056,7 @@ function generateCorallineStructure(s) {
   // given parent endpoint, then recurses on each child.
   function grow(parentEnd, parentDir, parentLen, parentR, depth) {
     if (depth >= maxDepth) return;
-    const childLen = parentLen * lengthDecay;
+    const baseChildLen = parentLen * lengthDecay;
     const childR0  = parentR * radiusDecay;
     const childR1  = Math.max(tipR, childR0 * radiusDecay);
     const angleRad = branchAngle * Math.PI / 180;
@@ -4029,10 +4067,16 @@ function generateCorallineStructure(s) {
     const perp2 = new THREE.Vector3().crossVectors(parentDir, perp1).normalize();
     const phaseShift = rng() * Math.PI * 2;
     for (let i = 0; i < branchesPerNode; i++) {
-      const aroundAngle = phaseShift + (i / branchesPerNode) * Math.PI * 2 + (rng() - 0.5) * 0.6;
-      // Angular jitter on the cone half-angle so each branch isn't
-      // perfectly conical — gives organic asymmetry.
-      const coneAngle = angleRad * (0.7 + rng() * 0.6);
+      // Asymmetry jitter on the around-angle, length, and cone angle.
+      // asymmetry=0 produces a near-perfect cone; asymmetry=1 widely
+      // varied per-branch.
+      const aroundAngle = phaseShift
+        + (i / branchesPerNode) * Math.PI * 2
+        + (rng() - 0.5) * 0.6 * (0.5 + asymmetry);
+      const coneAngle = angleRad * (1 + (rng() - 0.5) * 0.4 * (0.5 + asymmetry));
+      const lenJitter = 1 + (rng() - 0.5) * asymmetry;
+      const childLen = baseChildLen * Math.max(0.4, lenJitter);
+
       const lateral = new THREE.Vector3()
         .addScaledVector(perp1, Math.cos(aroundAngle) * Math.sin(coneAngle))
         .addScaledVector(perp2, Math.sin(aroundAngle) * Math.sin(coneAngle));
@@ -4041,18 +4085,44 @@ function generateCorallineStructure(s) {
         .copy(parentDir).multiplyScalar(Math.cos(coneAngle))
         .add(lateral)
         .normalize();
-      // Apply vertical bias by lerping the unit direction toward +Y.
       childDir.lerp(new THREE.Vector3(0, 1, 0), verticalBias).normalize();
 
       const childEnd = parentEnd.clone().addScaledVector(childDir, childLen);
-      branches.push({
-        start: parentEnd.clone(),
-        end: childEnd,
-        r0: childR0, r1: childR1,
-        depth, parent: 0,
-        tangent: childDir.clone(),
-        wobble: 0,
-      });
+
+      if (curl < 1e-3 || depth === 0) {
+        // Straight branch — single capsule. Trunk-level branches
+        // (depth=0) always stay straight to avoid a wobbly base.
+        branches.push({
+          start: parentEnd.clone(),
+          end: childEnd,
+          r0: childR0, r1: childR1,
+          depth, parent: 0,
+          tangent: childDir.clone(),
+          wobble: 0,
+        });
+      } else {
+        // Curved branch — 3 capsules with a perpendicular bend at
+        // midspan. Same approach as Acantharian curl.
+        if (Math.abs(childDir.y) < 0.9) {
+          perp1.crossVectors(childDir, new THREE.Vector3(0, 1, 0)).normalize();
+        } else {
+          perp1.crossVectors(childDir, new THREE.Vector3(1, 0, 0)).normalize();
+        }
+        perp2.crossVectors(childDir, perp1).normalize();
+        const bendAngle = rng() * Math.PI * 2;
+        const bendDir = new THREE.Vector3()
+          .addScaledVector(perp1, Math.cos(bendAngle))
+          .addScaledVector(perp2, Math.sin(bendAngle));
+        const bendMag = curl * childLen * 0.25;
+        const t1 = 1/3, t2 = 2/3;
+        const wp1 = parentEnd.clone().lerp(childEnd, t1).addScaledVector(bendDir, bendMag * 0.6);
+        const wp2 = parentEnd.clone().lerp(childEnd, t2).addScaledVector(bendDir, bendMag * 0.6);
+        const r1Mid = childR0 * (1 - t1) + childR1 * t1;
+        const r2Mid = childR0 * (1 - t2) + childR1 * t2;
+        branches.push({ start: parentEnd.clone(), end: wp1, r0: childR0, r1: r1Mid, depth, parent: 0, tangent: bendDir.clone(), wobble: 0 });
+        branches.push({ start: wp1, end: wp2, r0: r1Mid, r1: r2Mid, depth, parent: 0, tangent: bendDir.clone(), wobble: 0 });
+        branches.push({ start: wp2, end: childEnd, r0: r2Mid, r1: childR1, depth, parent: 0, tangent: bendDir.clone(), wobble: 0 });
+      }
       grow(childEnd, childDir, childLen, childR0, depth + 1);
     }
   }
@@ -5185,6 +5255,11 @@ const bindings = {
   corBranchesPerNode: bindSlider('corBranchesPerNode', 'corBranchesPerNode', v => v),
   corBranchAngle:     bindSlider('corBranchAngle',     'corBranchAngle',     v => v),
   corVerticalBias:    bindSlider('corVerticalBias',    'corVerticalBias',    v => v.toFixed(2)),
+  // Coralline polish (chunk 3C, v1.31.2):
+  corLengthDecay:     bindSlider('corLengthDecay',     'corLengthDecay',     v => v.toFixed(2)),
+  corRadiusDecay:     bindSlider('corRadiusDecay',     'corRadiusDecay',     v => v.toFixed(2)),
+  corAsymmetry:       bindSlider('corAsymmetry',       'corAsymmetry',       v => v.toFixed(2)),
+  corCurl:            bindSlider('corCurl',            'corCurl',            v => v.toFixed(2)),
 };
 
 function onSymChange() {
@@ -5381,6 +5456,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.31.2', date: '2026-05-02', n: 'Coralline polish (chunk 3C): length/radius decay knobs, asymmetry, branch curl. Codec slots 45-48. Three-creature plan complete (Radiolarian, Acantharian, Coralline).' },
   { v: 'v1.31.1', date: '2026-05-02', n: 'Coralline UI controls (chunk 3B): trunk length/radius, tip radius, max depth, branches/node, branch angle, vertical bias. Codec slots 38-44.' },
   { v: 'v1.31.0', date: '2026-05-02', n: 'New creature: Coralline (chunk 3A). Recursive branching tree with vertical bias — asymmetric dendritic growth, no rings, no fusion. Hardcoded defaults; per-creature controls land in chunk 3B.' },
   { v: 'v1.30.2', date: '2026-05-02', n: 'Acantharian polish (chunk 2C): spine curl (3-segment arc per spine) + tip branching (none/fork/cluster). Codec slots 36-37.' },
