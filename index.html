@@ -456,6 +456,7 @@
           <option value="radiolarian" selected>Radiolarian</option>
           <option value="acantharian">Acantharian</option>
           <option value="coralline">Coralline</option>
+          <option value="foraminiferan">Foraminiferan</option>
         </select>
         <div class="ctrl-note">Selects which morphology generator runs. Each type has its own dedicated controls below the universal section.</div>
       </div>
@@ -818,7 +819,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.31.4</span>
+        <span id="version">v1.32.0</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -870,7 +871,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.31.4";
+const VERSION = "v1.32.0";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1164,7 +1165,7 @@ const SUPPORTS_FAN_RADIUS   = { off: 0, sparse: 0.5, medium: 1.0, dense: 1.5 };
 // KEY arrays — chunks 2 and 3 will add 'acantharian' and 'coralline'
 // at indices 1 and 2 respectively. Codec stores the index (slot 29)
 // so older config strings without the slot decode to 'radiolarian'.
-const CREATURE_KEYS = ['radiolarian','acantharian','coralline'];
+const CREATURE_KEYS = ['radiolarian','acantharian','coralline','foraminiferan'];
 const ACAN_TIPSPLIT_KEYS = ['none','fork','cluster'];
 const ACAN_TIPSPLIT_COUNTS = { none: 0, fork: 2, cluster: 4 };
 
@@ -1804,8 +1805,9 @@ function fibonacciSphereDirections(n, phaseOffset) {
 // cleanup) is uniform across creature types.
 function generateStructure(s) {
   switch (s.creatureType) {
-    case 'acantharian': return generateAcantharianStructure(s);
-    case 'coralline':   return generateCorallineStructure(s);
+    case 'acantharian':   return generateAcantharianStructure(s);
+    case 'coralline':     return generateCorallineStructure(s);
+    case 'foraminiferan': return generateForaminiferanStructure(s);
     case 'radiolarian':
     default:
       return generateRadiolarianStructure(s);
@@ -4185,6 +4187,73 @@ function generateCorallineStructure(s) {
   return { branches, accents };
 }
 
+// ---------- Foraminiferan creature (chunk 4A, v1.32.0) ----------
+//
+// A 3D logarithmic spiral tube — one continuous winding capsule chain
+// that grows exponentially outward from a central point. The radial
+// distance from the spiral axis follows r(t) = r0·exp(k·t), giving the
+// natural shell-like proportions of nautilus, ammonite, and the
+// chambered foraminifera that inspired the name.
+//
+// At pitch=0, the spiral lies in a plane (snail / fern frond). At
+// pitch>0, it stretches axially into a 3D helix. Tube radius
+// interpolates linearly from start (innermost coil) to end (outermost
+// coil) — so the spiral typically reads as growing thicker as it
+// uncoils, mimicking biological growth.
+//
+// Returns the same { branches, accents } shape as the other generators
+// so the rest of the pipeline is uniform. Chunk 4B exposes user
+// controls; chunk 4C adds chamber bulges and optional radiating spines.
+function generateForaminiferanStructure(s) {
+  const branches = [];
+  const accents = [];
+
+  // Hardcoded chunk-4A defaults; chunk 4B exposes user controls.
+  const turns      = 2.5;       // total rotations
+  const growth     = 0.10;      // exponential growth rate per radian
+  const tubeStart  = 0.8;       // mm — tube radius at the inner end
+  const tubeEnd    = 4.0;       // mm — tube radius at the outer end
+  const pitch      = 0;         // mm per turn; 0 = flat planar spiral
+  const r0         = 3;         // mm — starting distance from axis
+  const samplesPerTurn = 24;    // angular sampling density
+
+  const totalAngle = turns * Math.PI * 2;
+  const totalSamples = Math.max(8, Math.round(turns * samplesPerTurn));
+
+  // Generate sample points along the spiral curve.
+  const points = [];
+  for (let i = 0; i <= totalSamples; i++) {
+    const t = (i / totalSamples) * totalAngle;
+    const r = r0 * Math.exp(growth * t);
+    const x = Math.cos(t) * r;
+    const z = Math.sin(t) * r;
+    const y = pitch * t / (Math.PI * 2);  // axial offset per turn
+    points.push(new THREE.Vector3(x, y, z));
+  }
+
+  // Connect consecutive sample points with capsules. Tube radius
+  // interpolates linearly from tubeStart at the inner end to tubeEnd
+  // at the outer end — straightforward but produces a natural-looking
+  // growth profile.
+  for (let i = 0; i < points.length - 1; i++) {
+    const t0 = i       / (points.length - 1);
+    const t1 = (i + 1) / (points.length - 1);
+    const r0_ = tubeStart * (1 - t0) + tubeEnd * t0;
+    const r1_ = tubeStart * (1 - t1) + tubeEnd * t1;
+    const tangent = new THREE.Vector3().subVectors(points[i+1], points[i]).normalize();
+    branches.push({
+      start: points[i].clone(),
+      end:   points[i+1].clone(),
+      r0: r0_, r1: r1_,
+      depth: 0, parent: null,
+      tangent,
+      wobble: 0,
+    });
+  }
+
+  return { branches, accents };
+}
+
 const _ringPerp = new THREE.Vector3(), _ringBi = new THREE.Vector3();
 function generateRings(branches, s, rng) {
   const rings = [];
@@ -4947,13 +5016,17 @@ function formatCost(mat, volumeMM3) {
 // mutate state.wall and have it reflected in the slider; in cast/solid
 // modes we return a shallow clone so overrides don't leak into user state.
 function effectiveState(s) {
-  // Negative-space tunnels (helix / colony) are radiolarian-specific
-  // morphology — they'd carve at random angles through Acantharian
-  // spines or Coralline branches and look terrible. Force negStyle
-  // off for any non-radiolarian creature regardless of bodyMode
-  // (v1.30.0). The user's negStyle preference is preserved on
-  // state.negStyle so switching back to Radiolarian restores it.
+  // Negative-space tunnels (helix / colony) and symmetry transforms
+  // are radiolarian-specific morphology. negStyle would carve random
+  // angles through Acantharian spines or Coralline branches; symmetry
+  // (default radial-5) would create overlapping copies of any non-
+  // radiolarian creature, which looks especially wrong on Foraminiferan
+  // spirals. Force both off for non-radiolarian creatures regardless
+  // of bodyMode (v1.30.0 negStyle, v1.32.0 sym). The user's preferences
+  // are preserved on state so switching back to Radiolarian restores
+  // them.
   const creatureNegStyle = s.creatureType === 'radiolarian' ? s.negStyle : 'none';
+  const creatureSym      = s.creatureType === 'radiolarian' ? s.sym      : 'none';
 
   // Hollow and Hollow + Fill both go through the full hollow pipeline
   // (shell + tunnels + bridges); the difference is only in the
@@ -4961,13 +5034,14 @@ function effectiveState(s) {
   // itself so the auto-fix loop can mutate state.wall and have it
   // reflected in the slider.
   if (s.bodyMode === 'hollow' || s.bodyMode === 'hollow-fill') {
-    if (creatureNegStyle === s.negStyle) return s;
-    return { ...s, negStyle: creatureNegStyle };
+    if (creatureNegStyle === s.negStyle && creatureSym === s.sym) return s;
+    return { ...s, negStyle: creatureNegStyle, sym: creatureSym };
   }
   return {
     ...s,
     wall: 0,
     negStyle: s.bodyMode === 'cast' ? 'none' : creatureNegStyle,
+    sym: creatureSym,
     // Preserve the user's slider wall value so the texture pass can
     // still cap coral pit depth uniformly across modes (v1.24.5).
     // Without this, cast/solid would see s.wall=0 and skip the cap,
@@ -5512,6 +5586,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.0', date: '2026-05-02', n: 'New creature: Foraminiferan (chunk 4A). 3D logarithmic spiral tube growing exponentially outward — nautilus / ammonite morphology. Hardcoded defaults; per-creature controls land in chunk 4B.' },
   { v: 'v1.31.4', date: '2026-05-02', n: 'Recursive Acantharian (chunk 2D): each spine tip can spawn a smaller acantharian, ranging in size. New depth/scale/variation controls; default depth 2 produces a main creature with a constellation of small ones at every tip.' },
   { v: 'v1.31.3', date: '2026-05-02', n: 'Inner links are now Radiolarian-only — Acantharian and Coralline no longer get the meandering snake-vein capsules connecting random branch tips. Other creatures kept the radiolarian-specific lattice geometry.' },
   { v: 'v1.31.2', date: '2026-05-02', n: 'Coralline polish (chunk 3C): length/radius decay knobs, asymmetry, branch curl. Codec slots 45-48. Three-creature plan complete (Radiolarian, Acantharian, Coralline).' },
