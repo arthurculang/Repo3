@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.20</span>
+        <span id="version">v1.32.21</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.20";
+const VERSION = "v1.32.21";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4442,28 +4442,30 @@ function generateAcantharianStructure(s) {
   // Build parent.
   const parentSpines = buildOneAcantharian(new THREE.Vector3(0, 0, 0), 1, 0);
 
-  // Build child(ren) (v1.32.18 / v1.32.19). The child is built by the
-  // SAME helper as the parent at reduced scale + thinner spines, with
-  // a non-zero salt for subtle wind/phase variation.
+  // Build child(ren) (v1.32.18 / v1.32.19 / v1.32.21). The child is
+  // built by the SAME helper as the parent at reduced scale + thinner
+  // spines, with a non-zero salt for subtle wind/phase variation.
   //
   // Center is offset OUTWARD along the parent spine direction by
-  // ≈ 0.7× child body radius so the parent spine connects to the
-  // child's "bottom pole" rather than burying itself inside the child's
-  // sphere. Without that offset, the half of the child's spines that
-  // point back toward the parent fuse into the parent spine via
-  // smooth-min and become visually invisible — making the child read
-  // as "all spines pointing away from parent." With the offset, every
-  // direction around the child is exposed.
+  // EXACTLY childSR so the child sphere sits with its bottom touching
+  // parent.tip. Simulation showed that with the previous 0.7× offset,
+  // the parent spine pokes 0.72 mm INTO the child sphere — and
+  // child spines pointing back toward the parent then start INSIDE
+  // the parent spine's geometry, getting absorbed via smooth-min.
+  // With 1.0× the child sphere bottom is exactly at parent.tip;
+  // every child spine starts in free space and stays visible, no
+  // matter how parallel to the parent spine its direction is.
   //
   // recurDepth ≥ 2 gates child emission; ACAN_DEBUG_SINGLE_CHILD_ONLY
   // limits to a single child at parent's first spine tip for visual
   // iteration. Flip it off to populate every parent spine tip.
   const CHILD_THICKNESS_MUL = 0.7;
+  const CHILD_OFFSET_MUL    = 1.0;
   if (recurDepth >= 2 && parentSpines.length > 0) {
     if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
       const ps = parentSpines[0];
       const childSR = sphereRadius * recurScale;
-      const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * 0.7);
+      const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
       buildOneAcantharian(childCenter, recurScale, 0x9E37, CHILD_THICKNESS_MUL);
     } else {
       for (let i = 0; i < parentSpines.length; i++) {
@@ -4472,7 +4474,7 @@ function generateAcantharianStructure(s) {
         const childScale = Math.min(0.9, recurScale * variation);
         if (childScale > 0.05) {
           const childSR = sphereRadius * childScale;
-          const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * 0.7);
+          const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
           buildOneAcantharian(childCenter, childScale, 0x9E37 + i * 0x1A85, CHILD_THICKNESS_MUL);
         }
       }
@@ -6504,6 +6506,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.21', date: '2026-05-03', n: 'Acantharian child geometry — child sphere offset 0.7×SR → 1.0×SR. Deep simulation showed: although the child math correctly placed 18/36 spines pointing toward the parent, those parent-facing spines started at base positions ~0.6 mm from the parent spine line, which is INSIDE the parent spine\'s ~0.4-0.8 mm radius near its tip. Smooth-min then absorbed the bases of every parent-facing spine into the parent spine, making the child read as "all spines pointing outward from parent." With offset 1.0×childSR, the child sphere bottom sits exactly at parent.tip; every child spine starts above parent.tip in free space, so spines pointing back toward the parent are fully visible (they just travel back down PAST the parent spine without overlapping it).' },
   { v: 'v1.32.20', date: '2026-05-03', n: 'Acantharian "sharp turn at 20%" fix: bend profile was sin(πt) + 0.50·sin(2πt+phase). At t=0 the first term is zero but the secondary is 0.50·sin(phase), which is non-zero for every spine after index 0 — so each spine emerged from the sphere surface with an immediate perpendicular offset, traversed the first 20% at an off-axis angle, then snapped toward the main bend direction at midspan. Visible as a sharp kink near the base of every child spine. Switched to multiplicative form sin(πt) · (1 + 0.40·sin(2πt+phase)) which is GUARANTEED zero at both endpoints, so every spine truly emerges from its Fibonacci point with zero offset and tapers cleanly back to the tip.' },
   { v: 'v1.32.19', date: '2026-05-03', n: 'Acantharian child visibility fix: previous version produced child with seashell axis aligned to world Y, so spines near the south pole ran parallel to the parent spine and got absorbed into it via smooth-min. Visually the child read as "all spines pointing outward from parent center" because half its spines were invisible. Three fixes: (1) child center is offset OUTWARD along the parent spine\'s direction by 0.7×childSR so the parent spine connects to the child near its bottom pole rather than burying inside it; (2) child\'s seashell directions are rotated by a salt-derived random quaternion so its polar axis lands at a random angle relative to the parent spine — spines closest to the parent are no longer parallel to it; (3) child spine thickness multiplier 0.7 so children read as a daintier version of the parent rather than the same thickness.' },
   { v: 'v1.32.18', date: '2026-05-03', n: 'Acantharian children rebuilt as literal smaller copies. The recursive emitOne pattern with depth-conditional logic was producing children that visually didn\'t match the parent. Refactored: a single buildOneAcantharian(center, scale, salt) helper now contains all per-creature logic. The salt seeds a per-creature wind direction, ripple axis, and seashell-spiral phase so a child has subtle variation rather than being a carbon copy. Children use the SAME seashell spiral (was Fibonacci) and SAME bend formula (sizeBoost dropped) as the parent — so a child has the same emergence pattern, same bend ratio, just at smaller scale. Simulation confirms: parent bend ratio 12.0%, child bend ratio 11.1% — virtually identical, child mean-vec-length 0.048 = same direction-coverage as parent.' },
