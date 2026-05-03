@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.25</span>
+        <span id="version">v1.32.26</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.25";
+const VERSION = "v1.32.26";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4478,7 +4478,7 @@ function generateAcantharianStructure(s) {
     // once the spines are reattached.
     const DEBUG_OVERSIZE_NODE = true;
     const emitChildNode = (ps, scale) => {
-      const childSR = DEBUG_OVERSIZE_NODE ? sphereRadius * 0.25 : sphereRadius * scale;
+      const childSR = DEBUG_OVERSIZE_NODE ? sphereRadius * 0.50 : sphereRadius * scale;
       const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
       branches.push({
         start: childCenter.clone(),
@@ -6542,6 +6542,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.26', date: '2026-05-03', n: 'Acantharian child node bumped to 50% of parent (4 mm at sphereRadius=8). At 25% the small ball was getting subsumed into the parent spine\'s tip taper via smooth-min.' },
   { v: 'v1.32.25', date: '2026-05-03', n: 'Acantharian child node dialed down — debug node now 25% of parent body sphere (2 mm at sphereRadius=8). Still hardcoded; will revert to recurScale-based sizing once spines reattach.' },
   { v: 'v1.32.24', date: '2026-05-03', n: 'Acantharian child node debug-oversized: child node radius is now forced equal to the parent body sphere (8 mm) so it\'s unmistakably visible at the parent\'s first spine tip while we confirm the placement. Local DEBUG_OVERSIZE_NODE constant — will revert to recurScale-based sizing once confirmed.' },
   { v: 'v1.32.23', date: '2026-05-03', n: 'Acantharian — start child rebuild from scratch. Added ACAN_DEBUG_CHILD_NODE_ONLY toggle (currently true) that emits just the child\'s body sphere at the parent\'s first spine tip — no child spines yet. NO_CHILDREN flag flipped back to false. Iterative rebuild: confirm the round node sits cleanly, then start adding spines back one feature at a time.' },
