@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.17</span>
+        <span id="version">v1.32.18</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.17";
+const VERSION = "v1.32.18";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4224,70 +4224,58 @@ function generateAcantharianStructure(s) {
   const accents = [];
   const rng = mulberry32(s.seed);
 
-  // User-tunable controls (v1.30.1 + v1.30.2 + v1.31.4 + v1.32.5).
   const spineCount   = s.acanSpines      || 24;
   const sphereRadius = s.acanSphereR     || 8;
   const spineLength  = s.acanSpineLen    || 30;
   const baseR        = s.acanSpineBaseR  || 1.2;
-  // Tip radius is clamped to ≤ base so spines never invert.
   const tipR         = Math.min(s.acanSpineTipR ?? 0.4, baseR);
   const jitter       = s.acanJitter      ?? 0.5;
   const curl         = s.acanCurl        ?? 0;
   const tipSplitN    = ACAN_TIPSPLIT_COUNTS[s.acanTipSplit] || 0;
   const twist        = s.acanTwist       ?? 0.4;
-  // Recursion (chunk 2D, v1.31.4):
   const recurDepth     = Math.max(1, s.acanRecurDepth ?? 1);
   const recurScale     = s.acanRecurScale ?? 0.30;
   const recurVariation = s.acanRecurVariation ?? 0.60;
-  // Floor for the per-spine length jitter so high jitter doesn't produce
-  // invisible-tiny stubs. 0.4 means no spine is ever shorter than 40% of
-  // the base length, regardless of jitter setting.
   const LEN_SCALE_FLOOR = 0.4;
 
-  // _temp vectors reused inside the per-spine loop.
   const tmp = new THREE.Vector3();
   const perp1 = new THREE.Vector3(), perp2 = new THREE.Vector3();
 
-  // Global wind direction + ripple axis (v1.32.12). All spines bend
-  // toward the projection of windDir into their local perpendicular
-  // plane, so the field of spines collectively leans in one direction
-  // like wheat. A sin-wave modulator across rippleAxis gives the
-  // wave-sweeping-across-the-field effect — bend magnitude varies
-  // smoothly over the body in spatially-coherent ripples instead of
-  // being randomly jittered per spine.
-  const windYaw   = (s.seed * 0.7853981633) % (Math.PI * 2);
-  const windPitch = Math.sin(s.seed * 0.0001) * 0.5;
-  const windDir = new THREE.Vector3(
-    Math.cos(windYaw) * Math.cos(windPitch),
-    Math.sin(windPitch),
-    Math.sin(windYaw) * Math.cos(windPitch)
-  ).normalize();
-  // Ripple axis perpendicular to wind; wave-phase = projection of d
-  // onto rippleAxis × frequency. Ripples sweep across the field
-  // perpendicular to the wind direction.
-  const rippleAxis = new THREE.Vector3()
-    .crossVectors(windDir, new THREE.Vector3(0, 1, 0));
-  if (rippleAxis.lengthSq() < 1e-6) rippleAxis.set(1, 0, 0);
-  rippleAxis.normalize();
-  const rippleFreq = 4;
+  // Build one acantharian creature (parent or child) at the given
+  // center and scale (v1.32.18). The salt parameter seeds a per-
+  // creature wind direction, ripple axis, and seashell-spiral phase
+  // — so a child reads as a similar-but-subtly-varied smaller copy of
+  // the parent rather than a carbon-copy clone. SAME bend ratio for
+  // all scales (no size-aware boost): a child is exactly a smaller
+  // version of the parent's morphology.
+  function buildOneAcantharian(center, scale, salt) {
+    const sR = sphereRadius * scale;
+    const sL = spineLength  * scale;
+    const bR = baseR        * scale;
+    const tR = tipR         * scale;
+    const isFullScale = scale >= 0.99;
+    const useCurl = isFullScale && curl > 1e-3;
+    const useTipSplit = isFullScale && tipSplitN > 0;
+    const useTwist = twist > 1e-3;
 
-  // Recursive emitter. depth=0 is the root acantharian; each level
-  // places child acantharians at every spine tip until depth reaches
-  // recurDepth - 1. Children inherit spineCount and jitter but skip
-  // curl + tip-split (those are kept top-level-only to control
-  // geometry growth — at depth 2 with 18 spines, a curled+tipsplit
-  // version of every child would multiply capsule count by ~7×).
-  function emitOne(center, sizeMul, depth) {
-    const sR = sphereRadius * sizeMul;
-    const sL = spineLength  * sizeMul;
-    const bR = baseR        * sizeMul;
-    const tR = tipR         * sizeMul;
-    const isTop = depth === 0;
-    const useCurl = isTop && curl > 1e-3;
-    const useTipSplit = isTop && tipSplitN > 0;
+    // Per-creature wind / ripple / phase derived from (s.seed + salt)
+    // so a child winds in a different direction than its parent —
+    // breaks carbon-copy uniformity without changing morphology rules.
+    const localSeed = (s.seed + salt) >>> 0;
+    const windYaw   = (localSeed * 0.7853981633) % (Math.PI * 2);
+    const windPitch = Math.sin(localSeed * 0.0001) * 0.5;
+    const windDir = new THREE.Vector3(
+      Math.cos(windYaw) * Math.cos(windPitch),
+      Math.sin(windPitch),
+      Math.sin(windYaw) * Math.cos(windPitch)
+    ).normalize();
+    const rippleAxis = new THREE.Vector3()
+      .crossVectors(windDir, new THREE.Vector3(0, 1, 0));
+    if (rippleAxis.lengthSq() < 1e-6) rippleAxis.set(1, 0, 0);
+    rippleAxis.normalize();
+    const rippleFreq = 4;
 
-    // Central sphere — degenerate capsule rendered as a fused ball at
-    // the emit center via the smooth-min union pipeline downstream.
+    // Body sphere — degenerate capsule fused into a ball downstream.
     branches.push({
       start: center.clone(),
       end:   center.clone().add(new THREE.Vector3(0, 0.01, 0)),
@@ -4297,83 +4285,32 @@ function generateAcantharianStructure(s) {
       wobble: 0,
     });
 
-    // Radiating spines (v1.32.10 / v1.32.11). Every level uses the
-    // smooth seashell spiral so adjacent-index spines are spatial
-    // neighbours and each creature — parent OR child — has a clearly
-    // readable spiral curve painted on its body sphere.
-    //
-    // Adding depth × 0.41 to the phase offset keeps every recursion
-    // level's spine distribution from aligning identically — children
-    // look organically rotated relative to their parent.
-    //
-    // Children use half the parent's spine count (v1.32.7) so the
-    // parent radial pattern visually dominates instead of being drowned
-    // in baby-noise. Floored at 6 so even very-small parent counts
-    // give plausible babies.
-    const phaseOffset = ((s.seed >>> 0) * 1e-7 + depth * 0.41) % (Math.PI * 2);
-    // Children inherit the parent's full spine count (v1.32.12) so
-    // every level has the same emergence-curve density on its sphere.
-    const localSpineCount = spineCount;
-    // Top-level uses the smooth seashell spiral so the eye traces a
-    // clear curve painted on the body. Children use Fibonacci so
-    // their spines radiate in ALL directions (golden-angle azimuthal
-    // jumps cover the whole sphere uniformly) — the user wants
-    // children to look like little pincushions of jelly-tentacles
-    // pointing every which way, not pole-to-pole spirals (v1.32.13).
-    const dirs = depth === 0
-      ? seashellSpiralDirections(localSpineCount, s.acanSpiralTurns ?? 3, phaseOffset)
-      : fibonacciSphereDirections(localSpineCount, phaseOffset);
+    // Same seashell spiral on every creature — so each acantharian,
+    // regardless of size, has a clearly-readable spiral curve painted
+    // on its body sphere.
+    const phaseOffset = (localSeed * 1e-7) % (Math.PI * 2);
+    const dirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, phaseOffset);
 
+    const tipPositions = [];
     let spineIndex = 0;
     for (const d of dirs) {
-      // Log-uniform length jitter (v1.32.14) — much wider range than the
-      // old additive 1 + (rng-0.5)·jitter formula. With jitter=0.5
-      // (default) spines now span ≈ 0.54×–1.87× base length; with
-      // jitter=1.0 they span ≈ 0.29×–3.49× — some spines are dramatically
-      // longer than others, which is the "much more length variability"
-      // the user wanted on the parent.
       const lenScale = Math.max(LEN_SCALE_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
       const thisLen = sL * lenScale;
       const startPt = center.clone().addScaledVector(d, sR * 0.85);
       const endPt   = center.clone().addScaledVector(d, sR + thisLen);
-
-      // Twist mode (v1.32.5; expanded to all depths in v1.32.12) —
-      // replaces a straight or curled spine with a 5-segment helical
-      // chain. Per-spine golden-angle phase offset means adjacent
-      // seashell-spiral directions twist out of phase, so where they
-      // bunch near the base they spatially interleave like cinnamon-
-      // twist strands. Now active for children too (was top-level only)
-      // so children's spines wave like the parent's.
-      const useTwist = twist > 1e-3;
+      tipPositions.push(endPt.clone());
 
       if (useTwist) {
-        // 7 segments (was 5) — more sample points along the spine so
-        // the multi-frequency wave reads as a smooth flowing curve,
-        // not a coarse polyline.
         const N = 7;
-        // Stable perpendicular axes to the spine direction for the helix.
         tmp.set(d.x, d.y, d.z);
         if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
         else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
         perp2.crossVectors(tmp, perp1).normalize();
-        // Golden-angle (≈ 137.5°) phase offset per spine — irrational,
-        // so adjacent spines never align in phase regardless of count.
         const phase0 = spineIndex * 2.39996323;
-        // 1.5 helical wavelengths along the spine — visible twist
-        // without becoming a chaotic spring.
         const turnsAlongSpine = 1.5;
-        // Amplitude proportional to base-radius × twist control. Decays
-        // linearly to zero at the tip so spine pointiness is preserved.
         const ampBase = bR * 1.6 * twist;
 
-        // Wheat-in-wind bend (v1.32.12). Bend direction is the
-        // projection of the global windDir into this spine's local
-        // (perp1, perp2) basis — so every spine on the creature leans
-        // toward the same world direction. Bend magnitude scales with
-        // how perpendicular the spine is to the wind (spines pointing
-        // straight downwind barely curve), modulated by a sin wave
-        // along rippleAxis to give the field a coherent wave pattern
-        // sweeping across like wind-driven ripples through wheat.
+        // Wind-bend direction in this spine's local (perp1, perp2) basis.
         const windPerp_x = windDir.x - windDir.dot(d) * d.x;
         const windPerp_y = windDir.y - windDir.dot(d) * d.y;
         const windPerp_z = windDir.z - windDir.dot(d) * d.z;
@@ -4383,34 +4320,25 @@ function generateAcantharianStructure(s) {
         const bendCosP = windCrossMag > 1e-6 ? wpInP1 / windCrossMag : 1;
         const bendSinP = windCrossMag > 1e-6 ? wpInP2 / windCrossMag : 0;
         const ripplePhase = rippleAxis.dot(d) * rippleFreq;
-        const rippleMul = 0.55 + 0.45 * Math.sin(ripplePhase);  // 0.10..1.00
-        const bendMag = windCrossMag * rippleMul * twist;       // 0..twist
+        const rippleMul = 0.55 + 0.45 * Math.sin(ripplePhase);
+        const bendMag = windCrossMag * rippleMul * twist;
 
         const wp = [];
         for (let k = 0; k <= N; k++) {
           const t = k / N;
-          // Helical-twist amplitude is sin(πt) so wobble is zero at the
-          // sphere and tip (preserving emergence + pointiness) and peaks
-          // at midspan.
           const ph = phase0 + t * turnsAlongSpine * Math.PI * 2;
           const ampTwist = ampBase * Math.sin(t * Math.PI);
           const twistDX = Math.cos(ph) * ampTwist;
           const twistDY = Math.sin(ph) * ampTwist;
-          // Wind-bend contribution (v1.32.14, dampened in v1.32.17).
-          // Primary sin(πt) arc + secondary 2× harmonic at per-spine
-          // phase for a slight S-shape. Coefficient 0.50 (was 0.65)
-          // and HALF-strength size boost: at sizeMul=0.30 the boost
-          // is now 1.42× rather than 1.83×, capping child bend ratio
-          // at ~37% of spine length instead of ~62%. Higher amplitudes
-          // were swamping the radial direction — child spines all
-          // appeared to bend in the same world-wind direction instead
-          // of fanning out from the child's center.
-          const harmonicPhase = spineIndex * 1.7321;  // √3, irrational
+          // SAME bend formula at every scale (v1.32.18). Bend ratio is
+          // ~0.50 × bendMag × bendStrength of spine length, regardless
+          // of whether this is the parent or a child — so a child's
+          // spines waver in the same proportional pattern as the
+          // parent's, just at smaller absolute size.
+          const harmonicPhase = spineIndex * 1.7321;
           const bendStrength = Math.sin(t * Math.PI)
                              + 0.50 * Math.sin(t * Math.PI * 2 + harmonicPhase);
-          const rawSizeBoost = 1 / Math.sqrt(Math.max(0.05, sizeMul));
-          const sizeBoost = 1 + (rawSizeBoost - 1) * 0.5;
-          const bendOffset = thisLen * 0.50 * bendMag * bendStrength * sizeBoost;
+          const bendOffset = thisLen * 0.50 * bendMag * bendStrength;
           const bendDX = bendCosP * bendOffset;
           const bendDY = bendSinP * bendOffset;
           wp.push(startPt.clone().lerp(endPt, t)
@@ -4436,9 +4364,7 @@ function generateAcantharianStructure(s) {
           tangent: d.clone(), wobble: 0,
         });
       } else {
-        // Curved spine — 3 capsules with a midpoint nudged perpendicular
-        // to the radial direction. Find an arbitrary perpendicular axis,
-        // rotate by a seeded random angle, scale by curl × thisLen × 0.25.
+        // Curved spine (full-scale only) — 3 capsules with mid bend.
         tmp.set(d.x, d.y, d.z);
         if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
         else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
@@ -4458,7 +4384,6 @@ function generateAcantharianStructure(s) {
         branches.push({ start: wp2,    end: endPt, r0: r2Mid, r1: tR,    depth: 1, parent: 0, tangent: bendDir.clone(), wobble: 0 });
       }
 
-      // Tip split — fan of small sub-spines at the distal end.
       if (useTipSplit) {
         tmp.set(d.x, d.y, d.z);
         if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
@@ -4487,27 +4412,37 @@ function generateAcantharianStructure(s) {
         }
       }
 
-      // Recurse — place a smaller acantharian at the spine tip with
-      // per-child multiplicative size jitter. v1.32.3 changed the
-      // formula from linear additive ((1 + ±recurVariation)) to log-
-      // uniform multiplicative (pow(3, ±recurVariation)) so a single
-      // generation can produce children spanning a much wider size
-      // range — true small/medium/large mix instead of a tight cluster
-      // around the base scale. Capped at 0.9× the parent so children
-      // can never rival the parent visually.
-      if (depth < recurDepth - 1
-          && (!ACAN_DEBUG_SINGLE_CHILD_ONLY || (depth === 0 && spineIndex === 0))) {
-        const variationFactor = Math.pow(3, (rng() * 2 - 1) * recurVariation);
-        let childMul = sizeMul * recurScale * variationFactor;
-        const childCap = sizeMul * 0.9;
-        if (childMul > childCap) childMul = childCap;
-        if (childMul > 0.05) emitOne(endPt, childMul, depth + 1);
-      }
       spineIndex++;
     }
+    return tipPositions;
   }
 
-  emitOne(new THREE.Vector3(0, 0, 0), 1, 0);
+  // Build parent.
+  const parentTips = buildOneAcantharian(new THREE.Vector3(0, 0, 0), 1, 0);
+
+  // Build child(ren) (v1.32.18). The child is built by the SAME
+  // helper — a literal smaller copy of the parent's logic — with a
+  // non-zero salt so its wind direction, ripple axis, and seashell-
+  // spiral starting orientation are different. The recurDepth slider
+  // gates whether children get emitted at all (≥ 2 = yes); the
+  // ACAN_DEBUG_SINGLE_CHILD_ONLY constant controls whether we emit
+  // one debug child (at parent's first spine tip) or one at every
+  // parent spine tip. The single-child mode is for visual iteration
+  // on child morphology; flip the constant off once we like the
+  // child's look to populate every tip.
+  if (recurDepth >= 2 && parentTips.length > 0) {
+    if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
+      buildOneAcantharian(parentTips[0], recurScale, 0x9E37);
+    } else {
+      for (let i = 0; i < parentTips.length; i++) {
+        const variation = Math.pow(3, (rng() * 2 - 1) * recurVariation);
+        const childScale = Math.min(0.9, recurScale * variation);
+        if (childScale > 0.05) {
+          buildOneAcantharian(parentTips[i], childScale, 0x9E37 + i * 0x1A85);
+        }
+      }
+    }
+  }
 
   return { branches, accents };
 }
@@ -6534,6 +6469,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.18', date: '2026-05-03', n: 'Acantharian children rebuilt as literal smaller copies. The recursive emitOne pattern with depth-conditional logic was producing children that visually didn\'t match the parent. Refactored: a single buildOneAcantharian(center, scale, salt) helper now contains all per-creature logic. The salt seeds a per-creature wind direction, ripple axis, and seashell-spiral phase so a child has subtle variation rather than being a carbon copy. Children use the SAME seashell spiral (was Fibonacci) and SAME bend formula (sizeBoost dropped) as the parent — so a child has the same emergence pattern, same bend ratio, just at smaller scale. Simulation confirms: parent bend ratio 12.0%, child bend ratio 11.1% — virtually identical, child mean-vec-length 0.048 = same direction-coverage as parent.' },
   { v: 'v1.32.17', date: '2026-05-03', n: 'Acantharian child bend dampened: at sizeMul=0.30 the wind-bend amplitude could reach ~62% of spine length, which combined with the globally-coherent wind direction was making child spines all sweep in one world-direction instead of fanning out from the child\'s own center. Coefficient 0.65 → 0.50 and size-boost halved (1 + (1/√sizeMul − 1)·0.5, so a sizeMul=0.30 child now gets 1.42× boost not 1.83×). Child max bend ratio drops from ~62% to ~37% so the radial direction dominates visually while children still mirror the parent\'s flowing-tentacle character. Parent slightly more contained too (max 19.9 → 11.1 mm, avg 4.7 → 4.0 mm) — still visibly wavy, no extreme outliers.' },
   { v: 'v1.32.16', date: '2026-05-03', n: 'Acantharian debug toggle: ACAN_DEBUG_SINGLE_CHILD_ONLY top-level constant. When true (current state), only the first parent spine emits a child at its tip — the rest of the parent spines are bare. Lets us iterate on child morphology without visual clutter; flip the constant back to false to restore full recursion once the child logic is dialed in.' },
   { v: 'v1.32.15', date: '2026-05-03', n: 'Default creature type changed from Radiolarian to Acantharian — fresh page loads now show the Acantharian immediately so iteration on it is faster.' },
