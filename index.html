@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.13</span>
+        <span id="version">v1.32.14</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.13";
+const VERSION = "v1.32.14";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4319,7 +4319,13 @@ function generateAcantharianStructure(s) {
 
     let spineIndex = 0;
     for (const d of dirs) {
-      const lenScale = Math.max(LEN_SCALE_FLOOR, 1 + (rng() - 0.5) * jitter);
+      // Log-uniform length jitter (v1.32.14) — much wider range than the
+      // old additive 1 + (rng-0.5)·jitter formula. With jitter=0.5
+      // (default) spines now span ≈ 0.54×–1.87× base length; with
+      // jitter=1.0 they span ≈ 0.29×–3.49× — some spines are dramatically
+      // longer than others, which is the "much more length variability"
+      // the user wanted on the parent.
+      const lenScale = Math.max(LEN_SCALE_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
       const thisLen = sL * lenScale;
       const startPt = center.clone().addScaledVector(d, sR * 0.85);
       const endPt   = center.clone().addScaledVector(d, sR + thisLen);
@@ -4383,17 +4389,25 @@ function generateAcantharianStructure(s) {
           const ampTwist = ampBase * Math.sin(t * Math.PI);
           const twistDX = Math.cos(ph) * ampTwist;
           const twistDY = Math.sin(ph) * ampTwist;
-          // Wind-bend contribution — primary sin(πt) arc (peak at
-          // midspan, zero at base/tip) plus a secondary 2× harmonic
-          // with a per-spine phase offset so each spine has a slight
-          // S-shape rather than a clean parabolic arc. The combo gives
-          // the "jelly tentacle drifting in current" feel: every
-          // spine still leans coherently with the wind, but each one
-          // undulates slightly differently.
+          // Wind-bend contribution (v1.32.14) — primary sin(πt) arc
+          // (peak at midspan, zero at base/tip) plus a secondary 2×
+          // harmonic with a per-spine phase offset for a slight
+          // S-shape. Coefficient bumped 0.50 → 0.65; secondary
+          // amplitude 0.35 → 0.50 so the curve reads as a flowing
+          // jelly tentacle rather than a clean parabola.
+          //
+          // Inverse-sqrt(sizeMul) boost so child creatures get
+          // proportionally MORE bend per unit length than the parent.
+          // Without this, children's short spines have visually
+          // negligible bend (simulation showed avg 0.5 mm vs parent's
+          // 3.2 mm). With it, a child at sizeMul=0.30 gets 1.83× the
+          // amplitude scale so its spines mirror the parent's
+          // wavy character.
           const harmonicPhase = spineIndex * 1.7321;  // √3, irrational
           const bendStrength = Math.sin(t * Math.PI)
-                             + 0.35 * Math.sin(t * Math.PI * 2 + harmonicPhase);
-          const bendOffset = thisLen * 0.50 * bendMag * bendStrength;
+                             + 0.50 * Math.sin(t * Math.PI * 2 + harmonicPhase);
+          const sizeBoost = 1 / Math.sqrt(Math.max(0.05, sizeMul));
+          const bendOffset = thisLen * 0.65 * bendMag * bendStrength * sizeBoost;
           const bendDX = bendCosP * bendOffset;
           const bendDY = bendSinP * bendOffset;
           wp.push(startPt.clone().lerp(endPt, t)
@@ -6516,6 +6530,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.14', date: '2026-05-03', n: 'Acantharian deep-simulation diagnosis: harness measured parent spines at avg 3.2 mm perp deviation but children at 0.5 mm — 6× less wavy in absolute terms, even though the ratio per-unit-length was similar. Children\'s spines are simply too short for the proportional bend amplitude to read visually. Three fixes: (1) Inverse-sqrt(sizeMul) boost on bendOffset so smaller children get proportionally MORE perpendicular bend per unit length than the parent (a sizeMul=0.30 child gets 1.83× the amplitude scale). Re-run shows child waviness 0.48 → 1.69 mm with the same spine length, so children now visibly mirror the parent\'s flowing-jelly character. (2) Bend amplitude coefficient bumped 0.50 → 0.65; secondary 2× harmonic 0.35 → 0.50 — parent\'s avg perp 3.2 → 4.7 mm, max 8.7 → 19.9 mm, 17% → 34% have >5 mm bend. (3) Length jitter formula switched from additive (1+(rng-0.5)·jitter, ±25% range at default) to log-uniform (exp((rng-0.5)·jitter·2.5), ≈ 0.54×–1.87× range at default). Some parent spines are now dramatically longer than others — the "much more length variability" the user wanted, with no spine count change.' },
   { v: 'v1.32.13', date: '2026-05-03', n: 'Organic flow + targeted hairiness: (1) Acantharian — children reverted to fibonacciSphereDirections (was seashell) so their spines radiate in all directions like little pincushions of jelly tentacles, while the parent keeps the seashell spiral for a clear emergence-curve on its body. Spine waviness bumped: segments 5 → 7, secondary 2× harmonic at per-spine phase added on top of the sin(πt) arc, amplitude coefficient 0.32 → 0.50 — every spine still leans coherently with the wind but each one undulates in a slight S-shape so the field reads as drifting jelly rather than rigid wheat. (2) Foraminiferan — fuzz density now scales with local tube radius: bumpsPerPoint = round((1 + 2·tubeR)·fuzz). At fuzz=1 a 5 mm-thick section gets ~11 bumps per ring; a 1 mm-thin section gets ~3. Bumps spread evenly around the local circumference (b/N · 2π) plus slow per-point spiral jitter so they don\'t form aligned columns. Result: the thick inner end of the spiral is visibly hairy/furry, the thin outer end is sparser. (3) Coralline — branches now read as organic tendrils rather than a geometric graph: 3 → 4 segments per branch, secondary 0.4× 2× harmonic with per-branch random phase, per-branch wave-axis rotation around childDir (±15°), per-branch amplitude jitter (0.7-1.3×), and baseline amplitude bumped 0.15 → 0.18 (curl scales up to 0.40). Siblings within a patch flow in similar-but-non-identical directions — coherent without being repetitive.' },
   { v: 'v1.32.12', date: '2026-05-03', n: 'Surface complexity + coherent flow pass: (1) Acantharian — children now use the parent\'s full spine count (was halved) so every level has the same density of emergence-curve. Twist mode now active for ALL depths (was top-level only). Per-spine random Gaussian bend replaced with a coherent wheat-in-wind model: a global wind direction (per-seed) is projected into each spine\'s local perp basis to derive the bend phase, and a sin-wave along a perpendicular ripple axis modulates the magnitude — every spine on the creature leans toward the same world direction with smoothly varying strength, like wheat with a wave moving across the field. Bend profile changed Gaussian → sin(πt) for a cleaner single-arc shape; amplitude coefficient bumped 0.18 → 0.32 so curves are visibly wavy. (2) Foraminiferan — new "Surface fuzz" slider (default 0.5) controls additive surface complexity on every polyline (main + every sub). Two layers: short perpendicular fuzz bumps (1-4 per stride sample, hard 0.5 mm radius floor + 1.6-2.6× length so they print) and helical wrap filaments (1-4 thin coils that spiral around the tube on its surface like a braided rope, grooves between them = trenches). Codec slot 69. (3) Coralline — primary count bumped to max(20, branchesPerNode × 7) for much denser plumage and less negative space. Per-primary patchDecayMul (0.7×-1.4×) creates patches: some primaries decay aggressively for short dense plumage clusters, others decay slowly for long extensions. Per-primary patchWaveAxis is threaded through the entire subtree so all branches in one patch flow coherently in the same wave direction. Every non-trunk branch is now a 3-segment sin-arc wavy path with baseline amplitude 0.15× length (corCurl scales up to 0.35×), so extensions waver instead of being sticks.' },
   { v: 'v1.32.11', date: '2026-05-03', n: 'Three creature maximalism passes: (1) Acantharian — children now use the same seashell-spiral helper as the parent (was Fibonacci) so every recursion level reads as a clear winding curve on its own body sphere. (2) Foraminiferan tangle — turns range bumped 5 → 8 (default 4 → 5), sub-trunks range bumped 5 → 10 (default 2 → 4), and sub-trunks are now recursive: each sub spawns half-as-many sub-sub-trunks at 0.7× generation-shrink, capped at 3 levels deep. With default 4 you get ≈ 4 + 8 + 4 nested spirals threaded through the main coil — a really complex tangle. (3) Coralline alien plumage — primary count bumped to max(14, branchesPerNode × 5) for plumage density. New "Alien plumage" slider (default 0.7) controls fraction of leaf tips that grow a hybrid terminal element; each terminal is randomly one of three types: flower-bell (calyx + 6 radiating petals, botanical), fern-fiddlehead curl (tightening planar spiral, botanical), or anemone-polyp (9 thin radiating bristles, animal). Mixing botanical + animal forms in one creature gives a no-Earth-analog alien feel. Codec slot 68.' },
