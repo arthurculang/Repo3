@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.22</span>
+        <span id="version">v1.32.23</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.22";
+const VERSION = "v1.32.23";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4199,14 +4199,16 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
   return true;
 }
 
-// DEBUG TOGGLES (v1.32.16, v1.32.22).
+// DEBUG TOGGLES (v1.32.16, v1.32.22, v1.32.23).
 // ACAN_DEBUG_NO_CHILDREN: when true, no children at all — just the
 // parent. Useful when iterating on parent morphology in isolation.
 // ACAN_DEBUG_SINGLE_CHILD_ONLY: when true (and NO_CHILDREN false),
-// only the first parent spine emits a child at its tip. Flip both
-// back to false once child logic is dialed in.
-const ACAN_DEBUG_NO_CHILDREN       = true;
+// only the first parent spine emits a child at its tip.
+// ACAN_DEBUG_CHILD_NODE_ONLY: when true, emit just the child's body
+// sphere — no child spines yet — for incremental morphology debug.
+const ACAN_DEBUG_NO_CHILDREN       = false;
 const ACAN_DEBUG_SINGLE_CHILD_ONLY = true;
+const ACAN_DEBUG_CHILD_NODE_ONLY   = true;
 
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
 //
@@ -4464,20 +4466,46 @@ function generateAcantharianStructure(s) {
   const CHILD_THICKNESS_MUL = 0.7;
   const CHILD_OFFSET_MUL    = 1.0;
   if (!ACAN_DEBUG_NO_CHILDREN && recurDepth >= 2 && parentSpines.length > 0) {
+    // Helper: emit just a child's body sphere (degenerate capsule)
+    // at the tip of a parent spine. Center is offset along the
+    // parent spine direction by EXACTLY childSR so the sphere bottom
+    // touches parent.tip — child sphere sits like a pearl at the
+    // very end of the parent spine.
+    const emitChildNode = (ps, scale) => {
+      const childSR = sphereRadius * scale;
+      const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
+      branches.push({
+        start: childCenter.clone(),
+        end:   childCenter.clone().add(new THREE.Vector3(0, 0.01, 0)),
+        r0: childSR, r1: childSR,
+        depth: 0, parent: null,
+        tangent: ps.dir.clone(),
+        wobble: 0,
+      });
+    };
+
     if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
       const ps = parentSpines[0];
-      const childSR = sphereRadius * recurScale;
-      const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
-      buildOneAcantharian(childCenter, recurScale, 0x9E37, CHILD_THICKNESS_MUL);
+      if (ACAN_DEBUG_CHILD_NODE_ONLY) {
+        emitChildNode(ps, recurScale);
+      } else {
+        const childSR = sphereRadius * recurScale;
+        const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
+        buildOneAcantharian(childCenter, recurScale, 0x9E37, CHILD_THICKNESS_MUL);
+      }
     } else {
       for (let i = 0; i < parentSpines.length; i++) {
         const ps = parentSpines[i];
         const variation = Math.pow(3, (rng() * 2 - 1) * recurVariation);
         const childScale = Math.min(0.9, recurScale * variation);
         if (childScale > 0.05) {
-          const childSR = sphereRadius * childScale;
-          const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
-          buildOneAcantharian(childCenter, childScale, 0x9E37 + i * 0x1A85, CHILD_THICKNESS_MUL);
+          if (ACAN_DEBUG_CHILD_NODE_ONLY) {
+            emitChildNode(ps, childScale);
+          } else {
+            const childSR = sphereRadius * childScale;
+            const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
+            buildOneAcantharian(childCenter, childScale, 0x9E37 + i * 0x1A85, CHILD_THICKNESS_MUL);
+          }
         }
       }
     }
@@ -6508,6 +6536,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.23', date: '2026-05-03', n: 'Acantharian — start child rebuild from scratch. Added ACAN_DEBUG_CHILD_NODE_ONLY toggle (currently true) that emits just the child\'s body sphere at the parent\'s first spine tip — no child spines yet. NO_CHILDREN flag flipped back to false. Iterative rebuild: confirm the round node sits cleanly, then start adding spines back one feature at a time.' },
   { v: 'v1.32.22', date: '2026-05-03', n: 'Acantharian — added ACAN_DEBUG_NO_CHILDREN top-level flag (currently true). Suppresses child generation entirely so we can iterate on parent morphology in isolation. Flip back to false to restore children.' },
   { v: 'v1.32.21', date: '2026-05-03', n: 'Acantharian child geometry — child sphere offset 0.7×SR → 1.0×SR. Deep simulation showed: although the child math correctly placed 18/36 spines pointing toward the parent, those parent-facing spines started at base positions ~0.6 mm from the parent spine line, which is INSIDE the parent spine\'s ~0.4-0.8 mm radius near its tip. Smooth-min then absorbed the bases of every parent-facing spine into the parent spine, making the child read as "all spines pointing outward from parent." With offset 1.0×childSR, the child sphere bottom sits exactly at parent.tip; every child spine starts above parent.tip in free space, so spines pointing back toward the parent are fully visible (they just travel back down PAST the parent spine without overlapping it).' },
   { v: 'v1.32.20', date: '2026-05-03', n: 'Acantharian "sharp turn at 20%" fix: bend profile was sin(πt) + 0.50·sin(2πt+phase). At t=0 the first term is zero but the secondary is 0.50·sin(phase), which is non-zero for every spine after index 0 — so each spine emerged from the sphere surface with an immediate perpendicular offset, traversed the first 20% at an off-axis angle, then snapped toward the main bend direction at midspan. Visible as a sharp kink near the base of every child spine. Switched to multiplicative form sin(πt) · (1 + 0.40·sin(2πt+phase)) which is GUARANTEED zero at both endpoints, so every spine truly emerges from its Fibonacci point with zero offset and tapers cleanly back to the tip.' },
