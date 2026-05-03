@@ -710,8 +710,8 @@
       <div class="section-header" data-creature-section="foraminiferan">Foraminiferan morphology</div>
 
       <div class="ctrl" data-creature-section="foraminiferan">
-        <label>Turns <span class="val" id="foramTurnsVal">4.0</span></label>
-        <input type="range" id="foramTurns" min="1" max="5" step="0.1" value="4.0">
+        <label>Turns <span class="val" id="foramTurnsVal">5.0</span></label>
+        <input type="range" id="foramTurns" min="1" max="8" step="0.1" value="5.0">
       </div>
       <div class="ctrl" data-creature-section="foraminiferan">
         <label>Growth rate <span class="val" id="foramGrowthVal">0.06</span></label>
@@ -770,8 +770,8 @@
         <div class="ctrl-note">After-the-fact dodging pass. 0 = path may self-intersect; 1 = aggressive thread-the-gaps deformation that gives a knot-like winding feel.</div>
       </div>
       <div class="ctrl" data-creature-section="foraminiferan">
-        <label>Sub-trunks <span class="val" id="foramSubTrunksVal">2</span></label>
-        <input type="range" id="foramSubTrunks" min="0" max="5" step="1" value="2">
+        <label>Sub-trunks <span class="val" id="foramSubTrunksVal">4</span></label>
+        <input type="range" id="foramSubTrunks" min="0" max="10" step="1" value="4">
         <div class="ctrl-note">Number of recursive smaller spirals that branch off the main trunk. Each sub-trunk inherits the same 3D winding logic at reduced scale, like the recursive babies on the Acantharian.</div>
       </div>
 
@@ -821,6 +821,11 @@
       <div class="ctrl" data-creature-section="coralline">
         <label>Branch curl <span class="val" id="corCurlVal">0.00</span></label>
         <input type="range" id="corCurl" min="0" max="1" step="0.05" value="0">
+      </div>
+      <div class="ctrl" data-creature-section="coralline">
+        <label>Alien plumage <span class="val" id="corPlumageVal">0.70</span></label>
+        <input type="range" id="corPlumage" min="0" max="1" step="0.05" value="0.7">
+        <div class="ctrl-note">Fraction of leaf tips that grow a hybrid terminal element — randomly assigned per leaf from three types: flower-bell (calyx + radiating petals), fern-fiddlehead curl, and anemone-polyp bristle cluster. Mixing botanical and animal forms gives the creature an alien, no-Earth-analog feel.</div>
       </div>
 
       <div class="section-header" data-creature-section="radiolarian">Radiolarian morphology</div>
@@ -901,7 +906,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.10</span>
+        <span id="version">v1.32.11</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -953,7 +958,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.10";
+const VERSION = "v1.32.11";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1056,7 +1061,7 @@ const DEFAULTS = {
   // tube direction so the inner end is now the thick / start end and
   // the outer end is the thin / tip end, matching a comet's tail
   // morphology).
-  foramTurns: 4.0,         // 1..5      total spiral rotations
+  foramTurns: 5.0,         // 1..8      total spiral rotations
   foramGrowth: 0.06,       // 0.04..0.30 exponential growth rate per radian.
                             //            0.04 = tightly wound nautilus, 0.30 = open coil.
   foramTubeStart: 5.0,     // 0.3..6    tube radius at the inner end (now the THICK end)
@@ -1100,7 +1105,7 @@ const DEFAULTS = {
                             //            0 = no avoidance (path may self-intersect),
                             //            1 = aggressive dodging that visibly deforms the
                             //            spiral to thread gaps.
-  foramSubTrunks: 2,       // 0..5      recursive smaller spirals branching off the main
+  foramSubTrunks: 4,       // 0..10     recursive smaller spirals branching off the main
                             //            trunk (v1.32.10). Each sub-trunk emerges at a
                             //            randomly-chosen interior point and winds in its
                             //            own direction at reduced scale, like the babies
@@ -1119,6 +1124,10 @@ const DEFAULTS = {
   corAsymmetry: 0.3,     // 0..1     per-branch length/angle jitter for organic asymmetry
   corCurl: 0,            // 0..1     branch arc — 0 straight, 1 strong curve. Each non-trunk branch
                           //          gets a seeded perpendicular bend at midspan; 3 capsules per branch.
+  corPlumage: 0.7,       // 0..1     fraction of leaf tips that grow a hybrid terminal element
+                          //          (v1.32.11). Three terminal types are randomly assigned:
+                          //          flower-bell, fern-fiddlehead curl, anemone-polyp bristles.
+                          //          Mixes botanical + animal forms for an alien/non-Earth feel.
   seed: 1,
   complexity: 4,
   branchCount: 3,
@@ -1465,6 +1474,10 @@ function paramFields(s) {
     // 0 sub-trunks matches the pre-v1.32.10 single-trunk look).
     s.acanSpiralTurns | 0,
     s.foramSubTrunks | 0,
+    // ↓ added in v1.32.11 — Coralline alien plumage. Defaults to 0
+    // for older configs so reloading a pre-1.32.11 Coralline gives
+    // the same dome look (no terminals).
+    s.corPlumage.toFixed(2),
   ];
 }
 
@@ -1582,7 +1595,7 @@ function parseParamSlots(slots) {
   // Foraminiferan-specific: new in v1.32.1 (chunk 4B). Defaults match
   // chunk-4A hardcoded values so a saved Foraminiferan without these
   // slots renders identically when reloaded.
-  const foramTurnsV     = slots.length > 52 ? clamp(parseFloat(slots[52]) || 2.5, 1, 5)              : 2.5;
+  const foramTurnsV     = slots.length > 52 ? clamp(parseFloat(slots[52]) || 2.5, 1, 8)              : 2.5;
   const foramGrowthV    = slots.length > 53 ? clamp(parseFloat(slots[53]) || 0.10, 0.04, 0.30)       : 0.10;
   const foramTubeStartV = slots.length > 54 ? clamp(parseFloat(slots[54]) || 0.8, 0.3, 6)             : 0.8;
   const foramTubeEndV   = slots.length > 55 ? clamp(parseFloat(slots[55]) || 4.0, 0.3, 8)             : 4.0;
@@ -1608,7 +1621,8 @@ function parseParamSlots(slots) {
   // sub-trunks (v1.32.10). Older configs default to 3 turns (matching
   // the v1.32.10 visual default) and 0 sub-trunks.
   const acanSpiralTurnsV = slots.length > 66 ? clamp(parseInt(slots[66], 10) || 3, 1, 8)              : 3;
-  const foramSubTrunksV  = slots.length > 67 ? clamp(parseInt(slots[67], 10) || 0, 0, 5)              : 0;
+  const foramSubTrunksV  = slots.length > 67 ? clamp(parseInt(slots[67], 10) || 0, 0, 10)             : 0;
+  const corPlumageV      = slots.length > 68 ? clamp(parseFloat(slots[68]) || 0, 0, 1)                : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1678,6 +1692,7 @@ function parseParamSlots(slots) {
     foramSelfAvoid: foramSelfAvoidV,
     acanSpiralTurns: acanSpiralTurnsV,
     foramSubTrunks:  foramSubTrunksV,
+    corPlumage:      corPlumageV,
   };
 }
 
@@ -4239,13 +4254,10 @@ function generateAcantharianStructure(s) {
       wobble: 0,
     });
 
-    // Radiating spines (v1.32.10). Top-level uses a smooth seashell
-    // spiral so adjacent-index spines are spatial neighbours and the
-    // eye reads a clear spiral painted on the sphere — the
-    // emergence-pattern signature the user wants. Children keep
-    // Fibonacci-sphere distribution so they read as uniform porcupines
-    // (you'd never trace a smooth spiral on a tiny secondary creature
-    // anyway, and the contrast emphasises the parent's pattern).
+    // Radiating spines (v1.32.10 / v1.32.11). Every level uses the
+    // smooth seashell spiral so adjacent-index spines are spatial
+    // neighbours and each creature — parent OR child — has a clearly
+    // readable spiral curve painted on its body sphere.
     //
     // Adding depth × 0.41 to the phase offset keeps every recursion
     // level's spine distribution from aligning identically — children
@@ -4257,9 +4269,7 @@ function generateAcantharianStructure(s) {
     // give plausible babies.
     const phaseOffset = ((s.seed >>> 0) * 1e-7 + depth * 0.41) % (Math.PI * 2);
     const localSpineCount = depth === 0 ? spineCount : Math.max(6, Math.floor(spineCount * 0.5));
-    const dirs = depth === 0
-      ? seashellSpiralDirections(localSpineCount, s.acanSpiralTurns ?? 3, phaseOffset)
-      : fibonacciSphereDirections(localSpineCount, phaseOffset);
+    const dirs = seashellSpiralDirections(localSpineCount, s.acanSpiralTurns ?? 3, phaseOffset);
 
     let spineIndex = 0;
     for (const d of dirs) {
@@ -4453,6 +4463,7 @@ function generateCorallineStructure(s) {
   const radiusDecay     = s.corRadiusDecay     ?? 0.60;
   const asymmetry       = s.corAsymmetry       ?? 0.3;
   const curl            = s.corCurl            ?? 0;
+  const plumage         = s.corPlumage         ?? 0;
 
   // Bouquet layout (v1.32.10). Instead of a single tall vertical
   // trunk OR a half-dome that all curls skyward, emit a denser ring of
@@ -4468,7 +4479,7 @@ function generateCorallineStructure(s) {
   // Lift jitter widened so some primaries hug the ground horizontally
   // and others go upright; per-azimuth length lobing keeps the
   // silhouette uneven.
-  const primaryCount = Math.max(8, branchesPerNode * 3);
+  const primaryCount = Math.max(14, branchesPerNode * 5);
   const lobePhase1 = rng() * Math.PI * 2;
   const lobePhase2 = rng() * Math.PI * 2;
   const azimuthLengthMul = (az) => {
@@ -4585,7 +4596,120 @@ function generateCorallineStructure(s) {
         branches.push({ start: wp2, end: childEnd, r0: r2Mid, r1: childR1, depth, parent: 0, tangent: bendDir.clone(), wobble: 0 });
       }
       grow(childEnd, childDir, childLen, childR0, depth + 1);
+      // Alien-plumage terminal at leaf tips (v1.32.11). Only fires when
+      // the recursion is about to bottom out (no further children),
+      // and only with probability `plumage`. Each terminal randomly
+      // picks one of three hybrid forms — flower-bell, fern-curl, or
+      // anemone-polyp — so a single creature mixes botanical + animal
+      // morphology in its outer layer for an alien feel.
+      if (depth + 1 === maxDepth && plumage > 1e-3 && rng() < plumage) {
+        emitTerminal(childEnd, childDir, childR1, childLen);
+      }
     }
+  }
+
+  // ---- Hybrid terminal helpers (v1.32.11) ----
+  function buildPerps(dir) {
+    const tmp = (Math.abs(dir.y) < 0.9) ? new THREE.Vector3(0, 1, 0)
+                                        : new THREE.Vector3(1, 0, 0);
+    const p1 = new THREE.Vector3().crossVectors(dir, tmp).normalize();
+    const p2 = new THREE.Vector3().crossVectors(dir, p1).normalize();
+    return [p1, p2];
+  }
+  // Botanical: flower bell. Calyx (small swollen sphere) at the tip,
+  // then 6 petal-capsules radiating outward in a 45°-half-angle cone.
+  function emitBell(tipPt, tipDir, tipR, tipLen) {
+    const calyxR = tipR * 1.6;
+    const calyxCenter = tipPt.clone().addScaledVector(tipDir, tipR * 0.5);
+    branches.push({
+      start: calyxCenter,
+      end:   calyxCenter.clone().add(new THREE.Vector3(0, 0.01, 0)),
+      r0: calyxR, r1: calyxR,
+      depth: maxDepth, parent: 0,
+      tangent: tipDir.clone(), wobble: 0,
+    });
+    const [p1, p2] = buildPerps(tipDir);
+    const petals = 6;
+    const petalLen = tipLen * 0.35;
+    const cone = Math.PI / 4;
+    const cosA = Math.cos(cone), sinA = Math.sin(cone);
+    for (let i = 0; i < petals; i++) {
+      const phase = (i / petals) * Math.PI * 2 + rng() * 0.3;
+      const lateral = new THREE.Vector3()
+        .addScaledVector(p1, Math.cos(phase) * sinA)
+        .addScaledVector(p2, Math.sin(phase) * sinA);
+      const petalDir = new THREE.Vector3()
+        .copy(tipDir).multiplyScalar(cosA)
+        .add(lateral)
+        .normalize();
+      const petalEnd = calyxCenter.clone().addScaledVector(petalDir, petalLen);
+      branches.push({
+        start: calyxCenter.clone(), end: petalEnd,
+        r0: tipR * 1.0, r1: tipR * 0.3,
+        depth: maxDepth, parent: 0,
+        tangent: petalDir, wobble: 0,
+      });
+    }
+  }
+  // Botanical: fern fiddlehead. Tightening planar spiral perpendicular
+  // to the tip direction with mild axial advance, ending in a ball.
+  function emitCurl(tipPt, tipDir, tipR, tipLen) {
+    const [p1, p2] = buildPerps(tipDir);
+    const segs = 6;
+    const startR = tipLen * 0.35;
+    const phase0 = rng() * Math.PI * 2;
+    let prev = tipPt.clone();
+    for (let i = 0; i < segs; i++) {
+      const t = (i + 1) / segs;
+      const r = startR * (1 - t * 0.85);
+      const theta = phase0 + t * 2.5 * Math.PI;
+      const axial = tipR * 1.5 * t;
+      const center = tipPt.clone().addScaledVector(tipDir, axial);
+      const next = center
+        .addScaledVector(p1, Math.cos(theta) * r)
+        .addScaledVector(p2, Math.sin(theta) * r);
+      branches.push({
+        start: prev, end: next,
+        r0: tipR * (1 - t * 0.6),
+        r1: tipR * (1 - (t + 1/segs) * 0.6),
+        depth: maxDepth, parent: 0,
+        tangent: new THREE.Vector3().subVectors(next, prev).normalize(),
+        wobble: 0,
+      });
+      prev = next;
+    }
+  }
+  // Animal: sea-anemone polyp. Hemispheric fan of thin radiating
+  // bristles around the tip, varying cone angles and lengths.
+  function emitPolyp(tipPt, tipDir, tipR, tipLen) {
+    const [p1, p2] = buildPerps(tipDir);
+    const bristles = 9;
+    const bristleLen = tipLen * 0.45;
+    for (let i = 0; i < bristles; i++) {
+      const phase = (i / bristles) * Math.PI * 2 + rng() * 0.4;
+      const coneDeg = 30 + rng() * 40;
+      const cone = coneDeg * Math.PI / 180;
+      const cosC = Math.cos(cone), sinC = Math.sin(cone);
+      const dir = new THREE.Vector3()
+        .copy(tipDir).multiplyScalar(cosC)
+        .addScaledVector(p1, Math.cos(phase) * sinC)
+        .addScaledVector(p2, Math.sin(phase) * sinC)
+        .normalize();
+      const lenJit = bristleLen * (0.7 + rng() * 0.6);
+      const end = tipPt.clone().addScaledVector(dir, lenJit);
+      branches.push({
+        start: tipPt.clone(), end,
+        r0: tipR * 0.55, r1: tipR * 0.12,
+        depth: maxDepth, parent: 0,
+        tangent: dir, wobble: 0,
+      });
+    }
+  }
+  function emitTerminal(tipPt, tipDir, tipR, tipLen) {
+    const r = rng();
+    if      (r < 0.34) emitBell(tipPt, tipDir, tipR, tipLen);
+    else if (r < 0.67) emitCurl(tipPt, tipDir, tipR, tipLen);
+    else               emitPolyp(tipPt, tipDir, tipR, tipLen);
   }
 
   return { branches, accents };
@@ -4741,56 +4865,71 @@ function generateForaminiferanStructure(s) {
   const mainTubeAt = makeTubeAt(tubeStart, tubeEnd, chambers, bulge);
   pushPolyline(main.points, mainTubeAt, 0, null);
 
-  // ---- Recursive sub-trunks (v1.32.10) ----
+  // ---- Recursive sub-trunks (v1.32.10 / maximalist v1.32.11) ----
   // Each sub-trunk is a smaller spiral that emerges at a randomly-chosen
-  // interior point on the main path and winds in its own random direction.
-  // The sub's tubeStart matches the main trunk's local radius at the
+  // interior point on a parent path and winds in its own random direction.
+  // The sub's tubeStart matches the parent trunk's local radius at the
   // branch point so the join is seamless. Self-avoidance runs per-polyline
   // — cross-polyline overlap is allowed at and near the branch joint by
   // design (otherwise the sub would unstick from its parent).
-  for (let k = 0; k < subTrunks; k++) {
-    const branchTT = 0.2 + rng() * 0.6;
-    const branchIdx = Math.floor(branchTT * (main.points.length - 1));
-    const branchPt = main.points[branchIdx];
-    const localTubeR = mainTubeAt(branchIdx / (main.points.length - 1));
+  //
+  // Recursive: each sub-trunk can spawn its own sub-sub-trunks at half
+  // count and reduced scale, capped at MAX_DEPTH levels. With
+  // foramSubTrunks=4 you get 4 subs on the main, ~2 sub-subs per sub
+  // (≈ 8 total sub-subs), and ~1 sub-sub-sub per sub-sub. Result is a
+  // visibly tangled network of nested spirals around the main coil.
+  const MAX_RECUR_DEPTH = 3;
+  function emitSubs(parentPoints, parentTubeAt, count, depthLevel, seedSalt) {
+    if (count <= 0 || depthLevel >= MAX_RECUR_DEPTH) return;
+    for (let k = 0; k < count; k++) {
+      const branchTT = 0.2 + rng() * 0.6;
+      const branchIdx = Math.floor(branchTT * (parentPoints.length - 1));
+      const branchPt = parentPoints[branchIdx];
+      const localTubeR = parentTubeAt(branchIdx / (parentPoints.length - 1));
 
-    // Random axis for the sub's coiling plane.
-    const subAxisYaw   = rng() * Math.PI * 2;
-    const subAxisPitch = (rng() - 0.5) * Math.PI;
-    const cP = Math.cos(subAxisPitch), sP = Math.sin(subAxisPitch);
-    const subAxis = new THREE.Vector3(
-      cP * Math.cos(subAxisYaw),
-      sP,
-      cP * Math.sin(subAxisYaw)
-    ).normalize();
+      const subAxisYaw   = rng() * Math.PI * 2;
+      const subAxisPitch = (rng() - 0.5) * Math.PI;
+      const cP = Math.cos(subAxisPitch), sP = Math.sin(subAxisPitch);
+      const subAxis = new THREE.Vector3(
+        cP * Math.cos(subAxisYaw),
+        sP,
+        cP * Math.sin(subAxisYaw)
+      ).normalize();
 
-    const subScale   = 0.4 + rng() * 0.3;
-    const subTurns   = turns * (0.4 + rng() * 0.4);
-    const subTubeEnd = tubeEnd * subScale;
-    const sub = buildSpiral({
-      turns: subTurns,
-      growth,
-      tubeStart: localTubeR,
-      tubeEnd: subTubeEnd,
-      pitch,
-      r0: r0 * subScale,
-      aspect: 1 + (aspect - 1) * 0.5,
-      tiltMax,
-      wander,
-      seedOffset: seedOffset + (k + 1) * 0.073,
-    });
+      // Each generation gets smaller. Depth 1 ≈ 0.5×, depth 2 ≈ 0.3×.
+      const generationShrink = Math.pow(0.7, depthLevel);
+      const subScale   = (0.4 + rng() * 0.3) * generationShrink;
+      const subTurns   = Math.max(1.2, turns * (0.4 + rng() * 0.4) * generationShrink);
+      const subTubeEnd = Math.max(0.3, tubeEnd * subScale);
+      const sub = buildSpiral({
+        turns: subTurns,
+        growth,
+        tubeStart: localTubeR,
+        tubeEnd: subTubeEnd,
+        pitch,
+        r0: r0 * subScale,
+        aspect: 1 + (aspect - 1) * 0.5,
+        tiltMax,
+        wander,
+        seedOffset: seedOffset + seedSalt + (k + 1) * 0.073 + depthLevel * 0.13,
+      });
 
-    // Rotate sub-local +y → subAxis, then translate so first point lands at branchPt.
-    const localUp = new THREE.Vector3(0, 1, 0);
-    const q = new THREE.Quaternion().setFromUnitVectors(localUp, subAxis);
-    for (const p of sub.points) p.applyQuaternion(q);
-    const shift = branchPt.clone().sub(sub.points[0]);
-    for (const p of sub.points) p.add(shift);
+      const localUp = new THREE.Vector3(0, 1, 0);
+      const q = new THREE.Quaternion().setFromUnitVectors(localUp, subAxis);
+      for (const p of sub.points) p.applyQuaternion(q);
+      const shift = branchPt.clone().sub(sub.points[0]);
+      for (const p of sub.points) p.add(shift);
 
-    relaxPolyline(sub.points, sub.pointR);
-    const subTubeAt = makeTubeAt(localTubeR, subTubeEnd, chambers, bulge);
-    pushPolyline(sub.points, subTubeAt, 1, 0);
+      relaxPolyline(sub.points, sub.pointR);
+      const subTubeAt = makeTubeAt(localTubeR, subTubeEnd, chambers, bulge);
+      pushPolyline(sub.points, subTubeAt, depthLevel + 1, 0);
+
+      // Recurse — each sub spawns half as many sub-subs.
+      emitSubs(sub.points, subTubeAt, Math.floor(count / 2), depthLevel + 1,
+               seedSalt + (k + 1) * 0.337);
+    }
   }
+  emitSubs(main.points, mainTubeAt, subTrunks, 0, 0);
 
   // ---- Optional radial spines on the main trunk ----
   if (spineCount > 0) {
@@ -5978,6 +6117,7 @@ const bindings = {
   corRadiusDecay:     bindSlider('corRadiusDecay',     'corRadiusDecay',     v => v.toFixed(2)),
   corAsymmetry:       bindSlider('corAsymmetry',       'corAsymmetry',       v => v.toFixed(2)),
   corCurl:            bindSlider('corCurl',            'corCurl',            v => v.toFixed(2)),
+  corPlumage:         bindSlider('corPlumage',         'corPlumage',         v => v.toFixed(2)),
 };
 
 function onSymChange() {
@@ -6174,6 +6314,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.11', date: '2026-05-03', n: 'Three creature maximalism passes: (1) Acantharian — children now use the same seashell-spiral helper as the parent (was Fibonacci) so every recursion level reads as a clear winding curve on its own body sphere. (2) Foraminiferan tangle — turns range bumped 5 → 8 (default 4 → 5), sub-trunks range bumped 5 → 10 (default 2 → 4), and sub-trunks are now recursive: each sub spawns half-as-many sub-sub-trunks at 0.7× generation-shrink, capped at 3 levels deep. With default 4 you get ≈ 4 + 8 + 4 nested spirals threaded through the main coil — a really complex tangle. (3) Coralline alien plumage — primary count bumped to max(14, branchesPerNode × 5) for plumage density. New "Alien plumage" slider (default 0.7) controls fraction of leaf tips that grow a hybrid terminal element; each terminal is randomly one of three types: flower-bell (calyx + 6 radiating petals, botanical), fern-fiddlehead curl (tightening planar spiral, botanical), or anemone-polyp (9 thin radiating bristles, animal). Mixing botanical + animal forms in one creature gives a no-Earth-analog alien feel. Codec slot 68.' },
   { v: 'v1.32.10', date: '2026-05-03', n: 'Three creature redesigns from a deep simulation: (1) Acantharian — diagnosis showed Fibonacci-sphere directions place sequential indices via 137.5° azimuthal jumps (uniform coverage but no visually-readable curve). Replaced top-level emergence with a smooth pole-to-pole seashell spiral (acanSpiralTurns, default 3) so sequential spines are spatial neighbours and the eye traces a clear winding curve painted on the body. Children keep Fibonacci so the parent pattern dominates. Codec slot 66. (2) Foraminiferan — added recursive sub-trunks (foramSubTrunks 0-5, default 2) using the same spiral logic at reduced scale; each sub emerges at a random interior point on the main path, winds in a random axis, and joins the main with seamless tubeStart=local-radius matching. Refactored spiral generation into shared helpers so main and subs reuse identical layers (anisotropic ellipse → tilt → wander → relaxation). Codec slot 67. (3) Coralline — replaced "+Y vertical bias" with outward-from-origin bias so tips fan radially in their parent\'s azimuth instead of all leaning toward the sun; primary count bumped (×3 instead of ×2 of branchesPerNode, floor 8) for bouquet density; lift jitter widened (0°-60°) so many primaries hug the ground. Result is a flower-bouquet silhouette with petals touching the table and inner trunks visible through gaps in the dense outer foliage. Slider relabelled "Outward bias" to match the new semantics.' },
   { v: 'v1.32.9', date: '2026-05-03', n: 'Three creature refinements: (1) Foraminiferan path now interleaves Laplacian smoothing with self-avoidance per iteration so the dodging coil reads as a continuous curve instead of a polyline of kinks; (2) Acantharian helical-twist amplitude profile changed from (1−t) to sin(πt) so each spine truly emerges from its Fibonacci-spiral position on the sphere surface (zero wobble at the base, peak at midspan, zero at tip), restoring the spiral pattern of emergence; (3) Coralline replaced single vertical trunk with a ring of N=2× branchesPerNode primary branches radiating outward from a flat base ring, each with per-azimuth length lobing (two seeded sin harmonics) and ±20° lift jitter, producing a half-dome silhouette that lies flat on a table with regional growth variability instead of a uniform tree.' },
   { v: 'v1.32.8', date: '2026-05-03', n: 'Foraminiferan visible orbital separation: self-avoidance safety multiplier now scales with foramSelfAvoid (1.2 → 4.2 across the slider) so the param controls how much negative space sits between coils rather than just whether they overlap; max iterations bumped 5 → 12 to converge under the larger separation requirement. Result is a comet path orbiting a clear inner cavity, with edges that never touch.' },
