@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.12</span>
+        <span id="version">v1.32.13</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.12";
+const VERSION = "v1.32.13";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4307,7 +4307,15 @@ function generateAcantharianStructure(s) {
     // Children inherit the parent's full spine count (v1.32.12) so
     // every level has the same emergence-curve density on its sphere.
     const localSpineCount = spineCount;
-    const dirs = seashellSpiralDirections(localSpineCount, s.acanSpiralTurns ?? 3, phaseOffset);
+    // Top-level uses the smooth seashell spiral so the eye traces a
+    // clear curve painted on the body. Children use Fibonacci so
+    // their spines radiate in ALL directions (golden-angle azimuthal
+    // jumps cover the whole sphere uniformly) — the user wants
+    // children to look like little pincushions of jelly-tentacles
+    // pointing every which way, not pole-to-pole spirals (v1.32.13).
+    const dirs = depth === 0
+      ? seashellSpiralDirections(localSpineCount, s.acanSpiralTurns ?? 3, phaseOffset)
+      : fibonacciSphereDirections(localSpineCount, phaseOffset);
 
     let spineIndex = 0;
     for (const d of dirs) {
@@ -4326,7 +4334,10 @@ function generateAcantharianStructure(s) {
       const useTwist = twist > 1e-3;
 
       if (useTwist) {
-        const N = 5;
+        // 7 segments (was 5) — more sample points along the spine so
+        // the multi-frequency wave reads as a smooth flowing curve,
+        // not a coarse polyline.
+        const N = 7;
         // Stable perpendicular axes to the spine direction for the helix.
         tmp.set(d.x, d.y, d.z);
         if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
@@ -4372,11 +4383,17 @@ function generateAcantharianStructure(s) {
           const ampTwist = ampBase * Math.sin(t * Math.PI);
           const twistDX = Math.cos(ph) * ampTwist;
           const twistDY = Math.sin(ph) * ampTwist;
-          // Wind-bend contribution — sin(πt) so the spine arcs in a
-          // smooth single-curve from base to tip. Coefficient bumped
-          // 0.18 → 0.32 so the bend is much more visibly wavy.
-          const bendStrength = Math.sin(t * Math.PI);
-          const bendOffset = thisLen * 0.32 * bendMag * bendStrength;
+          // Wind-bend contribution — primary sin(πt) arc (peak at
+          // midspan, zero at base/tip) plus a secondary 2× harmonic
+          // with a per-spine phase offset so each spine has a slight
+          // S-shape rather than a clean parabolic arc. The combo gives
+          // the "jelly tentacle drifting in current" feel: every
+          // spine still leans coherently with the wind, but each one
+          // undulates slightly differently.
+          const harmonicPhase = spineIndex * 1.7321;  // √3, irrational
+          const bendStrength = Math.sin(t * Math.PI)
+                             + 0.35 * Math.sin(t * Math.PI * 2 + harmonicPhase);
+          const bendOffset = thisLen * 0.50 * bendMag * bendStrength;
           const bendDX = bendCosP * bendOffset;
           const bendDY = bendSinP * bendOffset;
           wp.push(startPt.clone().lerp(endPt, t)
@@ -4621,13 +4638,19 @@ function generateCorallineStructure(s) {
 
       const childEnd = parentEnd.clone().addScaledVector(childDir, childLen);
 
-      // Wavy multi-segment branch (v1.32.12). Every non-trunk branch
-      // is a 3-segment sin-arc path that bends in the patch's coherent
-      // wave direction, so the whole subtree flows together rather
-      // than being a tangle of straight sticks. corCurl scales the
-      // amplitude on top of a baseline wave.
-      const waveProj = patchWaveAxis.clone()
-        .addScaledVector(childDir, -patchWaveAxis.dot(childDir));
+      // Organic wavy multi-segment branch (v1.32.13). Each branch is
+      // a 4-segment chain whose perpendicular offset combines a
+      // primary sin(πt) arc with a 0.4× secondary 2× harmonic at a
+      // per-branch random phase — so each stalk gets a slight S-shape
+      // rather than a clean parabolic arc, plus per-branch wave-axis
+      // rotation around childDir (±15°) and amplitude jitter (0.7-1.3×)
+      // so siblings within a patch flow in similar but non-identical
+      // directions. Net effect: the foliage reads as organic curved
+      // tendrils rather than a geometric branching graph.
+      const waveAxisLocal = patchWaveAxis.clone()
+        .applyAxisAngle(childDir, (rng() - 0.5) * 0.5);
+      const waveProj = waveAxisLocal.clone()
+        .addScaledVector(childDir, -waveAxisLocal.dot(childDir));
       const wpLen = waveProj.length();
       let waveDir;
       if (wpLen < 1e-6) {
@@ -4640,12 +4663,16 @@ function generateCorallineStructure(s) {
       } else {
         waveDir = waveProj.divideScalar(wpLen);
       }
-      const waveAmp = childLen * (0.15 + curl * 0.20);  // 0.15..0.35 of length
-      const N_SEGS = 3;
+      const baseAmp = childLen * (0.18 + curl * 0.22);
+      const waveAmp = baseAmp * (0.7 + rng() * 0.6);    // ±30% per branch
+      const harmonicPhase = rng() * Math.PI * 2;
+      const N_SEGS = 4;
       const wp = [];
       for (let k = 0; k <= N_SEGS; k++) {
         const t = k / N_SEGS;
-        const offset = waveAmp * Math.sin(t * Math.PI);
+        const profile = Math.sin(t * Math.PI)
+                      + 0.4 * Math.sin(t * Math.PI * 2 + harmonicPhase);
+        const offset = waveAmp * profile;
         wp.push(parentEnd.clone().lerp(childEnd, t).addScaledVector(waveDir, offset));
       }
       for (let k = 0; k < N_SEGS; k++) {
@@ -5025,16 +5052,28 @@ function generateForaminiferanStructure(s) {
     // sample. Phase varies by index so adjacent bumps splay around
     // the tube circumference instead of all stacking on one side.
     const fuzzStride = Math.max(1, Math.round(4 - fuzz * 3));
-    const bumpsPerPoint = 1 + Math.floor(fuzz * 3);
     for (const poly of polylines) {
       const pts = poly.points, prs = poly.pointR;
       for (let i = 0; i < pts.length - 1; i += fuzzStride) {
         const tangent = new THREE.Vector3().subVectors(pts[i+1], pts[i]).normalize();
         const tubeR = prs[i];
         const [p1, p2] = buildLocalPerps(tangent);
+        // Hairiness scales with local tube radius (v1.32.13). A 5 mm
+        // section has ~5× the circumference of a 1 mm section, so
+        // visually it should also have ~5× the bumps to read as
+        // similarly furry. Formula: ~(1 + 2·tubeR)·fuzz, so at fuzz=1
+        // a thick (5 mm) section gets ~11 bumps and a thin (1 mm)
+        // section gets ~3.
+        const bumpsPerPoint = Math.max(1, Math.round((1 + tubeR * 2) * fuzz));
         for (let b = 0; b < bumpsPerPoint; b++) {
-          const phase = (i * 0.31 + b * 1.7
-                       + ((s.seed >>> 0) & 0xfff) * 0.0007) % (Math.PI * 2);
+          // Spread bumps evenly around the local circumference so a
+          // thick section reads as ringed in fuzz rather than all
+          // on one side. The per-point spiral jitter (0.31 × i) adds
+          // a slow rotation between adjacent rings so they don't form
+          // visible aligned columns up the tube.
+          const phase = (b / bumpsPerPoint) * Math.PI * 2
+                      + (i * 0.31
+                         + ((s.seed >>> 0) & 0xfff) * 0.0007) % (Math.PI * 2);
           const lateral = new THREE.Vector3()
             .addScaledVector(p1, Math.cos(phase))
             .addScaledVector(p2, Math.sin(phase));
@@ -6477,6 +6516,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.13', date: '2026-05-03', n: 'Organic flow + targeted hairiness: (1) Acantharian — children reverted to fibonacciSphereDirections (was seashell) so their spines radiate in all directions like little pincushions of jelly tentacles, while the parent keeps the seashell spiral for a clear emergence-curve on its body. Spine waviness bumped: segments 5 → 7, secondary 2× harmonic at per-spine phase added on top of the sin(πt) arc, amplitude coefficient 0.32 → 0.50 — every spine still leans coherently with the wind but each one undulates in a slight S-shape so the field reads as drifting jelly rather than rigid wheat. (2) Foraminiferan — fuzz density now scales with local tube radius: bumpsPerPoint = round((1 + 2·tubeR)·fuzz). At fuzz=1 a 5 mm-thick section gets ~11 bumps per ring; a 1 mm-thin section gets ~3. Bumps spread evenly around the local circumference (b/N · 2π) plus slow per-point spiral jitter so they don\'t form aligned columns. Result: the thick inner end of the spiral is visibly hairy/furry, the thin outer end is sparser. (3) Coralline — branches now read as organic tendrils rather than a geometric graph: 3 → 4 segments per branch, secondary 0.4× 2× harmonic with per-branch random phase, per-branch wave-axis rotation around childDir (±15°), per-branch amplitude jitter (0.7-1.3×), and baseline amplitude bumped 0.15 → 0.18 (curl scales up to 0.40). Siblings within a patch flow in similar-but-non-identical directions — coherent without being repetitive.' },
   { v: 'v1.32.12', date: '2026-05-03', n: 'Surface complexity + coherent flow pass: (1) Acantharian — children now use the parent\'s full spine count (was halved) so every level has the same density of emergence-curve. Twist mode now active for ALL depths (was top-level only). Per-spine random Gaussian bend replaced with a coherent wheat-in-wind model: a global wind direction (per-seed) is projected into each spine\'s local perp basis to derive the bend phase, and a sin-wave along a perpendicular ripple axis modulates the magnitude — every spine on the creature leans toward the same world direction with smoothly varying strength, like wheat with a wave moving across the field. Bend profile changed Gaussian → sin(πt) for a cleaner single-arc shape; amplitude coefficient bumped 0.18 → 0.32 so curves are visibly wavy. (2) Foraminiferan — new "Surface fuzz" slider (default 0.5) controls additive surface complexity on every polyline (main + every sub). Two layers: short perpendicular fuzz bumps (1-4 per stride sample, hard 0.5 mm radius floor + 1.6-2.6× length so they print) and helical wrap filaments (1-4 thin coils that spiral around the tube on its surface like a braided rope, grooves between them = trenches). Codec slot 69. (3) Coralline — primary count bumped to max(20, branchesPerNode × 7) for much denser plumage and less negative space. Per-primary patchDecayMul (0.7×-1.4×) creates patches: some primaries decay aggressively for short dense plumage clusters, others decay slowly for long extensions. Per-primary patchWaveAxis is threaded through the entire subtree so all branches in one patch flow coherently in the same wave direction. Every non-trunk branch is now a 3-segment sin-arc wavy path with baseline amplitude 0.15× length (corCurl scales up to 0.35×), so extensions waver instead of being sticks.' },
   { v: 'v1.32.11', date: '2026-05-03', n: 'Three creature maximalism passes: (1) Acantharian — children now use the same seashell-spiral helper as the parent (was Fibonacci) so every recursion level reads as a clear winding curve on its own body sphere. (2) Foraminiferan tangle — turns range bumped 5 → 8 (default 4 → 5), sub-trunks range bumped 5 → 10 (default 2 → 4), and sub-trunks are now recursive: each sub spawns half-as-many sub-sub-trunks at 0.7× generation-shrink, capped at 3 levels deep. With default 4 you get ≈ 4 + 8 + 4 nested spirals threaded through the main coil — a really complex tangle. (3) Coralline alien plumage — primary count bumped to max(14, branchesPerNode × 5) for plumage density. New "Alien plumage" slider (default 0.7) controls fraction of leaf tips that grow a hybrid terminal element; each terminal is randomly one of three types: flower-bell (calyx + 6 radiating petals, botanical), fern-fiddlehead curl (tightening planar spiral, botanical), or anemone-polyp (9 thin radiating bristles, animal). Mixing botanical + animal forms in one creature gives a no-Earth-analog alien feel. Codec slot 68.' },
   { v: 'v1.32.10', date: '2026-05-03', n: 'Three creature redesigns from a deep simulation: (1) Acantharian — diagnosis showed Fibonacci-sphere directions place sequential indices via 137.5° azimuthal jumps (uniform coverage but no visually-readable curve). Replaced top-level emergence with a smooth pole-to-pole seashell spiral (acanSpiralTurns, default 3) so sequential spines are spatial neighbours and the eye traces a clear winding curve painted on the body. Children keep Fibonacci so the parent pattern dominates. Codec slot 66. (2) Foraminiferan — added recursive sub-trunks (foramSubTrunks 0-5, default 2) using the same spiral logic at reduced scale; each sub emerges at a random interior point on the main path, winds in a random axis, and joins the main with seamless tubeStart=local-radius matching. Refactored spiral generation into shared helpers so main and subs reuse identical layers (anisotropic ellipse → tilt → wander → relaxation). Codec slot 67. (3) Coralline — replaced "+Y vertical bias" with outward-from-origin bias so tips fan radially in their parent\'s azimuth instead of all leaning toward the sun; primary count bumped (×3 instead of ×2 of branchesPerNode, floor 8) for bouquet density; lift jitter widened (0°-60°) so many primaries hug the ground. Result is a flower-bouquet silhouette with petals touching the table and inner trunks visible through gaps in the dense outer foliage. Slider relabelled "Outward bias" to match the new semantics.' },
