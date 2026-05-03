@@ -722,6 +722,20 @@
         <label>Starting radius (mm) <span class="val" id="foramR0Val">3</span></label>
         <input type="range" id="foramR0" min="1" max="10" step="0.1" value="3">
       </div>
+      <div class="ctrl" data-creature-section="foraminiferan">
+        <label>Chambers <span class="val" id="foramChambersVal">0</span></label>
+        <input type="range" id="foramChambers" min="0" max="12" step="1" value="0">
+        <div class="ctrl-note">Bulbous chambers along the spiral; 0 = smooth tube.</div>
+      </div>
+      <div class="ctrl" data-creature-section="foraminiferan">
+        <label>Chamber bulge <span class="val" id="foramBulgeVal">0.40</span></label>
+        <input type="range" id="foramBulge" min="0" max="1" step="0.05" value="0.4">
+      </div>
+      <div class="ctrl" data-creature-section="foraminiferan">
+        <label>Outer spines <span class="val" id="foramSpinesVal">0</span></label>
+        <input type="range" id="foramSpines" min="0" max="16" step="1" value="0">
+        <div class="ctrl-note">Small radial spines along the outer half of the spiral, evenly distributed.</div>
+      </div>
 
       <div class="section-header" data-creature-section="coralline">Coralline morphology</div>
 
@@ -848,7 +862,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.1</span>
+        <span id="version">v1.32.2</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -900,7 +914,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.1";
+const VERSION = "v1.32.2";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -986,6 +1000,15 @@ const DEFAULTS = {
                             //            (corkscrew / drill bit).
   foramR0: 3,              // 1..10     starting distance from the spiral axis (mm).
                             //            controls how tightly the spiral begins.
+  // Foraminiferan polish (chunk 4C, v1.32.2):
+  foramChambers: 0,        // 0..12     number of bulbous chambers along the spiral.
+                            //            0 = smooth tube, higher = nautilus-like septa.
+  foramBulge: 0.4,         // 0..1      chamber bulge magnitude. Modulates tube radius via
+                            //            cos² (chambers·π·t) so peaks are 1+bulge×0.5 of base.
+  foramSpines: 0,          // 0..16     number of small radial spines along the outer half
+                            //            of the spiral. Adds a feathered, biological
+                            //            ornament reminiscent of certain foraminifera and
+                            //            ammonite ribbing.
   // Coralline-specific controls (chunk 3B, v1.31.1):
   corTrunkLen: 18,       // 6..40    initial vertical trunk length (mm)
   corTrunkR: 3.0,        // 1..6     base trunk radius (mm)
@@ -1323,6 +1346,11 @@ function paramFields(s) {
     s.foramTubeEnd.toFixed(2),
     s.foramPitch | 0,
     s.foramR0.toFixed(1),
+    // ↓ added in v1.32.2 (chunk 4C — chambers + spines). Defaults
+    // preserve chunk-4B smooth-tube look for older saved configs.
+    s.foramChambers | 0,
+    s.foramBulge.toFixed(2),
+    s.foramSpines | 0,
   ];
 }
 
@@ -1446,6 +1474,9 @@ function parseParamSlots(slots) {
   const foramTubeEndV   = slots.length > 55 ? clamp(parseFloat(slots[55]) || 4.0, 1, 8)               : 4.0;
   const foramPitchV     = slots.length > 56 ? clamp(parseInt(slots[56], 10) || 0, 0, 30)              : 0;
   const foramR0V        = slots.length > 57 ? clamp(parseFloat(slots[57]) || 3, 1, 10)                : 3;
+  const foramChambersV  = slots.length > 58 ? clamp(parseInt(slots[58], 10) || 0, 0, 12)              : 0;
+  const foramBulgeV     = slots.length > 59 ? clamp(parseFloat(slots[59]) || 0.4, 0, 1)               : 0.4;
+  const foramSpinesV    = slots.length > 60 ? clamp(parseInt(slots[60], 10) || 0, 0, 16)              : 0;
   return {
     material:    MATERIAL_KEYS[matIdx],
     size:        clamp(parseInt(slots[1],  10) || 80, 40, 200),
@@ -1505,6 +1536,9 @@ function parseParamSlots(slots) {
     foramTubeEnd:   foramTubeEndV,
     foramPitch:     foramPitchV,
     foramR0:        foramR0V,
+    foramChambers:  foramChambersV,
+    foramBulge:     foramBulgeV,
+    foramSpines:    foramSpinesV,
   };
 }
 
@@ -4271,13 +4305,16 @@ function generateForaminiferanStructure(s) {
   const branches = [];
   const accents = [];
 
-  // User-tunable controls (chunk 4B, v1.32.1).
+  // User-tunable controls (chunk 4B + 4C, v1.32.1 + v1.32.2).
   const turns      = s.foramTurns     ?? 2.5;
   const growth     = s.foramGrowth    ?? 0.10;
   const tubeStart  = s.foramTubeStart ?? 0.8;
   const tubeEnd    = s.foramTubeEnd   ?? 4.0;
   const pitch      = s.foramPitch     ?? 0;
   const r0         = s.foramR0        ?? 3;
+  const chambers   = s.foramChambers  ?? 0;
+  const bulge      = s.foramBulge     ?? 0.4;
+  const spineCount = s.foramSpines    ?? 0;
   const samplesPerTurn = 24;
 
   const totalAngle = turns * Math.PI * 2;
@@ -4294,24 +4331,70 @@ function generateForaminiferanStructure(s) {
     points.push(new THREE.Vector3(x, y, z));
   }
 
+  // Helper: compute the bulged tube radius at parameter t ∈ [0, 1].
+  // Modulates the linearly-interpolated base radius by 1 + bulge × cos²(N π t)
+  // so radius peaks every 1/N of the spiral length, giving N chamber-like
+  // bulges. Half-coefficient (×0.5) keeps the peak ratio sensible —
+  // bulge=1 gives 1.5× peak width, not 2×.
+  const tubeAt = (t) => {
+    const base = tubeStart * (1 - t) + tubeEnd * t;
+    if (chambers <= 0 || bulge <= 0) return base;
+    const c = Math.cos(chambers * Math.PI * t);
+    return base * (1 + bulge * 0.5 * c * c);
+  };
+
   // Connect consecutive sample points with capsules. Tube radius
   // interpolates linearly from tubeStart at the inner end to tubeEnd
   // at the outer end — straightforward but produces a natural-looking
-  // growth profile.
+  // growth profile. Chamber bulges modulate the radius at evenly-
+  // distributed points along the spiral.
   for (let i = 0; i < points.length - 1; i++) {
     const t0 = i       / (points.length - 1);
     const t1 = (i + 1) / (points.length - 1);
-    const r0_ = tubeStart * (1 - t0) + tubeEnd * t0;
-    const r1_ = tubeStart * (1 - t1) + tubeEnd * t1;
     const tangent = new THREE.Vector3().subVectors(points[i+1], points[i]).normalize();
     branches.push({
       start: points[i].clone(),
       end:   points[i+1].clone(),
-      r0: r0_, r1: r1_,
+      r0: tubeAt(t0), r1: tubeAt(t1),
       depth: 0, parent: null,
       tangent,
       wobble: 0,
     });
+  }
+
+  // Optional radial spines along the outer half of the spiral. Each
+  // spine grows radially outward (perpendicular to the spiral axis,
+  // in the X-Z plane) from the spiral surface. Length and base radius
+  // are both proportional to the local tube radius so spines feel
+  // visually consistent with the spiral they emerge from.
+  if (spineCount > 0) {
+    const spineStart = Math.floor(points.length * 0.5);  // start halfway around
+    const spineRange = points.length - 1 - spineStart;
+    if (spineRange > 0) {
+      const stride = Math.max(1, Math.floor(spineRange / spineCount));
+      let placed = 0;
+      for (let i = spineStart; i < points.length - 1 && placed < spineCount; i += stride, placed++) {
+        const t = i / (points.length - 1);
+        const localR = tubeAt(t);
+        const p = points[i];
+        // Outward radial direction in the X-Z plane (ignoring axial Y).
+        const radial = new THREE.Vector3(p.x, 0, p.z);
+        const radialLen = radial.length();
+        if (radialLen < 1e-6) continue;
+        radial.divideScalar(radialLen);
+        const spineLen = localR * 4.0;
+        const spineEnd = p.clone().addScaledVector(radial, spineLen);
+        branches.push({
+          start: p.clone(),
+          end: spineEnd,
+          r0: localR * 0.40,
+          r1: localR * 0.15,
+          depth: 1, parent: null,
+          tangent: radial.clone(),
+          wobble: 0,
+        });
+      }
+    }
   }
 
   return { branches, accents };
@@ -5447,6 +5530,9 @@ const bindings = {
   foramTubeEnd:    bindSlider('foramTubeEnd',    'foramTubeEnd',    v => v.toFixed(1)),
   foramPitch:      bindSlider('foramPitch',      'foramPitch',      v => v),
   foramR0:         bindSlider('foramR0',         'foramR0',         v => v.toFixed(1)),
+  foramChambers:   bindSlider('foramChambers',   'foramChambers',   v => v),
+  foramBulge:      bindSlider('foramBulge',      'foramBulge',      v => v.toFixed(2)),
+  foramSpines:     bindSlider('foramSpines',     'foramSpines',     v => v),
   // Coralline-specific (v1.31.1, chunk 3B):
   corTrunkLen:        bindSlider('corTrunkLen',        'corTrunkLen',        v => v),
   corTrunkR:          bindSlider('corTrunkR',          'corTrunkR',          v => v.toFixed(1)),
@@ -5656,6 +5742,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.2', date: '2026-05-02', n: 'Foraminiferan polish (chunk 4C): chamber bulges (cos²-modulated tube radius) + outer-half radial spines. Codec slots 58-60. Four-creature plan complete (Radiolarian, Acantharian, Coralline, Foraminiferan).' },
   { v: 'v1.32.1', date: '2026-05-02', n: 'Foraminiferan UI controls (chunk 4B): turns, growth rate, tube start/end, pitch, starting radius. Codec slots 52-57.' },
   { v: 'v1.32.0', date: '2026-05-02', n: 'New creature: Foraminiferan (chunk 4A). 3D logarithmic spiral tube growing exponentially outward — nautilus / ammonite morphology. Hardcoded defaults; per-creature controls land in chunk 4B.' },
   { v: 'v1.31.4', date: '2026-05-02', n: 'Recursive Acantharian (chunk 2D): each spine tip can spawn a smaller acantharian, ranging in size. New depth/scale/variation controls; default depth 2 produces a main creature with a constellation of small ones at every tip.' },
