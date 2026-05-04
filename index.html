@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.56</span>
+        <span id="version">v1.32.57</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.56";
+const VERSION = "v1.32.57";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4199,12 +4199,7 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
   return true;
 }
 
-// DEBUG TOGGLES (v1.32.16, v1.32.22, v1.32.23, v1.32.40, v1.32.53).
-// ACAN_DEBUG_TWO_COLOR_CHILDREN: when true, emit just two debug
-// children — one at parent.spines[0] with bend "toward parent"
-// (green marker), one at parent.spines[18] with bend "away from
-// parent" (red marker). Used to visually disambiguate which sign
-// produces the user's desired bend direction.
+// DEBUG TOGGLES (v1.32.16, v1.32.22, v1.32.23, v1.32.40).
 // ACAN_DEBUG_NO_CHILDREN: when true, no children at all — just the
 // parent. Useful when iterating on parent morphology in isolation.
 // ACAN_DEBUG_SINGLE_CHILD_ONLY: when true (and NO_CHILDREN false),
@@ -4214,10 +4209,9 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
 // spine fattening). When false, falls back to the buildOneAcantharian
 // helper. As of v1.32.40 propagation is enabled, so this stays true
 // for the simplified emit path.
-const ACAN_DEBUG_NO_CHILDREN          = false;
-const ACAN_DEBUG_SINGLE_CHILD_ONLY    = true;
-const ACAN_DEBUG_CHILD_NODE_ONLY      = true;
-const ACAN_DEBUG_TWO_COLOR_CHILDREN   = true;
+const ACAN_DEBUG_NO_CHILDREN       = false;
+const ACAN_DEBUG_SINGLE_CHILD_ONLY = true;
+const ACAN_DEBUG_CHILD_NODE_ONLY   = true;
 
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
 //
@@ -4488,29 +4482,18 @@ function generateAcantharianStructure(s) {
     // parent spine tips is enabled, switch back to recurScale-based
     // sizing so each child takes its natural per-tip size + variation.
     const DEBUG_OVERSIZE_NODE = false;
-    // bendIntent: +1 = "toward parent" (current code intent),
-    //             -1 = "away from parent" (sign-flipped from intent).
-    // debugColor: hex color for the overlay marker (or null for none).
-    const emitChildNode = (ps, scale, bendIntent = +1, debugColor = null) => {
+    const emitChildNode = (ps, scale) => {
       const childSR = DEBUG_OVERSIZE_NODE ? sphereRadius * 0.50 : sphereRadius * scale;
       const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
       // Body sphere (degenerate capsule).
-      const bodySphere = {
+      branches.push({
         start: childCenter.clone(),
         end:   childCenter.clone().add(new THREE.Vector3(0, 0.01, 0)),
         r0: childSR, r1: childSR,
         depth: 0, parent: null,
         tangent: ps.dir.clone(),
         wobble: 0,
-      };
-      branches.push(bodySphere);
-      if (debugColor !== null) {
-        if (!globalThis._acanDebugMarkers) globalThis._acanDebugMarkers = [];
-        // sphere reference will have its .start scaled in place by
-        // scaleStructureToSize, so the marker tracks the correct
-        // post-scale world position.
-        globalThis._acanDebugMarkers.push({ sphere: bodySphere, color: debugColor });
-      }
+      });
       // Straight child spines with length jitter (v1.32.34, restored
       // v1.32.36). Each spine stays EXACTLY along its own d direction
       // (no bend, no wobble) so the all-direction radial pattern is
@@ -4560,85 +4543,27 @@ function generateAcantharianStructure(s) {
         }
       }
 
-      // Gentle 25° arc bending back toward parent (v1.32.51). For
-      // each spine: bendDir = projection of -ps.dir (the direction
-      // from child to parent) onto the plane perpendicular to d.
-      // Equatorial spines have the largest projection magnitude and
-      // bend most; near-polar spines have small/zero projection and
-      // bend little/not at all (no arbitrary direction to bend in).
-      // Spine path follows a true circular arc subtending ARC_DEG.
-      const ARC_DEG = 90;
-      const ARC_RAD = ARC_DEG * Math.PI / 180;
-      const N_CHILD = 5;
-      const _bendDir = new THREE.Vector3();
+      // Straight child spines with length jitter (v1.32.34, restored
+      // v1.32.50). Each spine stays exactly along its own d direction.
       for (const d of childDirs) {
         const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
         const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
-
-        // Bend direction = projection of (-bendIntent · ps.dir) onto
-        // perp plane of d. bendIntent=+1 → bend "toward parent"
-        // (mathematical intent); bendIntent=-1 → bend "away from parent."
-        // v1.32.53 exposes this as a parameter so we can A/B test.
-        const dotPSDir = d.dot(ps.dir);
-        _bendDir.copy(ps.dir).multiplyScalar(-bendIntent).addScaledVector(d, dotPSDir * bendIntent);
-        const bendLen = _bendDir.length();
-        if (bendLen < 1e-3) {
-          // d is (anti-)parallel to ps.dir — no defined "back toward
-          // parent" direction in the perp plane. Keep spine straight.
-          const endPt = childCenter.clone().addScaledVector(d, childSR + thisLen);
-          branches.push({
-            start: startPt, end: endPt,
-            r0: childBaseR, r1: childTipR,
-            depth: 1, parent: 0,
-            tangent: d.clone(),
-            wobble: 0,
-          });
-          continue;
-        }
-        _bendDir.divideScalar(bendLen);  // normalize
-
-        // Trace a circular arc of total angle ARC_RAD over arc-length thisLen.
-        // r = arcLen / angle. At parameter t ∈ [0,1]: along d by r·sin(tθ),
-        // perpendicular by r·(1 - cos(tθ)). At t=0: zero offset (clean
-        // emergence). At t=1: tip displaced perpendicular by r·(1-cos θ).
-        const r = thisLen / ARC_RAD;
-        const wp = [];
-        for (let k = 0; k <= N_CHILD; k++) {
-          const t = k / N_CHILD;
-          const ang = t * ARC_RAD;
-          const alongDist = r * Math.sin(ang);
-          const perpDist  = r * (1 - Math.cos(ang));
-          wp.push(startPt.clone()
-            .addScaledVector(d, alongDist)
-            .addScaledVector(_bendDir, perpDist));
-        }
-        for (let k = 0; k < N_CHILD; k++) {
-          const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
-          const r1 = childBaseR * (1 - t1) + childTipR * t1;
-          const r2 = childBaseR * (1 - t2) + childTipR * t2;
-          branches.push({
-            start: wp[k], end: wp[k + 1],
-            r0: r1, r1: r2,
-            depth: 1, parent: 0,
-            tangent: d.clone(),
-            wobble: 0,
-          });
-        }
+        const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
+        branches.push({
+          start: startPt, end: endPt,
+          r0: childBaseR, r1: childTipR,
+          depth: 1, parent: 0,
+          tangent: d.clone(),
+          wobble: 0,
+        });
       }
     };
 
-    if (ACAN_DEBUG_TWO_COLOR_CHILDREN && parentSpines.length >= 19) {
-      // A/B test: two children at different parent-spine tips with
-      // OPPOSING bend signs. Green = bend "toward parent" per the
-      // math intent. Red = bend "away from parent."
-      globalThis._acanDebugMarkers = [];
-      emitChildNode(parentSpines[0],  recurScale, +1, 0x00ff00); // green = toward
-      emitChildNode(parentSpines[18], recurScale, -1, 0xff0000); // red   = away
-    } else if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
+    if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
       const ps = parentSpines[0];
       if (ACAN_DEBUG_CHILD_NODE_ONLY) {
-        emitChildNode(ps, recurScale, +1);
+        emitChildNode(ps, recurScale);
       } else {
         const childSR = sphereRadius * recurScale;
         const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
@@ -4651,7 +4576,7 @@ function generateAcantharianStructure(s) {
         const childScale = Math.min(0.9, recurScale * variation);
         if (childScale > 0.05) {
           if (ACAN_DEBUG_CHILD_NODE_ONLY) {
-            emitChildNode(ps, childScale, +1);
+            emitChildNode(ps, childScale);
           } else {
             const childSR = sphereRadius * childScale;
             const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
@@ -6231,25 +6156,6 @@ async function generate(previewVoxels = 96) {
   if (mesh) exportGroup.add(mesh);
   addRingMeshes(rings);
 
-  // DEBUG: overlay colored marker spheres for two-color child A/B test
-  // (v1.32.54). MUST happen AFTER clearExport() above, otherwise the
-  // markers get wiped along with the in-progress preview mesh. Body-
-  // sphere references' .start are scaled in place by
-  // scaleStructureToSize so reading them gives post-scale world coords.
-  if (globalThis._acanDebugMarkers && globalThis._acanDebugMarkers.length > 0) {
-    for (const m of globalThis._acanDebugMarkers) {
-      const r = m.sphere.r0 * 1.6;
-      const g = new THREE.SphereGeometry(r, 18, 14);
-      const mat = new THREE.MeshBasicMaterial({
-        color: m.color, transparent: true, opacity: 0.55, depthWrite: false,
-      });
-      const marker = new THREE.Mesh(g, mat);
-      marker.position.copy(m.sphere.start);
-      marker.renderOrder = 999;
-      exportGroup.add(marker);
-    }
-  }
-
   // Cache the build result so downloadSTL can run its safety check
   // against the actual built field, and so the export-time pipeline
   // can serialize this exact mesh (no recomputation, no divergence).
@@ -6706,12 +6612,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
-  { v: 'v1.32.56', date: '2026-05-04', n: 'Acantharian child arc bumped 60° → 90° to make the bend direction unambiguous. At 90° the spine traces a quarter-circle: tip displacement ≈ 64% of length perpendicular AND ≈ 64% along d. Equator spines literally hook from horizontal-at-base to vertical-at-tip. If green child still looks like "spines bending away" at 90°, there\'s something downstream we haven\'t found yet.' },
-  { v: 'v1.32.55', date: '2026-05-04', n: 'Acantharian child arc bumped 25° → 60° for visibility. At 25° the perpendicular tip displacement was ≈ 21% of spine length (≈1.9 mm on a 9 mm spine = 2.4% of the 80 mm structure size) — below the threshold of clear visual curvature. At 60° the perpendicular displacement is ≈ 50% of length (≈4.5 mm), making the bend obviously visible. Two-color A/B test still active so we can confirm direction.' },
-  { v: 'v1.32.54', date: '2026-05-04', n: 'Acantharian — fix invisible debug markers. v1.32.53 added the marker overlay BEFORE the final clearExport()/exportGroup.add(mesh) calls; clearExport was wiping the markers along with the in-progress preview mesh. Moved the marker code to AFTER clearExport so the spheres survive into the final scene. Harness verified the underlying geometry: Child 1 (green, bendIntent=+1) has 34/36 spines bending toward parent (avg -1.74 mm closer); Child 2 (red, bendIntent=-1) has 34/36 bending away (avg +1.31 mm farther). Markers should now be visible.' },
-  { v: 'v1.32.53', date: '2026-05-04', n: 'Acantharian child A/B test — two children with opposing bend signs and colored overlay markers. ACAN_DEBUG_TWO_COLOR_CHILDREN flag emits two children: parentSpines[0] with bendIntent=+1 (the math "toward parent" direction) tagged green, parentSpines[18] with bendIntent=-1 tagged red. After buildBodyMesh, transparent colored sphere markers overlay each child\'s body sphere position so the user can visually identify which sign corresponds to their perceived "toward" vs "away."' },
-  { v: 'v1.32.52', date: '2026-05-04', n: 'Acantharian child spines — flip arc bend direction. v1.32.51 was designed to bend toward parent (-ps.dir projected onto perp plane); harness verified 34/36 spines geometrically closer to parent than straight equivalent. User reported visual was the OPPOSITE — bending away. So my "toward" is somehow the user\'s "away." Flipped the sign: bendDir = +ps.dir projected onto perp plane. If the visual perception was inverted from geometry, this should now look like bending toward parent.' },
-  { v: 'v1.32.51', date: '2026-05-04', n: 'Acantharian child spines — gentle 25° arc bending back toward parent. Each spine\'s bend direction = projection of -ps.dir (the direction from child to parent) onto the perp plane of d. Equatorial spines (d perpendicular to ps.dir) get the largest projection magnitude and bend most; spines pointing fully outward or fully back at parent have zero projection and stay straight. Spine path traces a true circular arc subtending 25°: r = thisLen/θ; at param t, alongDist=r·sin(tθ), perpDist=r·(1−cos(tθ)). 5 segments. Tip is displaced perpendicular by ~21% of length and along by ~97%.' },
+  { v: 'v1.32.57', date: '2026-05-04', n: 'Acantharian — full reset to the v1.32.50 baseline. Wipes the entire arc-bend exploration (v1.32.51 25° toward, v1.32.52 sign flip, v1.32.53 two-color A/B test, v1.32.54 marker visibility fix, v1.32.55 60° bump, v1.32.56 90° hook). Back to straight uniform child spines with log-uniform length jitter only.' },
   { v: 'v1.32.50', date: '2026-05-04', n: 'Acantharian — revert v1.32.49 uniform random curve. Back to straight uniform child spines with length jitter.' },
   { v: 'v1.32.49', date: '2026-05-04', n: 'Acantharian child — uniform random per-spine curve, no hemisphere logic. Every child spine gets a random bend direction (rng()×2π in the perp plane) and random magnitude (5–20% of length) applied as a single sin(πt) arc, 5 segments. South-hemisphere spines that curve toward the parent fuse via smooth-min where they intersect — accepted as natural fusion rather than avoided. No northness scaling, no per-segment random walk, no shared wind axis.' },
   { v: 'v1.32.48', date: '2026-05-04', n: 'Acantharian — revert v1.32.47 northness-scaled curve. Back to straight uniform child spines with log-uniform length jitter only.' },
