@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.36</span>
+        <span id="version">v1.32.37</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.36";
+const VERSION = "v1.32.37";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4502,6 +4502,23 @@ function generateAcantharianStructure(s) {
       const childBaseR = baseR * 0.5;
       const childTipR  = Math.min(tipR * 0.5, childBaseR);
       const LEN_FLOOR = 0.4;
+
+      // Visible neck capsule from parent.tip to childCenter (v1.32.37).
+      // Without it, the parent spine tapers from baseR=1.2 mm at its
+      // base to tipR=0.4 mm at its tip and the last few mm fade into
+      // the child sphere via smoothmin — the parent appears to taper
+      // to invisibility before reaching the child. A short fat neck
+      // capsule bridges the joint cleanly.
+      const NECK_R = childBaseR * 1.6;
+      branches.push({
+        start: ps.tip.clone(),
+        end:   childCenter.clone(),
+        r0: NECK_R, r1: NECK_R,
+        depth: 0, parent: 0,
+        tangent: ps.dir.clone(),
+        wobble: 0,
+      });
+
       for (const d of childDirs) {
         const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
         const thisLen = childSpineLen * lenScale;
@@ -6569,6 +6586,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.37', date: '2026-05-04', n: 'Acantharian child — neck capsule re-added as standalone change. Constant-radius capsule (childBaseR × 1.6 ≈ 0.96 mm) from parent.tip to childCenter so the parent spine\'s thin tipR=0.4 mm taper doesn\'t fade into the child sphere via smoothmin. Child spines remain straight with length jitter only.' },
   { v: 'v1.32.36', date: '2026-05-04', n: 'Acantharian — revert v1.32.35 entirely. User reported the helical wobble (despite being symmetric around d) still read as "bending away in unison." Removed the neck capsule too as part of the revert; back to v1.32.34 baseline (straight uniform child spines + log-uniform length jitter).' },
   { v: 'v1.32.35', date: '2026-05-04', n: 'Acantharian child — neck + helical wobble. (1) Visible neck capsule from parent.tip to childCenter (radius 0.96 mm) so the parent spine\'s thin tipR=0.4 mm taper doesn\'t fade into the child sphere via smoothmin and disappear. (2) Child spines now have a subtle helical wobble (sin(πt) amplitude profile, 1.5 turns along the spine length, golden-angle phase per spine). The wobble is SYMMETRIC around d so it can\'t bias spine direction the way wind-bend / tangential-swirl did — every spine\'s tip still ends exactly where a straight spine would.' },
   { v: 'v1.32.34', date: '2026-05-04', n: 'Acantharian child — option 3 from the variability plan: length jitter only, no bend. Each spine stays exactly along its own d direction so the all-direction radial pattern is rigorously preserved (any bend, even per-spine perpendicular, was offsetting spine midspans and reading as "turning away from parent"). Length: log-uniform jitter using the same formula as the parent (range ≈ 0.5×–1.9× at default). Future variability — twist, micro-texture, tip-split — will need to be either symmetric around d (so it doesn\'t bias direction) or surface-level rather than path-level.' },
