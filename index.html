@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.29</span>
+        <span id="version">v1.32.30</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.29";
+const VERSION = "v1.32.30";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4490,31 +4490,94 @@ function generateAcantharianStructure(s) {
         tangent: ps.dir.clone(),
         wobble: 0,
       });
-      // Straight uniform child spines (v1.32.28). Each spine is a
-      // single tapered capsule from sR×0.85 (just inside the body
-      // sphere for clean fusion) outward to sR + spineLength along
-      // the seashell direction d. Same seashell helper + same
-      // phaseOffset as the parent so the emergence-spiral matches.
-      // Lengths and radii scale with childSR / sphereRadius so the
-      // child reads as a faithful smaller copy of the parent in
-      // proportion. No length jitter, no bend, no twist for now —
-      // we'll add those back once direction is confirmed good.
+      // Wavy child spines with length jitter (v1.32.30). Mirrors the
+      // parent per-spine logic — log-uniform length jitter, 7-segment
+      // helical chain, helical-twist + wheat-in-wind bend (with the
+      // multiplicative bend profile so spines emerge cleanly with no
+      // launch kink). Per-creature wind/ripple are derived from a
+      // child-specific salt so the child wavers in a different
+      // direction than the parent.
       const phaseOffset = ((s.seed >>> 0) * 1e-7) % (Math.PI * 2);
       const childDirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, phaseOffset);
       const childScale = childSR / sphereRadius;
       const childSpineLen = spineLength * childScale;
       const childBaseR = baseR * 0.5;
       const childTipR  = Math.min(tipR * 0.5, childBaseR);
+      // Salt-derived wind direction for the child.
+      const childSeed = (s.seed + 0x9E37) >>> 0;
+      const childWindYaw   = (childSeed * 0.7853981633) % (Math.PI * 2);
+      const childWindPitch = Math.sin(childSeed * 0.0001) * 0.5;
+      const childWindDir = new THREE.Vector3(
+        Math.cos(childWindYaw) * Math.cos(childWindPitch),
+        Math.sin(childWindPitch),
+        Math.sin(childWindYaw) * Math.cos(childWindPitch)
+      ).normalize();
+      const childRippleAxis = new THREE.Vector3()
+        .crossVectors(childWindDir, new THREE.Vector3(0, 1, 0));
+      if (childRippleAxis.lengthSq() < 1e-6) childRippleAxis.set(1, 0, 0);
+      childRippleAxis.normalize();
+      const RIPPLE_FREQ = 4;
+      const N_CHILD = 7;
+      const LEN_FLOOR = 0.4;
+      let cIdx = 0;
       for (const d of childDirs) {
+        const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
+        const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
-        const endPt   = childCenter.clone().addScaledVector(d, childSR + childSpineLen);
-        branches.push({
-          start: startPt, end: endPt,
-          r0: childBaseR, r1: childTipR,
-          depth: 1, parent: 0,
-          tangent: d.clone(),
-          wobble: 0,
-        });
+        const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
+
+        // Stable perpendicular axes for helix and bend.
+        tmp.set(d.x, d.y, d.z);
+        if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
+        else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
+        perp2.crossVectors(tmp, perp1).normalize();
+        const phase0 = cIdx * 2.39996323;
+        const turnsAlongSpine = 1.5;
+        const ampBase = childBaseR * 1.6 * twist;
+
+        // Wind-bend in this spine's local (perp1, perp2) basis.
+        const wppX = childWindDir.x - childWindDir.dot(d) * d.x;
+        const wppY = childWindDir.y - childWindDir.dot(d) * d.y;
+        const wppZ = childWindDir.z - childWindDir.dot(d) * d.z;
+        const wpInP1 = wppX * perp1.x + wppY * perp1.y + wppZ * perp1.z;
+        const wpInP2 = wppX * perp2.x + wppY * perp2.y + wppZ * perp2.z;
+        const windCrossMag = Math.hypot(wpInP1, wpInP2);
+        const bendCosP = windCrossMag > 1e-6 ? wpInP1 / windCrossMag : 1;
+        const bendSinP = windCrossMag > 1e-6 ? wpInP2 / windCrossMag : 0;
+        const ripplePhase = childRippleAxis.dot(d) * RIPPLE_FREQ;
+        const rippleMul = 0.55 + 0.45 * Math.sin(ripplePhase);
+        const bendMag = windCrossMag * rippleMul * twist;
+        const harmonicPhase = cIdx * 1.7321;
+
+        const wp = [];
+        for (let k = 0; k <= N_CHILD; k++) {
+          const t = k / N_CHILD;
+          const ph = phase0 + t * turnsAlongSpine * Math.PI * 2;
+          const ampTwist = ampBase * Math.sin(t * Math.PI);
+          const twistDX = Math.cos(ph) * ampTwist;
+          const twistDY = Math.sin(ph) * ampTwist;
+          const bendStrength = Math.sin(t * Math.PI)
+            * (1 + 0.40 * Math.sin(t * Math.PI * 2 + harmonicPhase));
+          const bendOffset = thisLen * 0.50 * bendMag * bendStrength;
+          const bendDX = bendCosP * bendOffset;
+          const bendDY = bendSinP * bendOffset;
+          wp.push(startPt.clone().lerp(endPt, t)
+            .addScaledVector(perp1, twistDX + bendDX)
+            .addScaledVector(perp2, twistDY + bendDY));
+        }
+        for (let k = 0; k < N_CHILD; k++) {
+          const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
+          const r1 = childBaseR * (1 - t1) + childTipR * t1;
+          const r2 = childBaseR * (1 - t2) + childTipR * t2;
+          branches.push({
+            start: wp[k], end: wp[k + 1],
+            r0: r1, r1: r2,
+            depth: 1, parent: 0,
+            tangent: d.clone(),
+            wobble: 0,
+          });
+        }
+        cIdx++;
       }
     };
 
@@ -6570,6 +6633,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.30', date: '2026-05-04', n: 'Acantharian child rebuild step 5 — child spines now have length jitter + waviness, mirroring the parent. Each spine is a 7-segment helical chain with log-uniform length jitter (exp((rng-0.5)·jitter·2.5)) and the wheat-in-wind bend (multiplicative profile so spines emerge cleanly with no launch kink). Per-creature wind direction derived from a child-specific salt so the child wavers in a different direction than the parent — same proportional curvature, different orientation.' },
   { v: 'v1.32.29', date: '2026-05-03', n: 'Acantharian child rebuild step 4 — child node now visibly connected to the parent spine. Reduced CHILD_OFFSET_MUL from 1.0 to 0.7 so the parent spine pokes 30% of childSR into the child sphere; smooth-min has enough overlap to fuse them into a visible joint instead of leaving a single-point tangent. Back-facing child spines that run collinear with parent will get absorbed for now — we\'ll add a slight bend later to route them clear.' },
   { v: 'v1.32.28', date: '2026-05-03', n: 'Acantharian child rebuild step 3 — replaced surface bumps with full straight spines emerging along each seashell direction. Each spine is a single tapered capsule from sR×0.85 outward to sR + childSpineLen. Lengths and radii scale with childSR/sphereRadius (so child spine length 15 mm at debug-oversized 50% node, baseR 0.6 mm, tipR 0.2 mm). No length jitter, no bend, no twist — confirming direction first; will add variability back once the radial pattern looks right.' },
   { v: 'v1.32.27', date: '2026-05-03', n: 'Acantharian child rebuild step 2 — added 36 spiral bumps along the child node surface, marking where spines will eventually emerge. Same seashellSpiralDirections + same phaseOffset as the parent so the spiral pattern matches. Each bump is a degenerate sphere at radius = baseR × 0.5 (0.6 mm), centered on the child sphere surface so it reads as a small swelling along the spiral line.' },
