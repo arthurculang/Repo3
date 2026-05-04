@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.53</span>
+        <span id="version">v1.32.54</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.53";
+const VERSION = "v1.32.54";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -6179,25 +6179,6 @@ async function generate(previewVoxels = 96) {
   if (!result) return;
   let { mesh, triCount, voxel, nComp, bridges } = result;
 
-  // DEBUG: overlay colored marker spheres for two-color child A/B test.
-  // The body-sphere reference's .start was scaled in place by
-  // scaleStructureToSize, so reading it now gives the post-scale
-  // world position.
-  if (globalThis._acanDebugMarkers && globalThis._acanDebugMarkers.length > 0) {
-    for (const m of globalThis._acanDebugMarkers) {
-      const pos = m.sphere.start;
-      const r = m.sphere.r0 * 1.5;
-      const markerGeom = new THREE.SphereGeometry(r, 18, 14);
-      const markerMat = new THREE.MeshBasicMaterial({
-        color: m.color, transparent: true, opacity: 0.45, depthWrite: false,
-      });
-      const marker = new THREE.Mesh(markerGeom, markerMat);
-      marker.position.copy(pos);
-      marker.renderOrder = 999;
-      exportGroup.add(marker);
-    }
-  }
-
   // Rings (independent of wall thickness — same across auto-fix iterations).
   setProgress('rings & accents…');
   await yieldFrame();
@@ -6249,6 +6230,25 @@ async function generate(previewVoxels = 96) {
   clearExport();
   if (mesh) exportGroup.add(mesh);
   addRingMeshes(rings);
+
+  // DEBUG: overlay colored marker spheres for two-color child A/B test
+  // (v1.32.54). MUST happen AFTER clearExport() above, otherwise the
+  // markers get wiped along with the in-progress preview mesh. Body-
+  // sphere references' .start are scaled in place by
+  // scaleStructureToSize so reading them gives post-scale world coords.
+  if (globalThis._acanDebugMarkers && globalThis._acanDebugMarkers.length > 0) {
+    for (const m of globalThis._acanDebugMarkers) {
+      const r = m.sphere.r0 * 1.6;
+      const g = new THREE.SphereGeometry(r, 18, 14);
+      const mat = new THREE.MeshBasicMaterial({
+        color: m.color, transparent: true, opacity: 0.55, depthWrite: false,
+      });
+      const marker = new THREE.Mesh(g, mat);
+      marker.position.copy(m.sphere.start);
+      marker.renderOrder = 999;
+      exportGroup.add(marker);
+    }
+  }
 
   // Cache the build result so downloadSTL can run its safety check
   // against the actual built field, and so the export-time pipeline
@@ -6706,6 +6706,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.54', date: '2026-05-04', n: 'Acantharian — fix invisible debug markers. v1.32.53 added the marker overlay BEFORE the final clearExport()/exportGroup.add(mesh) calls; clearExport was wiping the markers along with the in-progress preview mesh. Moved the marker code to AFTER clearExport so the spheres survive into the final scene. Harness verified the underlying geometry: Child 1 (green, bendIntent=+1) has 34/36 spines bending toward parent (avg -1.74 mm closer); Child 2 (red, bendIntent=-1) has 34/36 bending away (avg +1.31 mm farther). Markers should now be visible.' },
   { v: 'v1.32.53', date: '2026-05-04', n: 'Acantharian child A/B test — two children with opposing bend signs and colored overlay markers. ACAN_DEBUG_TWO_COLOR_CHILDREN flag emits two children: parentSpines[0] with bendIntent=+1 (the math "toward parent" direction) tagged green, parentSpines[18] with bendIntent=-1 tagged red. After buildBodyMesh, transparent colored sphere markers overlay each child\'s body sphere position so the user can visually identify which sign corresponds to their perceived "toward" vs "away."' },
   { v: 'v1.32.52', date: '2026-05-04', n: 'Acantharian child spines — flip arc bend direction. v1.32.51 was designed to bend toward parent (-ps.dir projected onto perp plane); harness verified 34/36 spines geometrically closer to parent than straight equivalent. User reported visual was the OPPOSITE — bending away. So my "toward" is somehow the user\'s "away." Flipped the sign: bendDir = +ps.dir projected onto perp plane. If the visual perception was inverted from geometry, this should now look like bending toward parent.' },
   { v: 'v1.32.51', date: '2026-05-04', n: 'Acantharian child spines — gentle 25° arc bending back toward parent. Each spine\'s bend direction = projection of -ps.dir (the direction from child to parent) onto the perp plane of d. Equatorial spines (d perpendicular to ps.dir) get the largest projection magnitude and bend most; spines pointing fully outward or fully back at parent have zero projection and stay straight. Spine path traces a true circular arc subtending 25°: r = thisLen/θ; at param t, alongDist=r·sin(tθ), perpDist=r·(1−cos(tθ)). 5 segments. Tip is displaced perpendicular by ~21% of length and along by ~97%.' },
