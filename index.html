@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.39</span>
+        <span id="version">v1.32.40</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.39";
+const VERSION = "v1.32.40";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4199,15 +4199,18 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
   return true;
 }
 
-// DEBUG TOGGLES (v1.32.16, v1.32.22, v1.32.23).
+// DEBUG TOGGLES (v1.32.16, v1.32.22, v1.32.23, v1.32.40).
 // ACAN_DEBUG_NO_CHILDREN: when true, no children at all — just the
 // parent. Useful when iterating on parent morphology in isolation.
 // ACAN_DEBUG_SINGLE_CHILD_ONLY: when true (and NO_CHILDREN false),
 // only the first parent spine emits a child at its tip.
-// ACAN_DEBUG_CHILD_NODE_ONLY: when true, emit just the child's body
-// sphere — no child spines yet — for incremental morphology debug.
+// ACAN_DEBUG_CHILD_NODE_ONLY: when true, the child uses the new
+// debug-iteration emit path (body sphere + straight spines + parent-
+// spine fattening). When false, falls back to the buildOneAcantharian
+// helper. As of v1.32.40 propagation is enabled, so this stays true
+// for the simplified emit path.
 const ACAN_DEBUG_NO_CHILDREN       = false;
-const ACAN_DEBUG_SINGLE_CHILD_ONLY = true;
+const ACAN_DEBUG_SINGLE_CHILD_ONLY = false;
 const ACAN_DEBUG_CHILD_NODE_ONLY   = true;
 
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
@@ -4473,11 +4476,12 @@ function generateAcantharianStructure(s) {
     // the sphere bottom touches parent.tip — child sphere sits like
     // a pearl at the very end of the parent spine.
     //
-    // Debug-fixed node size (v1.32.24, dialed in v1.32.25). Currently
-    // forces the child node to 25% of the parent body sphere (so 2 mm
-    // when sphereRadius=8). Will revert to recurScale-based sizing
-    // once the spines are reattached.
-    const DEBUG_OVERSIZE_NODE = true;
+    // Debug-fixed node size (v1.32.24, off in v1.32.40). Was used
+    // to force the single debug child to a fixed visible size while
+    // we iterated on its morphology. Now that propagation to all
+    // parent spine tips is enabled, switch back to recurScale-based
+    // sizing so each child takes its natural per-tip size + variation.
+    const DEBUG_OVERSIZE_NODE = false;
     const emitChildNode = (ps, scale) => {
       const childSR = DEBUG_OVERSIZE_NODE ? sphereRadius * 0.50 : sphereRadius * scale;
       const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
@@ -6593,6 +6597,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.40', date: '2026-05-04', n: 'Acantharian — propagate child morphology to ALL parent spine tips. Flipped ACAN_DEBUG_SINGLE_CHILD_ONLY → false (so the loop path emits a child per parent spine) and DEBUG_OVERSIZE_NODE → false (so each child takes its natural recurScale-based size with per-tip variation). Each child uses the same emitChildNode logic — body sphere, straight spines with length jitter, and parent-spine fattening that targets only the matching parent spine via tangent. Result: 36 children, each anchored to its own parent spine tip with a clean visible joint.' },
   { v: 'v1.32.39', date: '2026-05-04', n: 'Acantharian — replace external neck capsule with in-place parent-spine-0 fattening. Deep simulation showed: previous separate neck capsule was straight, but the parent\'s spine 0 is a 7-segment helical chain that curves left-right by ~1 mm at midspan — so the straight neck didn\'t align with the helical parent path and read as a separate "snake/vein" element bridging the gap. Better fix: identify spine 0\'s capsules in branches by tangent match (parent spine 0 d is unique among parent capsules) and bump any radii below MIN_TIP_R = childBaseR × 1.4 (~0.84 mm) up to that threshold. The natural baseR=1.2 mm at the spine base is unchanged; only the thinnest segments near the tip get fattened. Parent spine itself now stays visibly thick all the way to the child sphere — no more separate neck.' },
   { v: 'v1.32.38', date: '2026-05-04', n: 'Acantharian child — neck repositioned. v1.32.37 had the neck running from parent.tip to childCenter, but both points are inside the child sphere (sphere bottom is 0.3·childSR below parent.tip with the 0.7 offset). The whole neck was buried inside the sphere and contributed nothing visible. Now extends back along the parent spine by 1.5·childSR (so ~6 mm at debug oversize) — visible portion is OUTSIDE the child sphere where it can actually bridge the joint. Radius bumped to childBaseR × 1.8 for clearer contrast against the parent spine\'s thin tip.' },
   { v: 'v1.32.37', date: '2026-05-04', n: 'Acantharian child — neck capsule re-added as standalone change. Constant-radius capsule (childBaseR × 1.6 ≈ 0.96 mm) from parent.tip to childCenter so the parent spine\'s thin tipR=0.4 mm taper doesn\'t fade into the child sphere via smoothmin. Child spines remain straight with length jitter only.' },
