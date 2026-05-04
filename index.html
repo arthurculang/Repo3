@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.51</span>
+        <span id="version">v1.32.52</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.51";
+const VERSION = "v1.32.52";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4559,11 +4559,13 @@ function generateAcantharianStructure(s) {
         const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
 
-        // Project -ps.dir onto perp plane of d.
-        // proj_perp(v) = v - (v·d)·d.
-        // For v = -ps.dir: proj = -ps.dir - (-ps.dir · d) · d = -ps.dir + (ps.dir·d)·d
+        // Project +ps.dir onto perp plane of d (v1.32.52: sign flipped
+        // from v1.32.51 because the user reports spines were visibly
+        // bending AWAY from parent — so my "toward" was their "away."
+        // Math is identical, just the sign is reversed: bend direction
+        // = (+ps.dir) - (ps.dir·d)·d instead of -ps.dir + (ps.dir·d)·d.
         const dotPSDir = d.dot(ps.dir);
-        _bendDir.copy(ps.dir).multiplyScalar(-1).addScaledVector(d, dotPSDir);
+        _bendDir.copy(ps.dir).addScaledVector(d, -dotPSDir);
         const bendLen = _bendDir.length();
         if (bendLen < 1e-3) {
           // d is (anti-)parallel to ps.dir — no defined "back toward
@@ -6662,6 +6664,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.52', date: '2026-05-04', n: 'Acantharian child spines — flip arc bend direction. v1.32.51 was designed to bend toward parent (-ps.dir projected onto perp plane); harness verified 34/36 spines geometrically closer to parent than straight equivalent. User reported visual was the OPPOSITE — bending away. So my "toward" is somehow the user\'s "away." Flipped the sign: bendDir = +ps.dir projected onto perp plane. If the visual perception was inverted from geometry, this should now look like bending toward parent.' },
   { v: 'v1.32.51', date: '2026-05-04', n: 'Acantharian child spines — gentle 25° arc bending back toward parent. Each spine\'s bend direction = projection of -ps.dir (the direction from child to parent) onto the perp plane of d. Equatorial spines (d perpendicular to ps.dir) get the largest projection magnitude and bend most; spines pointing fully outward or fully back at parent have zero projection and stay straight. Spine path traces a true circular arc subtending 25°: r = thisLen/θ; at param t, alongDist=r·sin(tθ), perpDist=r·(1−cos(tθ)). 5 segments. Tip is displaced perpendicular by ~21% of length and along by ~97%.' },
   { v: 'v1.32.50', date: '2026-05-04', n: 'Acantharian — revert v1.32.49 uniform random curve. Back to straight uniform child spines with length jitter.' },
   { v: 'v1.32.49', date: '2026-05-04', n: 'Acantharian child — uniform random per-spine curve, no hemisphere logic. Every child spine gets a random bend direction (rng()×2π in the perp plane) and random magnitude (5–20% of length) applied as a single sin(πt) arc, 5 segments. South-hemisphere spines that curve toward the parent fuse via smooth-min where they intersect — accepted as natural fusion rather than avoided. No northness scaling, no per-segment random walk, no shared wind axis.' },
