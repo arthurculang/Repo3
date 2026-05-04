@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.46</span>
+        <span id="version">v1.32.47</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.46";
+const VERSION = "v1.32.47";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4543,22 +4543,75 @@ function generateAcantharianStructure(s) {
         }
       }
 
-      // Straight child spines with length jitter (v1.32.34, restored
-      // v1.32.46). Each spine stays exactly along its own d direction
-      // (no bend, no walk, no wobble). Per-spine random walk was tried
-      // in v1.32.45 and reverted — same one-sided perception emerged.
+      // Northness-scaled per-spine curve (v1.32.47). Diagnosis of the
+      // recurring "all spines curve away from parent" perception:
+      // child spines whose d points back toward the parent (d·ps.dir
+      // negative) are normally collinear with the parent spine and
+      // get absorbed via smooth-min — invisible. When ANY curve was
+      // applied to those spines, they bent perpendicular and ESCAPED
+      // the parent overlap, becoming visible. Their visible component
+      // is geometrically forced to be perpendicular-to-ps.dir, which
+      // reads as "all curving outward away from parent."
+      //
+      // Fix: scale per-spine bend amplitude by northness =
+      // max(0, d·ps.dir). South-hemisphere spines (dot ≤ 0) get zero
+      // curve and remain straight, which lets them fuse cleanly with
+      // the parent spine (invisible). North spines (dot > 0) get
+      // a random per-spine curve scaled by how north-pole-aligned
+      // they are. Each north spine: random direction in perp plane
+      // + random magnitude. No shared anything across spines.
+      const N_CHILD = 5;
       for (const d of childDirs) {
         const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
         const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
         const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
-        branches.push({
-          start: startPt, end: endPt,
-          r0: childBaseR, r1: childTipR,
-          depth: 1, parent: 0,
-          tangent: d.clone(),
-          wobble: 0,
-        });
+
+        const northness = Math.max(0, d.dot(ps.dir));
+        const bendDirAngle = rng() * Math.PI * 2;       // consume rng() even when northness=0 so seed
+        const bendMagRaw   = 0.05 + rng() * 0.20;       // determinism is independent of d·ps.dir
+        const bendMag = bendMagRaw * northness;
+
+        if (bendMag < 0.005) {
+          // Straight (south hemisphere or near-equator) — fuses with parent.
+          branches.push({
+            start: startPt, end: endPt,
+            r0: childBaseR, r1: childTipR,
+            depth: 1, parent: 0,
+            tangent: d.clone(),
+            wobble: 0,
+          });
+        } else {
+          // Curved (north hemisphere). N segments along sin(πt) arc.
+          tmp.set(d.x, d.y, d.z);
+          if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
+          else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
+          perp2.crossVectors(tmp, perp1).normalize();
+          const bendCosP = Math.cos(bendDirAngle);
+          const bendSinP = Math.sin(bendDirAngle);
+
+          const wp = [];
+          for (let k = 0; k <= N_CHILD; k++) {
+            const t = k / N_CHILD;
+            const bendStrength = Math.sin(t * Math.PI);
+            const bendOffset = thisLen * bendMag * bendStrength;
+            wp.push(startPt.clone().lerp(endPt, t)
+              .addScaledVector(perp1, bendCosP * bendOffset)
+              .addScaledVector(perp2, bendSinP * bendOffset));
+          }
+          for (let k = 0; k < N_CHILD; k++) {
+            const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
+            const r1 = childBaseR * (1 - t1) + childTipR * t1;
+            const r2 = childBaseR * (1 - t2) + childTipR * t2;
+            branches.push({
+              start: wp[k], end: wp[k + 1],
+              r0: r1, r1: r2,
+              depth: 1, parent: 0,
+              tangent: d.clone(),
+              wobble: 0,
+            });
+          }
+        }
       }
     };
 
@@ -6614,6 +6667,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.47', date: '2026-05-04', n: 'Acantharian child curves with northness-scaled magnitude. Diagnosis of the recurring "all spines curve away from parent" perception: child spines whose d points back toward parent (d·ps.dir < 0) are normally collinear with the parent spine and get absorbed via smooth-min — INVISIBLE. When any curve was applied, they bent perpendicular and ESCAPED the parent overlap, becoming visible. Their visible component was geometrically forced to be perpendicular-to-ps.dir, which always read as "all curving outward away from parent." Fix per user suggestion: keep south-hemisphere spines straight (they fuse with parent invisibly, no escape), give north-hemisphere spines random per-spine curves (random direction in perp plane + random magnitude 5–25% of length, sin(πt) profile, 5 segments) scaled by northness=max(0,d·ps.dir). North-pole spines get full curve, equator spines get small curve, south spines stay straight.' },
   { v: 'v1.32.46', date: '2026-05-04', n: 'Acantharian — revert v1.32.45 random walk; same one-sided perception emerged once again. Back to straight uniform child spines with log-uniform length jitter only.' },
   { v: 'v1.32.45', date: '2026-05-04', n: 'Acantharian child spines — per-spine independent tangent random walk. Each spine takes 7 short steps along its own d direction; at each step the tangent is perturbed by a small random angle in a random perpendicular direction (per-segment, per-spine fresh rng() draws), then lerped slightly back toward d (RESTORE=0.25) so it doesn\'t drift far. Bimodal stiffness: ~40% of spines get a "floppy" perturbation range (0.05-0.15 rad), ~60% get "stiff" (0.01-0.05 rad). Harness verifies wide variance across spines: 33% near-straight (<2% bend ratio), 42% subtle wiggle (2-7%), 25% visibly meandering (7-15%), std/mean=0.70. No shared frequency, axis, phase, direction, or magnitude — every spine is independently meandering.' },
   { v: 'v1.32.44', date: '2026-05-04', n: 'Acantharian child orientation now follows parent spine direction. Previously the child\'s seashell was always oriented with its polar axis along world +Y — so children growing off horizontal or downward parent spines were misaligned with their parent direction. Now we apply a Quaternion.setFromUnitVectors(worldY, ps.dir) rotation to the child\'s direction array before generating spines: child\'s "north pole" continues past the parent spine outward; "south pole" points back toward parent. Each child looks like a natural extension of its parent spine\'s direction, regardless of where on the parent body the spine emerged from.' },
