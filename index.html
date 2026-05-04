@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.55</span>
+        <span id="version">v1.32.56</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.55";
+const VERSION = "v1.32.56";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4567,7 +4567,7 @@ function generateAcantharianStructure(s) {
       // bend most; near-polar spines have small/zero projection and
       // bend little/not at all (no arbitrary direction to bend in).
       // Spine path follows a true circular arc subtending ARC_DEG.
-      const ARC_DEG = 60;
+      const ARC_DEG = 90;
       const ARC_RAD = ARC_DEG * Math.PI / 180;
       const N_CHILD = 5;
       const _bendDir = new THREE.Vector3();
@@ -6706,6 +6706,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.56', date: '2026-05-04', n: 'Acantharian child arc bumped 60° → 90° to make the bend direction unambiguous. At 90° the spine traces a quarter-circle: tip displacement ≈ 64% of length perpendicular AND ≈ 64% along d. Equator spines literally hook from horizontal-at-base to vertical-at-tip. If green child still looks like "spines bending away" at 90°, there\'s something downstream we haven\'t found yet.' },
   { v: 'v1.32.55', date: '2026-05-04', n: 'Acantharian child arc bumped 25° → 60° for visibility. At 25° the perpendicular tip displacement was ≈ 21% of spine length (≈1.9 mm on a 9 mm spine = 2.4% of the 80 mm structure size) — below the threshold of clear visual curvature. At 60° the perpendicular displacement is ≈ 50% of length (≈4.5 mm), making the bend obviously visible. Two-color A/B test still active so we can confirm direction.' },
   { v: 'v1.32.54', date: '2026-05-04', n: 'Acantharian — fix invisible debug markers. v1.32.53 added the marker overlay BEFORE the final clearExport()/exportGroup.add(mesh) calls; clearExport was wiping the markers along with the in-progress preview mesh. Moved the marker code to AFTER clearExport so the spheres survive into the final scene. Harness verified the underlying geometry: Child 1 (green, bendIntent=+1) has 34/36 spines bending toward parent (avg -1.74 mm closer); Child 2 (red, bendIntent=-1) has 34/36 bending away (avg +1.31 mm farther). Markers should now be visible.' },
   { v: 'v1.32.53', date: '2026-05-04', n: 'Acantharian child A/B test — two children with opposing bend signs and colored overlay markers. ACAN_DEBUG_TWO_COLOR_CHILDREN flag emits two children: parentSpines[0] with bendIntent=+1 (the math "toward parent" direction) tagged green, parentSpines[18] with bendIntent=-1 tagged red. After buildBodyMesh, transparent colored sphere markers overlay each child\'s body sphere position so the user can visually identify which sign corresponds to their perceived "toward" vs "away."' },
