@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.48</span>
+        <span id="version">v1.32.49</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.48";
+const VERSION = "v1.32.49";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4543,22 +4543,51 @@ function generateAcantharianStructure(s) {
         }
       }
 
-      // Straight child spines with length jitter (v1.32.34, restored
-      // v1.32.48). Each spine stays exactly along its own d direction
-      // (no bend, no walk, no wobble). Northness-scaled curve was
-      // tried in v1.32.47 and reverted.
+      // Random per-spine curve, all spines treated equally (v1.32.49).
+      // Every child spine gets its own random bend direction (rng()×2π
+      // in the perp plane) and random magnitude (5–20% of length),
+      // applied as a single sin(πt) arc. NO hemisphere-based scaling
+      // — south-hemisphere spines that bend toward the parent fuse
+      // via smooth-min where they intersect; that's fine, intersection
+      // = fusion. 5-segment chain per spine.
+      const N_CHILD = 5;
       for (const d of childDirs) {
         const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
         const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
         const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
-        branches.push({
-          start: startPt, end: endPt,
-          r0: childBaseR, r1: childTipR,
-          depth: 1, parent: 0,
-          tangent: d.clone(),
-          wobble: 0,
-        });
+
+        const bendDirAngle = rng() * Math.PI * 2;
+        const bendMag = 0.05 + rng() * 0.15;
+
+        tmp.set(d.x, d.y, d.z);
+        if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
+        else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
+        perp2.crossVectors(tmp, perp1).normalize();
+        const bendCosP = Math.cos(bendDirAngle);
+        const bendSinP = Math.sin(bendDirAngle);
+
+        const wp = [];
+        for (let k = 0; k <= N_CHILD; k++) {
+          const t = k / N_CHILD;
+          const bendStrength = Math.sin(t * Math.PI);
+          const bendOffset = thisLen * bendMag * bendStrength;
+          wp.push(startPt.clone().lerp(endPt, t)
+            .addScaledVector(perp1, bendCosP * bendOffset)
+            .addScaledVector(perp2, bendSinP * bendOffset));
+        }
+        for (let k = 0; k < N_CHILD; k++) {
+          const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
+          const r1 = childBaseR * (1 - t1) + childTipR * t1;
+          const r2 = childBaseR * (1 - t2) + childTipR * t2;
+          branches.push({
+            start: wp[k], end: wp[k + 1],
+            r0: r1, r1: r2,
+            depth: 1, parent: 0,
+            tangent: d.clone(),
+            wobble: 0,
+          });
+        }
       }
     };
 
@@ -6614,6 +6643,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.49', date: '2026-05-04', n: 'Acantharian child — uniform random per-spine curve, no hemisphere logic. Every child spine gets a random bend direction (rng()×2π in the perp plane) and random magnitude (5–20% of length) applied as a single sin(πt) arc, 5 segments. South-hemisphere spines that curve toward the parent fuse via smooth-min where they intersect — accepted as natural fusion rather than avoided. No northness scaling, no per-segment random walk, no shared wind axis.' },
   { v: 'v1.32.48', date: '2026-05-04', n: 'Acantharian — revert v1.32.47 northness-scaled curve. Back to straight uniform child spines with log-uniform length jitter only.' },
   { v: 'v1.32.47', date: '2026-05-04', n: 'Acantharian child curves with northness-scaled magnitude. Diagnosis of the recurring "all spines curve away from parent" perception: child spines whose d points back toward parent (d·ps.dir < 0) are normally collinear with the parent spine and get absorbed via smooth-min — INVISIBLE. When any curve was applied, they bent perpendicular and ESCAPED the parent overlap, becoming visible. Their visible component was geometrically forced to be perpendicular-to-ps.dir, which always read as "all curving outward away from parent." Fix per user suggestion: keep south-hemisphere spines straight (they fuse with parent invisibly, no escape), give north-hemisphere spines random per-spine curves (random direction in perp plane + random magnitude 5–25% of length, sin(πt) profile, 5 segments) scaled by northness=max(0,d·ps.dir). North-pole spines get full curve, equator spines get small curve, south spines stay straight.' },
   { v: 'v1.32.46', date: '2026-05-04', n: 'Acantharian — revert v1.32.45 random walk; same one-sided perception emerged once again. Back to straight uniform child spines with log-uniform length jitter only.' },
