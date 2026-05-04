@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.35</span>
+        <span id="version">v1.32.36</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.35";
+const VERSION = "v1.32.36";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4490,13 +4490,11 @@ function generateAcantharianStructure(s) {
         tangent: ps.dir.clone(),
         wobble: 0,
       });
-      // Visible neck connecting parent.tip to the child sphere
-      // (v1.32.35). Without this, the parent spine tapers from
-      // baseR=1.2 mm at its base to tipR=0.4 mm at its tip and the
-      // last few mm of the spine fade into the child sphere via
-      // smoothmin — making it look like the parent spine never
-      // reaches the child. A short fat neck capsule bridges the
-      // joint cleanly.
+      // Straight child spines with length jitter (v1.32.34, restored
+      // v1.32.36). Each spine stays EXACTLY along its own d direction
+      // (no bend, no wobble) so the all-direction radial pattern is
+      // rigorously preserved. The only variation is length: log-uniform
+      // jitter using the same formula as the parent.
       const phaseOffset = ((s.seed >>> 0) * 1e-7) % (Math.PI * 2);
       const childDirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, phaseOffset);
       const childScale = childSR / sphereRadius;
@@ -4504,68 +4502,18 @@ function generateAcantharianStructure(s) {
       const childBaseR = baseR * 0.5;
       const childTipR  = Math.min(tipR * 0.5, childBaseR);
       const LEN_FLOOR = 0.4;
-      const NECK_R = childBaseR * 1.6;
-      branches.push({
-        start: ps.tip.clone(),
-        end:   childCenter.clone(),
-        r0: NECK_R, r1: NECK_R,
-        depth: 0, parent: 0,
-        tangent: ps.dir.clone(),
-        wobble: 0,
-      });
-
-      // Child spines with length jitter + subtle helical wobble
-      // (v1.32.35). Each spine is a 7-segment chain that wobbles
-      // SYMMETRICALLY around its own d direction (helix). The wobble
-      // amplitude follows sin(πt) so it's zero at the base and at the
-      // tip — the spine emerges cleanly from the body and the tip
-      // ends exactly where a straight spine would. Critically: the
-      // wobble does NOT bias the spine in any global direction, so
-      // it can't reproduce the "turning away from parent" failure
-      // mode that the wind-bend and tangential-swirl variants had.
-      // Per-spine golden-angle phase (137.5°) so adjacent spines
-      // wobble out of sync.
-      const N_CHILD = 7;
-      const TURNS_ALONG_SPINE = 1.5;
-      const ampBase = childBaseR * 1.2 * twist;
-      let cIdx = 0;
       for (const d of childDirs) {
         const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
         const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
         const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
-
-        // Stable perp basis to d for the helix.
-        tmp.set(d.x, d.y, d.z);
-        if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
-        else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
-        perp2.crossVectors(tmp, perp1).normalize();
-        const phase0 = cIdx * 2.39996323;
-
-        const wp = [];
-        for (let k = 0; k <= N_CHILD; k++) {
-          const t = k / N_CHILD;
-          const ph = phase0 + t * TURNS_ALONG_SPINE * Math.PI * 2;
-          const ampTwist = ampBase * Math.sin(t * Math.PI);
-          const twistDX = Math.cos(ph) * ampTwist;
-          const twistDY = Math.sin(ph) * ampTwist;
-          wp.push(startPt.clone().lerp(endPt, t)
-            .addScaledVector(perp1, twistDX)
-            .addScaledVector(perp2, twistDY));
-        }
-        for (let k = 0; k < N_CHILD; k++) {
-          const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
-          const r1 = childBaseR * (1 - t1) + childTipR * t1;
-          const r2 = childBaseR * (1 - t2) + childTipR * t2;
-          branches.push({
-            start: wp[k], end: wp[k + 1],
-            r0: r1, r1: r2,
-            depth: 1, parent: 0,
-            tangent: d.clone(),
-            wobble: 0,
-          });
-        }
-        cIdx++;
+        branches.push({
+          start: startPt, end: endPt,
+          r0: childBaseR, r1: childTipR,
+          depth: 1, parent: 0,
+          tangent: d.clone(),
+          wobble: 0,
+        });
       }
     };
 
@@ -6621,6 +6569,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.36', date: '2026-05-04', n: 'Acantharian — revert v1.32.35 entirely. User reported the helical wobble (despite being symmetric around d) still read as "bending away in unison." Removed the neck capsule too as part of the revert; back to v1.32.34 baseline (straight uniform child spines + log-uniform length jitter).' },
   { v: 'v1.32.35', date: '2026-05-04', n: 'Acantharian child — neck + helical wobble. (1) Visible neck capsule from parent.tip to childCenter (radius 0.96 mm) so the parent spine\'s thin tipR=0.4 mm taper doesn\'t fade into the child sphere via smoothmin and disappear. (2) Child spines now have a subtle helical wobble (sin(πt) amplitude profile, 1.5 turns along the spine length, golden-angle phase per spine). The wobble is SYMMETRIC around d so it can\'t bias spine direction the way wind-bend / tangential-swirl did — every spine\'s tip still ends exactly where a straight spine would.' },
   { v: 'v1.32.34', date: '2026-05-04', n: 'Acantharian child — option 3 from the variability plan: length jitter only, no bend. Each spine stays exactly along its own d direction so the all-direction radial pattern is rigorously preserved (any bend, even per-spine perpendicular, was offsetting spine midspans and reading as "turning away from parent"). Length: log-uniform jitter using the same formula as the parent (range ≈ 0.5×–1.9× at default). Future variability — twist, micro-texture, tip-split — will need to be either symmetric around d (so it doesn\'t bias direction) or surface-level rather than path-level.' },
   { v: 'v1.32.33', date: '2026-05-04', n: 'Acantharian — revert v1.32.32 (tangential-swirl bend). User reported the same one-sided look returned. Back to the v1.32.31 straight uniform baseline.' },
