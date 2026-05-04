@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.33</span>
+        <span id="version">v1.32.34</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.33";
+const VERSION = "v1.32.34";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4490,19 +4490,26 @@ function generateAcantharianStructure(s) {
         tangent: ps.dir.clone(),
         wobble: 0,
       });
-      // Straight uniform child spines (v1.32.28, restored v1.32.31 +
-      // again at v1.32.33). Each spine is a single tapered capsule
-      // from sR×0.85 outward to sR + childSpineLen along the seashell
-      // direction d. No length jitter, no bend.
+      // Straight child spines with length jitter (v1.32.34, option 3).
+      // Each spine stays EXACTLY along its own d direction (no bend) so
+      // the all-direction radial pattern is rigorously preserved. The
+      // only variation is length: log-uniform jitter using the same
+      // formula as the parent (range ≈ 0.5×–1.9× at default jitter=0.5).
+      // Spine count, base/tip radius, and base length all scale with
+      // childSR / sphereRadius so the child reads as a faithful
+      // smaller copy.
       const phaseOffset = ((s.seed >>> 0) * 1e-7) % (Math.PI * 2);
       const childDirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, phaseOffset);
       const childScale = childSR / sphereRadius;
       const childSpineLen = spineLength * childScale;
       const childBaseR = baseR * 0.5;
       const childTipR  = Math.min(tipR * 0.5, childBaseR);
+      const LEN_FLOOR = 0.4;
       for (const d of childDirs) {
+        const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
+        const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
-        const endPt   = childCenter.clone().addScaledVector(d, childSR + childSpineLen);
+        const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
         branches.push({
           start: startPt, end: endPt,
           r0: childBaseR, r1: childTipR,
@@ -6565,6 +6572,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.34', date: '2026-05-04', n: 'Acantharian child — option 3 from the variability plan: length jitter only, no bend. Each spine stays exactly along its own d direction so the all-direction radial pattern is rigorously preserved (any bend, even per-spine perpendicular, was offsetting spine midspans and reading as "turning away from parent"). Length: log-uniform jitter using the same formula as the parent (range ≈ 0.5×–1.9× at default). Future variability — twist, micro-texture, tip-split — will need to be either symmetric around d (so it doesn\'t bias direction) or surface-level rather than path-level.' },
   { v: 'v1.32.33', date: '2026-05-04', n: 'Acantharian — revert v1.32.32 (tangential-swirl bend). User reported the same one-sided look returned. Back to the v1.32.31 straight uniform baseline.' },
   { v: 'v1.32.32', date: '2026-05-04', n: 'Acantharian child — tangential-swirl bend (option 4 from the variability plan). Each spine bends in the direction normalize(d × upAxis), which is perpendicular to its OWN d and roughly tangent to the sphere — every spine curls "sideways around the polar axis" like streamlines around a body. Bend stays orthogonal to the radial direction, so the all-direction radiation pattern is preserved no matter the curl strength: no more global one-sided lean. Profile sin(πt) so spines emerge cleanly with zero offset; max amplitude 20% of spine length. Length jitter (log-uniform) reintroduced for variety.' },
   { v: 'v1.32.31', date: '2026-05-04', n: 'Acantharian — revert v1.32.30 (length jitter + waviness on child spines). The wheat-in-wind bend made the child read as one-sided again. Back to the v1.32.28/v1.32.29 straight uniform baseline; we\'ll plan a different approach to variability before re-adding it.' },
