@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.38</span>
+        <span id="version">v1.32.39</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.38";
+const VERSION = "v1.32.39";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4503,26 +4503,28 @@ function generateAcantharianStructure(s) {
       const childTipR  = Math.min(tipR * 0.5, childBaseR);
       const LEN_FLOOR = 0.4;
 
-      // Visible neck connecting parent spine to child sphere
-      // (v1.32.37, repositioned v1.32.38). Previous version had the
-      // neck running from parent.tip to childCenter — but BOTH of
-      // those points are INSIDE the child sphere, so the neck was
-      // buried and contributed nothing visible. New version: extend
-      // the neck back along the parent spine by NECK_BACK mm so a
-      // portion is OUTSIDE the child sphere where it actually shows.
-      // The visible portion is fatter than the parent spine's thin
-      // taper there, so it bridges the joint cleanly.
-      const NECK_R = childBaseR * 1.8;
-      const NECK_BACK = childSR * 1.5;  // start well behind parent.tip
-      const neckStart = ps.tip.clone().addScaledVector(ps.dir, -NECK_BACK);
-      branches.push({
-        start: neckStart,
-        end:   childCenter.clone(),
-        r0: NECK_R, r1: NECK_R,
-        depth: 0, parent: 0,
-        tangent: ps.dir.clone(),
-        wobble: 0,
-      });
+      // Fatten parent spine 0's capsules so it doesn't taper to a
+      // thin tip into the child sphere (v1.32.39). Deep simulation
+      // showed: the parent's spine-0 was a 7-segment helical chain
+      // tapering from 1.2 mm down to 0.40 mm, and the previous
+      // separate "neck" capsule was straight and ~1 mm offset from
+      // the helical parent path — visually reading as a separate
+      // snake/vein bridging the gap. Better: modify spine 0's own
+      // capsules in place to enforce a min radius so the parent
+      // spine itself stays thick enough to read as connected to
+      // the child. Identifies spine 0's capsules by tangent match
+      // (parent's spine 0 d is unique among parent capsules) and
+      // bumps any radii below MIN_TIP_R up to that threshold. The
+      // baseR end stays unchanged (1.2 > MIN_TIP_R), only the
+      // thinnest segments get fattened.
+      const MIN_TIP_R = childBaseR * 1.4;  // ~0.84 mm
+      for (const b of branches) {
+        if (b.tangent && b.tangent.distanceTo(ps.dir) < 1e-6
+            && b.start.distanceTo(b.end) > 0.05) {
+          b.r0 = Math.max(b.r0, MIN_TIP_R);
+          b.r1 = Math.max(b.r1, MIN_TIP_R);
+        }
+      }
 
       for (const d of childDirs) {
         const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
@@ -6591,6 +6593,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.39', date: '2026-05-04', n: 'Acantharian — replace external neck capsule with in-place parent-spine-0 fattening. Deep simulation showed: previous separate neck capsule was straight, but the parent\'s spine 0 is a 7-segment helical chain that curves left-right by ~1 mm at midspan — so the straight neck didn\'t align with the helical parent path and read as a separate "snake/vein" element bridging the gap. Better fix: identify spine 0\'s capsules in branches by tangent match (parent spine 0 d is unique among parent capsules) and bump any radii below MIN_TIP_R = childBaseR × 1.4 (~0.84 mm) up to that threshold. The natural baseR=1.2 mm at the spine base is unchanged; only the thinnest segments near the tip get fattened. Parent spine itself now stays visibly thick all the way to the child sphere — no more separate neck.' },
   { v: 'v1.32.38', date: '2026-05-04', n: 'Acantharian child — neck repositioned. v1.32.37 had the neck running from parent.tip to childCenter, but both points are inside the child sphere (sphere bottom is 0.3·childSR below parent.tip with the 0.7 offset). The whole neck was buried inside the sphere and contributed nothing visible. Now extends back along the parent spine by 1.5·childSR (so ~6 mm at debug oversize) — visible portion is OUTSIDE the child sphere where it can actually bridge the joint. Radius bumped to childBaseR × 1.8 for clearer contrast against the parent spine\'s thin tip.' },
   { v: 'v1.32.37', date: '2026-05-04', n: 'Acantharian child — neck capsule re-added as standalone change. Constant-radius capsule (childBaseR × 1.6 ≈ 0.96 mm) from parent.tip to childCenter so the parent spine\'s thin tipR=0.4 mm taper doesn\'t fade into the child sphere via smoothmin. Child spines remain straight with length jitter only.' },
   { v: 'v1.32.36', date: '2026-05-04', n: 'Acantharian — revert v1.32.35 entirely. User reported the helical wobble (despite being symmetric around d) still read as "bending away in unison." Removed the neck capsule too as part of the revert; back to v1.32.34 baseline (straight uniform child spines + log-uniform length jitter).' },
