@@ -353,6 +353,63 @@
      topbar so it doesn't overlap New Creature / STL / Reset. No
      backdrop blur and no canvas dim, so the user can keep watching
      the realtime build assemble itself underneath. */
+  #acanDebugPanel {
+    position: absolute;
+    top: calc(56px + var(--safe-top));
+    left: 12px;
+    z-index: 10;
+    background: rgba(20,24,29,0.94);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: #cdd2d8;
+    font: 12px/1.35 system-ui, sans-serif;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    max-width: 380px;
+    display: none;
+  }
+  #acanDebugPanel.active { display: block; }
+  #acanDebugPanel .adp-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 6px;
+    gap: 8px;
+  }
+  #acanDebugPanel .adp-title {
+    font-weight: 600; color: #fff; font-size: 13px;
+  }
+  #acanDebugPanel .adp-l2 {
+    font-size: 11px; color: #98a0a8; cursor: pointer;
+    user-select: none;
+  }
+  #acanDebugPanel .adp-l2 input { vertical-align: middle; margin-right: 4px; }
+  #acanDebugPanel .adp-current {
+    color: #98a0a8; margin-bottom: 4px;
+  }
+  #acanDebugPanel .adp-next {
+    color: #d8dde3; margin-bottom: 8px; min-height: 32px;
+  }
+  #acanDebugPanel .adp-current span,
+  #acanDebugPanel .adp-next span { color: #fff; }
+  #acanDebugPanel .adp-actions {
+    display: flex; gap: 6px;
+  }
+  #acanDebugPanel button {
+    background: #2a3138; border: 1px solid var(--border);
+    color: #cdd2d8; border-radius: 6px;
+    padding: 6px 10px; font: inherit; cursor: pointer;
+  }
+  #acanDebugPanel button:hover { background: #353d45; }
+  #acanDebugPanel #adpNextBtn {
+    background: #2d6e3a; border-color: #3a8d4d; color: #fff;
+    font-weight: 600;
+  }
+  #acanDebugPanel #adpNextBtn:hover { background: #34843f; }
+  #acanDebugPanel #adpNextBtn:disabled {
+    background: #2a3138; color: #6a7177; cursor: not-allowed;
+  }
+
   #progressOverlay {
     position: absolute;
     top: calc(56px + var(--safe-top));
@@ -911,7 +968,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.58</span>
+        <span id="version">v1.32.59</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -943,6 +1000,18 @@
         <div id="progressText">Working…</div>
       </div>
     </div>
+    <div id="acanDebugPanel">
+      <div class="adp-header">
+        <span class="adp-title">Acantharian Step Debug</span>
+        <label class="adp-l2"><input type="checkbox" id="adpL2"> Level 2</label>
+      </div>
+      <div class="adp-current">Current: <span id="adpCurrent">—</span></div>
+      <div class="adp-next">Next: <span id="adpNext">—</span></div>
+      <div class="adp-actions">
+        <button id="adpNextBtn" type="button">Next ▸</button>
+        <button id="adpResetBtn" type="button">⟲ Reset to start</button>
+      </div>
+    </div>
   </main>
 </div>
 
@@ -963,7 +1032,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.58";
+const VERSION = "v1.32.59";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4213,6 +4282,41 @@ const ACAN_DEBUG_NO_CHILDREN       = false;
 const ACAN_DEBUG_SINGLE_CHILD_ONLY = false;
 const ACAN_DEBUG_CHILD_NODE_ONLY   = true;
 
+// ---------- Acantharian step-debug mode (v1.32.59) ----------
+//
+// Two-level stepping through the Acantharian generation pipeline so
+// we can identify which phase introduces a perceived issue. Level 1
+// jumps phase-by-phase (A,B,C,D,E); Level 2 walks substep-by-substep
+// inside each phase. Default ON, Level 1.
+//
+// Each entry in ACAN_STEPS has:
+//   l1: phase letter (used to group substeps when Level 1 is active)
+//   l2: substep label (e.g. "B3")
+//   desc: human-readable description shown in the debug panel
+const ACAN_STEPS = [
+  { l1: 'init', l2: '—',  desc: 'Empty state — click Next to begin.' },
+  { l1: 'A',    l2: 'A1', desc: 'A1: Compute parent center (origin).' },
+  { l1: 'A',    l2: 'A2', desc: 'A2: Push parent body sphere capsule.' },
+  { l1: 'B',    l2: 'B1', desc: 'B1: Derive wind axis + ripple axis from seed (per-creature wind for the wheat-in-wind bend).' },
+  { l1: 'B',    l2: 'B2', desc: 'B2: Generate parent seashell-spiral directions (one per spine).' },
+  { l1: 'B',    l2: 'B3', desc: 'B3: Per-spine: sample log-uniform length jitter.' },
+  { l1: 'B',    l2: 'B4', desc: 'B4: Per-spine: build 7-segment helix path with cinnamon-twist + wind-bend.' },
+  { l1: 'B',    l2: 'B5', desc: 'B5: Push parent spine capsules into branches.' },
+  { l1: 'C',    l2: 'C1', desc: 'C1: Determine child targets (which parent tips get a child + per-tip scale jitter).' },
+  { l1: 'C',    l2: 'C2', desc: 'C2: Compute child centers (offset 0.7·childSR along ps.dir).' },
+  { l1: 'C',    l2: 'C3', desc: 'C3: Push child body sphere capsules.' },
+  { l1: 'D',    l2: 'D1', desc: 'D1: For each child, find its matching parent spine via tangent equality.' },
+  { l1: 'D',    l2: 'D2', desc: 'D2: Bump matching parent capsule radii up to MIN_TIP_R = 0.84 mm so the joint reads cleanly.' },
+  { l1: 'E',    l2: 'E1', desc: 'E1: Per-child: generate seashell directions and rotate to align polar axis with ps.dir.' },
+  { l1: 'E',    l2: 'E2', desc: 'E2: Per-child: sample length jitter and push child spine capsules into branches.' },
+];
+
+const ACAN_STEP_DEBUG = {
+  enabled: true,
+  level: 1,
+  stepIdx: 0,    // 0..ACAN_STEPS.length-1; 0 = nothing emitted
+};
+
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
 //
 // A central sphere with N radiating tapered spines. No branching, no
@@ -4244,17 +4348,245 @@ function generateAcantharianStructure(s) {
   const recurScale     = s.acanRecurScale ?? 0.30;
   const recurVariation = s.acanRecurVariation ?? 0.60;
   const LEN_SCALE_FLOOR = 0.4;
+  const CHILD_OFFSET_MUL = 0.7;
+
+  // Step-debug truncation. When ACAN_STEP_DEBUG is on for an
+  // Acantharian, the function exits early at each step boundary so
+  // the user can see the partial state at any phase.
+  const stepEnabled = ACAN_STEP_DEBUG.enabled;
+  const lastStep = stepEnabled ? ACAN_STEP_DEBUG.stepIdx : 9999;
+  const STEP_RETURN = () => ({ branches, accents });
 
   const tmp = new THREE.Vector3();
   const perp1 = new THREE.Vector3(), perp2 = new THREE.Vector3();
 
-  // Build one acantharian creature (parent or child) at the given
-  // center and scale (v1.32.18). The salt parameter seeds a per-
-  // creature wind direction, ripple axis, and seashell-spiral phase
-  // — so a child reads as a similar-but-subtly-varied smaller copy of
-  // the parent rather than a carbon-copy clone. SAME bend ratio for
-  // all scales (no size-aware boost): a child is exactly a smaller
-  // version of the parent's morphology.
+  // ============================================================
+  // PHASE A — Parent body sphere
+  // ============================================================
+  // A1: Compute parent center.
+  if (lastStep < 1) return STEP_RETURN();
+  const parentCenter = new THREE.Vector3(0, 0, 0);
+
+  // A2: Push parent body sphere capsule.
+  if (lastStep < 2) return STEP_RETURN();
+  branches.push({
+    start: parentCenter.clone(),
+    end:   parentCenter.clone().add(new THREE.Vector3(0, 0.01, 0)),
+    r0: sphereRadius, r1: sphereRadius,
+    depth: 0, parent: null,
+    tangent: new THREE.Vector3(0, 1, 0),
+    wobble: 0,
+  });
+
+  // ============================================================
+  // PHASE B — Parent spines (helix + wind-bend)
+  // ============================================================
+  // B1: Wind axis + ripple axis (per-seed).
+  if (lastStep < 3) return STEP_RETURN();
+  const parentSeed = s.seed >>> 0;
+  const windYawP   = (parentSeed * 0.7853981633) % (Math.PI * 2);
+  const windPitchP = Math.sin(parentSeed * 0.0001) * 0.5;
+  const windDir = new THREE.Vector3(
+    Math.cos(windYawP) * Math.cos(windPitchP),
+    Math.sin(windPitchP),
+    Math.sin(windYawP) * Math.cos(windPitchP)
+  ).normalize();
+  const rippleAxis = new THREE.Vector3()
+    .crossVectors(windDir, new THREE.Vector3(0, 1, 0));
+  if (rippleAxis.lengthSq() < 1e-6) rippleAxis.set(1, 0, 0);
+  rippleAxis.normalize();
+  const rippleFreq = 4;
+
+  // B2: Generate parent seashell-spiral directions.
+  if (lastStep < 4) return STEP_RETURN();
+  const parentPhaseOffset = (parentSeed * 1e-7) % (Math.PI * 2);
+  const parentDirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, parentPhaseOffset);
+
+  // B3: Per-spine length jitter.
+  if (lastStep < 5) return STEP_RETURN();
+  const parentLens = parentDirs.map(() =>
+    Math.max(LEN_SCALE_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5)) * spineLength
+  );
+
+  // B4: Per-spine helix path with twist + wind-bend.
+  if (lastStep < 6) return STEP_RETURN();
+  const useTwist = twist > 1e-3;
+  const parentSpinePaths = [];
+  const parentSpines = [];   // {tip, dir} returned for child phases
+  for (let si = 0; si < parentDirs.length; si++) {
+    const d = parentDirs[si];
+    const thisLen = parentLens[si];
+    const startPt = parentCenter.clone().addScaledVector(d, sphereRadius * 0.85);
+    const endPt   = parentCenter.clone().addScaledVector(d, sphereRadius + thisLen);
+    parentSpines.push({ tip: endPt.clone(), dir: d.clone() });
+    if (useTwist) {
+      const N = 7;
+      tmp.set(d.x, d.y, d.z);
+      if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
+      else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
+      perp2.crossVectors(tmp, perp1).normalize();
+      const phase0 = si * 2.39996323;
+      const turnsAlongSpine = 1.5;
+      const ampBase = baseR * 1.6 * twist;
+      const wpx = windDir.x - windDir.dot(d) * d.x;
+      const wpy = windDir.y - windDir.dot(d) * d.y;
+      const wpz = windDir.z - windDir.dot(d) * d.z;
+      const wpInP1 = wpx * perp1.x + wpy * perp1.y + wpz * perp1.z;
+      const wpInP2 = wpx * perp2.x + wpy * perp2.y + wpz * perp2.z;
+      const windCrossMag = Math.hypot(wpInP1, wpInP2);
+      const bendCosP = windCrossMag > 1e-6 ? wpInP1 / windCrossMag : 1;
+      const bendSinP = windCrossMag > 1e-6 ? wpInP2 / windCrossMag : 0;
+      const ripplePhase = rippleAxis.dot(d) * rippleFreq;
+      const rippleMul = 0.55 + 0.45 * Math.sin(ripplePhase);
+      const bendMag = windCrossMag * rippleMul * twist;
+      const harmonicPhase = si * 1.7321;
+      const wp = [];
+      const radii = [];
+      for (let k = 0; k <= N; k++) {
+        const t = k / N;
+        const ph = phase0 + t * turnsAlongSpine * Math.PI * 2;
+        const ampTwist = ampBase * Math.sin(t * Math.PI);
+        const twistDX = Math.cos(ph) * ampTwist;
+        const twistDY = Math.sin(ph) * ampTwist;
+        const bendStrength = Math.sin(t * Math.PI)
+          * (1 + 0.40 * Math.sin(t * Math.PI * 2 + harmonicPhase));
+        const bendOffset = thisLen * 0.50 * bendMag * bendStrength;
+        wp.push(startPt.clone().lerp(endPt, t)
+          .addScaledVector(perp1, twistDX + bendCosP * bendOffset)
+          .addScaledVector(perp2, twistDY + bendSinP * bendOffset));
+      }
+      for (let k = 0; k <= N; k++) {
+        const t = k / N;
+        radii.push(baseR * (1 - t) + tipR * t);
+      }
+      parentSpinePaths.push({ wp, radii, d, segments: N });
+    } else {
+      parentSpinePaths.push({
+        wp: [startPt, endPt], radii: [baseR, tipR], d, segments: 1,
+      });
+    }
+  }
+
+  // B5: Push parent spine capsules.
+  if (lastStep < 7) return STEP_RETURN();
+  for (const path of parentSpinePaths) {
+    for (let k = 0; k < path.segments; k++) {
+      branches.push({
+        start: path.wp[k], end: path.wp[k + 1],
+        r0: path.radii[k], r1: path.radii[k + 1],
+        depth: 1, parent: 0,
+        tangent: path.d.clone(), wobble: 0,
+      });
+    }
+  }
+
+  // ============================================================
+  // PHASE C — Child body spheres
+  // ============================================================
+  // C1: Determine child targets (which parent tips, what scales).
+  if (lastStep < 8) return STEP_RETURN();
+  const childTargets = [];
+  if (!ACAN_DEBUG_NO_CHILDREN && recurDepth >= 2 && parentSpines.length > 0) {
+    if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
+      childTargets.push({ ps: parentSpines[0], scale: recurScale, salt: 0x9E37 });
+    } else {
+      for (let i = 0; i < parentSpines.length; i++) {
+        const variation = Math.pow(3, (rng() * 2 - 1) * recurVariation);
+        const childScale = Math.min(0.9, recurScale * variation);
+        if (childScale > 0.05) {
+          childTargets.push({ ps: parentSpines[i], scale: childScale, salt: 0x9E37 + i * 0x1A85 });
+        }
+      }
+    }
+  }
+
+  // C2: Compute child centers (offset along ps.dir).
+  if (lastStep < 9) return STEP_RETURN();
+  for (const t of childTargets) {
+    t.childSR = sphereRadius * t.scale;
+    t.childCenter = t.ps.tip.clone().addScaledVector(t.ps.dir, t.childSR * CHILD_OFFSET_MUL);
+  }
+
+  // C3: Push child body sphere capsules.
+  if (lastStep < 10) return STEP_RETURN();
+  for (const t of childTargets) {
+    branches.push({
+      start: t.childCenter.clone(),
+      end:   t.childCenter.clone().add(new THREE.Vector3(0, 0.01, 0)),
+      r0: t.childSR, r1: t.childSR,
+      depth: 0, parent: null,
+      tangent: t.ps.dir.clone(),
+      wobble: 0,
+    });
+  }
+
+  // ============================================================
+  // PHASE D — Parent spine fattening for clean child connection
+  // ============================================================
+  // D1: For each child, find its matching parent spine via tangent.
+  if (lastStep < 11) return STEP_RETURN();
+  // (no geometry change — match identification only)
+
+  // D2: Bump matching parent capsule radii up to MIN_TIP_R.
+  if (lastStep < 12) return STEP_RETURN();
+  const childBaseR_FixedRef = baseR * 0.5;
+  const MIN_TIP_R = childBaseR_FixedRef * 1.4;
+  for (const t of childTargets) {
+    for (const b of branches) {
+      if (b.tangent && b.tangent.distanceTo(t.ps.dir) < 1e-6
+          && b.start.distanceTo(b.end) > 0.05) {
+        b.r0 = Math.max(b.r0, MIN_TIP_R);
+        b.r1 = Math.max(b.r1, MIN_TIP_R);
+      }
+    }
+  }
+
+  // ============================================================
+  // PHASE E — Child spines
+  // ============================================================
+  // E1: Per-child seashell directions + rotation to align with ps.dir.
+  if (lastStep < 13) return STEP_RETURN();
+  for (const t of childTargets) {
+    const localSeed = (s.seed + t.salt) >>> 0;
+    const phaseOffset = (localSeed * 1e-7) % (Math.PI * 2);
+    t.childDirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, phaseOffset);
+    const Y_AXIS = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(t.ps.dir.dot(Y_AXIS) - 1) > 1e-6) {
+      const childQuat = new THREE.Quaternion().setFromUnitVectors(Y_AXIS, t.ps.dir);
+      for (const d of t.childDirs) d.applyQuaternion(childQuat);
+    }
+  }
+
+  // E2: Per-child length jitter + push spine capsules.
+  if (lastStep < 14) return STEP_RETURN();
+  for (const t of childTargets) {
+    const childScale = t.childSR / sphereRadius;
+    const childSpineLen = spineLength * childScale;
+    const childBaseR = baseR * 0.5;
+    const childTipR = Math.min(tipR * 0.5, childBaseR);
+    for (const d of t.childDirs) {
+      const lenScale = Math.max(LEN_SCALE_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
+      const thisLen = childSpineLen * lenScale;
+      const startPt = t.childCenter.clone().addScaledVector(d, t.childSR * 0.85);
+      const endPt   = t.childCenter.clone().addScaledVector(d, t.childSR + thisLen);
+      branches.push({
+        start: startPt, end: endPt,
+        r0: childBaseR, r1: childTipR,
+        depth: 1, parent: 0,
+        tangent: d.clone(),
+        wobble: 0,
+      });
+    }
+  }
+
+  return { branches, accents };
+}
+
+// Legacy stub kept around for reference; the structured-phase
+// generator above replaces the buildOneAcantharian / emitChildNode
+// pattern but the function below would have been the same logic
+// inlined.
+function _generateAcantharianStructure_legacy(s) {
   function buildOneAcantharian(center, scale, salt, thicknessMul = 1) {
     const sR = sphereRadius * scale;
     const sL = spineLength  * scale;
@@ -6554,6 +6886,7 @@ if (creatureTypeEl) {
   creatureTypeEl.addEventListener('change', () => {
     state.creatureType = creatureTypeEl.value;
     refreshCreatureSection();
+    adpRender();
     scheduleRegen();
   });
 }
@@ -6612,6 +6945,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.59', date: '2026-05-04', n: 'Acantharian step-debug mode (ON by default). Refactored generateAcantharianStructure into 5 phases × 14 substeps with explicit early-return checkpoints between each. Phase A: parent body sphere. Phase B: parent spines (B1 wind axis, B2 seashell dirs, B3 length jitter, B4 helix paths, B5 push capsules). Phase C: child body spheres (C1 targets, C2 centers, C3 push). Phase D: parent spine fattening (D1 identify, D2 bump radii). Phase E: child spines (E1 dirs+rotation, E2 push capsules). New floating debug panel (top-left of canvas) shows the current step + the description of the NEXT step that "Next ▸" will execute. Level 1 (default) jumps a full phase per click; toggle Level 2 to walk substep-by-substep within the current phase. Reset returns to step 0. Once the user identifies which step introduces a regression (e.g. when bend gets re-added later), they can pinpoint by name without rebuilding mental models from scratch.' },
   { v: 'v1.32.58', date: '2026-05-04', n: 'Acantharian — propagate child node + spines to ALL parent spine tips. Flipped ACAN_DEBUG_SINGLE_CHILD_ONLY from true to false; the loop path now emits a child at every parent spine tip. DEBUG_OVERSIZE_NODE stays false so each child takes its natural recurScale-based size with per-tip variation. Children continue to use the v1.32.44 spine-aligned orientation (north pole follows ps.dir).' },
   { v: 'v1.32.57', date: '2026-05-04', n: 'Acantharian — full reset to the v1.32.50 baseline. Wipes the entire arc-bend exploration (v1.32.51 25° toward, v1.32.52 sign flip, v1.32.53 two-color A/B test, v1.32.54 marker visibility fix, v1.32.55 60° bump, v1.32.56 90° hook). Back to straight uniform child spines with log-uniform length jitter only.' },
   { v: 'v1.32.50', date: '2026-05-04', n: 'Acantharian — revert v1.32.49 uniform random curve. Back to straight uniform child spines with length jitter.' },
@@ -6954,6 +7288,73 @@ document.getElementById('newBtn').addEventListener('click', () => {
   scheduleRegen();
 });
 
+// ---------- Acantharian step-debug panel wiring (v1.32.59) ----------
+const adpEl       = document.getElementById('acanDebugPanel');
+const adpCurrent  = document.getElementById('adpCurrent');
+const adpNext     = document.getElementById('adpNext');
+const adpNextBtn  = document.getElementById('adpNextBtn');
+const adpResetBtn = document.getElementById('adpResetBtn');
+const adpL2El     = document.getElementById('adpL2');
+
+function adpRender() {
+  if (!ACAN_STEP_DEBUG.enabled || state.creatureType !== 'acantharian') {
+    adpEl.classList.remove('active');
+    return;
+  }
+  adpEl.classList.add('active');
+  const idx = ACAN_STEP_DEBUG.stepIdx;
+  const cur = ACAN_STEPS[idx];
+  adpCurrent.textContent = `${cur.l2} — ${cur.desc.replace(/^[A-E]\d+:\s*/, '')}`;
+  // Determine the NEXT step (depends on level).
+  let nextIdx;
+  if (ACAN_STEP_DEBUG.level === 1) {
+    // Jump to next phase boundary.
+    nextIdx = idx + 1;
+    while (nextIdx < ACAN_STEPS.length - 1 && ACAN_STEPS[nextIdx + 1].l1 === ACAN_STEPS[nextIdx].l1) {
+      nextIdx++;
+    }
+  } else {
+    nextIdx = idx + 1;
+  }
+  if (nextIdx >= ACAN_STEPS.length) {
+    adpNext.textContent = '(end of pipeline)';
+    adpNextBtn.disabled = true;
+  } else {
+    const nx = ACAN_STEPS[nextIdx];
+    adpNext.textContent = `${nx.l2} — ${nx.desc.replace(/^[A-E]\d+:\s*/, '')}`;
+    adpNextBtn.disabled = false;
+  }
+}
+
+adpNextBtn.addEventListener('click', () => {
+  const idx = ACAN_STEP_DEBUG.stepIdx;
+  let nextIdx;
+  if (ACAN_STEP_DEBUG.level === 1) {
+    nextIdx = idx + 1;
+    while (nextIdx < ACAN_STEPS.length - 1 && ACAN_STEPS[nextIdx + 1].l1 === ACAN_STEPS[nextIdx].l1) {
+      nextIdx++;
+    }
+  } else {
+    nextIdx = idx + 1;
+  }
+  if (nextIdx < ACAN_STEPS.length) {
+    ACAN_STEP_DEBUG.stepIdx = nextIdx;
+    adpRender();
+    scheduleRegen();
+  }
+});
+
+adpResetBtn.addEventListener('click', () => {
+  ACAN_STEP_DEBUG.stepIdx = 0;
+  adpRender();
+  scheduleRegen();
+});
+
+adpL2El.addEventListener('change', () => {
+  ACAN_STEP_DEBUG.level = adpL2El.checked ? 2 : 1;
+  adpRender();
+});
+
 document.getElementById('resetBtn').addEventListener('click', () => {
   Object.assign(state, DEFAULTS);
   refreshUIFromState();
@@ -7010,6 +7411,7 @@ canvas.addEventListener('webglcontextrestored', () => {
 // Initial render. The overlay is lit synchronously so users see feedback
 // the moment the page paints, even before generate() yields its first frame.
 refreshUIFromState();
+adpRender();
 showProgress(true, 'preparing first creature…');
 generate(QUALITY_VOXELS[state.quality] || 96);
 </script>
