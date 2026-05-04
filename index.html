@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.42</span>
+        <span id="version">v1.32.43</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.42";
+const VERSION = "v1.32.43";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4210,7 +4210,7 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
 // helper. As of v1.32.40 propagation is enabled, so this stays true
 // for the simplified emit path.
 const ACAN_DEBUG_NO_CHILDREN       = false;
-const ACAN_DEBUG_SINGLE_CHILD_ONLY = false;
+const ACAN_DEBUG_SINGLE_CHILD_ONLY = true;
 const ACAN_DEBUG_CHILD_NODE_ONLY   = true;
 
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
@@ -6602,6 +6602,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.43', date: '2026-05-04', n: 'Acantharian — back to single-child debug mode (ACAN_DEBUG_SINGLE_CHILD_ONLY=true) so we can iterate on child morphology in isolation again. DEBUG_OVERSIZE_NODE stays false (natural recurScale-based sizing).' },
   { v: 'v1.32.42', date: '2026-05-04', n: 'Acantharian — revert v1.32.41. Random per-spine bend reproduced the one-sided perception. Back to straight uniform child spines with log-uniform length jitter only.' },
   { v: 'v1.32.41', date: '2026-05-04', n: 'Acantharian child — random per-spine wave/floppiness. Each child spine now bends in a RANDOM direction in its own perpendicular plane (per-spine random angle), with random magnitude (5–20% of length per spine) and random secondary harmonic phase. No global axis, no rotational sense, no shared wind. Profile sin(πt) × (1 + 0.5·sin(2πt + harmonicPhase)) — outer sin(πt) anchors both endpoints at zero offset (no launch kink, tip lands exactly on d). Half the spines will happen to bend toward the parent and half away; with no systematic bias, the eye reads it as organic floppiness rather than a directional lean.' },
   { v: 'v1.32.40', date: '2026-05-04', n: 'Acantharian — propagate child morphology to ALL parent spine tips. Flipped ACAN_DEBUG_SINGLE_CHILD_ONLY → false (so the loop path emits a child per parent spine) and DEBUG_OVERSIZE_NODE → false (so each child takes its natural recurScale-based size with per-tip variation). Each child uses the same emitChildNode logic — body sphere, straight spines with length jitter, and parent-spine fattening that targets only the matching parent spine via tangent. Result: 36 children, each anchored to its own parent spine tip with a clean visible joint.' },
