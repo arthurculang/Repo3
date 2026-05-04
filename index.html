@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.32</span>
+        <span id="version">v1.32.33</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.32";
+const VERSION = "v1.32.33";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4490,65 +4490,26 @@ function generateAcantharianStructure(s) {
         tangent: ps.dir.clone(),
         wobble: 0,
       });
-      // Tangential-swirl child spines (v1.32.32). Each spine bends in
-      // a direction PERPENDICULAR TO ITS OWN d, not toward a global
-      // wind. Bend direction = normalize(d × upAxis), which means
-      // every spine curls "sideways around the polar axis" (like
-      // streamlines around a sphere) — bend stays orthogonal to the
-      // radial direction so the pattern of all-direction radiation is
-      // preserved no matter the curl strength. Profile is sin(πt) so
-      // the spine emerges from the surface with zero offset and tapers
-      // cleanly to the tip.
-      //
-      // Length: log-uniform jitter (same formula as parent) for variety.
+      // Straight uniform child spines (v1.32.28, restored v1.32.31 +
+      // again at v1.32.33). Each spine is a single tapered capsule
+      // from sR×0.85 outward to sR + childSpineLen along the seashell
+      // direction d. No length jitter, no bend.
       const phaseOffset = ((s.seed >>> 0) * 1e-7) % (Math.PI * 2);
       const childDirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, phaseOffset);
       const childScale = childSR / sphereRadius;
       const childSpineLen = spineLength * childScale;
       const childBaseR = baseR * 0.5;
       const childTipR  = Math.min(tipR * 0.5, childBaseR);
-      const N_CHILD = 7;
-      const LEN_FLOOR = 0.4;
-      const SWIRL_AMP = 0.20;  // bend max ≈ 20% of spine length
-      const upAxis = new THREE.Vector3(0, 1, 0);
-      const swirlDir = new THREE.Vector3();
-      const fallbackPerp = new THREE.Vector3();
       for (const d of childDirs) {
-        const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
-        const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
-        const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
-
-        // Tangential swirl direction: cross product of d with world up.
-        // Vanishes at the poles → fall back to a stable perpendicular
-        // (any vector ⊥ d) so polar spines still get a small bend.
-        swirlDir.crossVectors(d, upAxis);
-        if (swirlDir.lengthSq() < 1e-4) {
-          fallbackPerp.set(1, 0, 0).addScaledVector(d, -d.x).normalize();
-          swirlDir.copy(fallbackPerp);
-        } else {
-          swirlDir.normalize();
-        }
-
-        const wp = [];
-        for (let k = 0; k <= N_CHILD; k++) {
-          const t = k / N_CHILD;
-          const bendStrength = Math.sin(t * Math.PI);
-          const bendOffset = thisLen * SWIRL_AMP * bendStrength;
-          wp.push(startPt.clone().lerp(endPt, t).addScaledVector(swirlDir, bendOffset));
-        }
-        for (let k = 0; k < N_CHILD; k++) {
-          const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
-          const r1 = childBaseR * (1 - t1) + childTipR * t1;
-          const r2 = childBaseR * (1 - t2) + childTipR * t2;
-          branches.push({
-            start: wp[k], end: wp[k + 1],
-            r0: r1, r1: r2,
-            depth: 1, parent: 0,
-            tangent: d.clone(),
-            wobble: 0,
-          });
-        }
+        const endPt   = childCenter.clone().addScaledVector(d, childSR + childSpineLen);
+        branches.push({
+          start: startPt, end: endPt,
+          r0: childBaseR, r1: childTipR,
+          depth: 1, parent: 0,
+          tangent: d.clone(),
+          wobble: 0,
+        });
       }
     };
 
@@ -6604,6 +6565,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.33', date: '2026-05-04', n: 'Acantharian — revert v1.32.32 (tangential-swirl bend). User reported the same one-sided look returned. Back to the v1.32.31 straight uniform baseline.' },
   { v: 'v1.32.32', date: '2026-05-04', n: 'Acantharian child — tangential-swirl bend (option 4 from the variability plan). Each spine bends in the direction normalize(d × upAxis), which is perpendicular to its OWN d and roughly tangent to the sphere — every spine curls "sideways around the polar axis" like streamlines around a body. Bend stays orthogonal to the radial direction, so the all-direction radiation pattern is preserved no matter the curl strength: no more global one-sided lean. Profile sin(πt) so spines emerge cleanly with zero offset; max amplitude 20% of spine length. Length jitter (log-uniform) reintroduced for variety.' },
   { v: 'v1.32.31', date: '2026-05-04', n: 'Acantharian — revert v1.32.30 (length jitter + waviness on child spines). The wheat-in-wind bend made the child read as one-sided again. Back to the v1.32.28/v1.32.29 straight uniform baseline; we\'ll plan a different approach to variability before re-adding it.' },
   { v: 'v1.32.30', date: '2026-05-04', n: 'Acantharian child rebuild step 5 — child spines now have length jitter + waviness, mirroring the parent. Each spine is a 7-segment helical chain with log-uniform length jitter (exp((rng-0.5)·jitter·2.5)) and the wheat-in-wind bend (multiplicative profile so spines emerge cleanly with no launch kink). Per-creature wind direction derived from a child-specific salt so the child wavers in a different direction than the parent — same proportional curvature, different orientation.' },
