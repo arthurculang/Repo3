@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.57</span>
+        <span id="version">v1.32.58</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.57";
+const VERSION = "v1.32.58";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4210,7 +4210,7 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
 // helper. As of v1.32.40 propagation is enabled, so this stays true
 // for the simplified emit path.
 const ACAN_DEBUG_NO_CHILDREN       = false;
-const ACAN_DEBUG_SINGLE_CHILD_ONLY = true;
+const ACAN_DEBUG_SINGLE_CHILD_ONLY = false;
 const ACAN_DEBUG_CHILD_NODE_ONLY   = true;
 
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
@@ -6612,6 +6612,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.58', date: '2026-05-04', n: 'Acantharian — propagate child node + spines to ALL parent spine tips. Flipped ACAN_DEBUG_SINGLE_CHILD_ONLY from true to false; the loop path now emits a child at every parent spine tip. DEBUG_OVERSIZE_NODE stays false so each child takes its natural recurScale-based size with per-tip variation. Children continue to use the v1.32.44 spine-aligned orientation (north pole follows ps.dir).' },
   { v: 'v1.32.57', date: '2026-05-04', n: 'Acantharian — full reset to the v1.32.50 baseline. Wipes the entire arc-bend exploration (v1.32.51 25° toward, v1.32.52 sign flip, v1.32.53 two-color A/B test, v1.32.54 marker visibility fix, v1.32.55 60° bump, v1.32.56 90° hook). Back to straight uniform child spines with log-uniform length jitter only.' },
   { v: 'v1.32.50', date: '2026-05-04', n: 'Acantharian — revert v1.32.49 uniform random curve. Back to straight uniform child spines with length jitter.' },
   { v: 'v1.32.49', date: '2026-05-04', n: 'Acantharian child — uniform random per-spine curve, no hemisphere logic. Every child spine gets a random bend direction (rng()×2π in the perp plane) and random magnitude (5–20% of length) applied as a single sin(πt) arc, 5 segments. South-hemisphere spines that curve toward the parent fuse via smooth-min where they intersect — accepted as natural fusion rather than avoided. No northness scaling, no per-segment random walk, no shared wind axis.' },
