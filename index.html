@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.45</span>
+        <span id="version">v1.32.46</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.45";
+const VERSION = "v1.32.46";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4543,72 +4543,22 @@ function generateAcantharianStructure(s) {
         }
       }
 
-      // Per-spine independent tangent random walk (v1.32.45). Each
-      // spine takes N short steps along its own d direction, with each
-      // step's tangent perturbed by a small random angle in a random
-      // perpendicular direction (every rng() draw is fresh, per-segment
-      // and per-spine). After each perturbation the tangent is lerped
-      // slightly back toward the original d (restore force) so the
-      // spine doesn't drift far. NO shared frequency, axis, phase,
-      // direction, or magnitude across spines — every spine takes its
-      // own independent walk.
-      //
-      // Bimodal stiffness: ~40% of spines get a "floppy" perturbation
-      // range (visibly meandering), ~60% get a "stiff" range (almost
-      // straight with subtle wiggle). This gives the eye non-uniform
-      // texture so curvature doesn't read as a global pattern.
-      const N_CHILD = 7;
-      const RESTORE = 0.25;
-      const _perpA = new THREE.Vector3();
-      const _perpB = new THREE.Vector3();
-      const _perturbAxis = new THREE.Vector3();
+      // Straight child spines with length jitter (v1.32.34, restored
+      // v1.32.46). Each spine stays exactly along its own d direction
+      // (no bend, no walk, no wobble). Per-spine random walk was tried
+      // in v1.32.45 and reverted — same one-sided perception emerged.
       for (const d of childDirs) {
         const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
         const thisLen = childSpineLen * lenScale;
-        const segLen = thisLen / N_CHILD;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
-
-        const isFloppy = rng() < 0.4;
-        const minPerturb = isFloppy ? 0.05 : 0.01;
-        const perturbRange = isFloppy ? 0.10 : 0.04;
-
-        let dir = d.clone();
-        let pos = startPt.clone();
-        const wp = [pos.clone()];
-        for (let k = 0; k < N_CHILD; k++) {
-          // Build perp basis to current dir.
-          if (Math.abs(dir.y) < 0.9) _perpA.crossVectors(dir, new THREE.Vector3(0, 1, 0)).normalize();
-          else                       _perpA.crossVectors(dir, new THREE.Vector3(1, 0, 0)).normalize();
-          _perpB.crossVectors(dir, _perpA).normalize();
-          // Random direction in perp plane + random magnitude.
-          const phi = rng() * Math.PI * 2;
-          _perturbAxis.set(0, 0, 0)
-            .addScaledVector(_perpA, Math.cos(phi))
-            .addScaledVector(_perpB, Math.sin(phi));
-          const perturbMag = minPerturb + rng() * perturbRange;
-          // Rotate dir within the (dir, _perturbAxis) plane by perturbMag.
-          dir = dir.clone()
-            .multiplyScalar(Math.cos(perturbMag))
-            .addScaledVector(_perturbAxis, Math.sin(perturbMag))
-            .normalize();
-          // Restore force — pull dir slightly back toward original d.
-          dir.lerp(d, RESTORE).normalize();
-          // Step forward.
-          pos = pos.clone().addScaledVector(dir, segLen);
-          wp.push(pos.clone());
-        }
-        for (let k = 0; k < N_CHILD; k++) {
-          const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
-          const r1 = childBaseR * (1 - t1) + childTipR * t1;
-          const r2 = childBaseR * (1 - t2) + childTipR * t2;
-          branches.push({
-            start: wp[k], end: wp[k + 1],
-            r0: r1, r1: r2,
-            depth: 1, parent: 0,
-            tangent: d.clone(),
-            wobble: 0,
-          });
-        }
+        const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
+        branches.push({
+          start: startPt, end: endPt,
+          r0: childBaseR, r1: childTipR,
+          depth: 1, parent: 0,
+          tangent: d.clone(),
+          wobble: 0,
+        });
       }
     };
 
@@ -6664,6 +6614,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.46', date: '2026-05-04', n: 'Acantharian — revert v1.32.45 random walk; same one-sided perception emerged once again. Back to straight uniform child spines with log-uniform length jitter only.' },
   { v: 'v1.32.45', date: '2026-05-04', n: 'Acantharian child spines — per-spine independent tangent random walk. Each spine takes 7 short steps along its own d direction; at each step the tangent is perturbed by a small random angle in a random perpendicular direction (per-segment, per-spine fresh rng() draws), then lerped slightly back toward d (RESTORE=0.25) so it doesn\'t drift far. Bimodal stiffness: ~40% of spines get a "floppy" perturbation range (0.05-0.15 rad), ~60% get "stiff" (0.01-0.05 rad). Harness verifies wide variance across spines: 33% near-straight (<2% bend ratio), 42% subtle wiggle (2-7%), 25% visibly meandering (7-15%), std/mean=0.70. No shared frequency, axis, phase, direction, or magnitude — every spine is independently meandering.' },
   { v: 'v1.32.44', date: '2026-05-04', n: 'Acantharian child orientation now follows parent spine direction. Previously the child\'s seashell was always oriented with its polar axis along world +Y — so children growing off horizontal or downward parent spines were misaligned with their parent direction. Now we apply a Quaternion.setFromUnitVectors(worldY, ps.dir) rotation to the child\'s direction array before generating spines: child\'s "north pole" continues past the parent spine outward; "south pole" points back toward parent. Each child looks like a natural extension of its parent spine\'s direction, regardless of where on the parent body the spine emerged from.' },
   { v: 'v1.32.43', date: '2026-05-04', n: 'Acantharian — back to single-child debug mode (ACAN_DEBUG_SINGLE_CHILD_ONLY=true) so we can iterate on child morphology in isolation again. DEBUG_OVERSIZE_NODE stays false (natural recurScale-based sizing).' },
