@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.52</span>
+        <span id="version">v1.32.53</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.52";
+const VERSION = "v1.32.53";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4199,7 +4199,12 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
   return true;
 }
 
-// DEBUG TOGGLES (v1.32.16, v1.32.22, v1.32.23, v1.32.40).
+// DEBUG TOGGLES (v1.32.16, v1.32.22, v1.32.23, v1.32.40, v1.32.53).
+// ACAN_DEBUG_TWO_COLOR_CHILDREN: when true, emit just two debug
+// children — one at parent.spines[0] with bend "toward parent"
+// (green marker), one at parent.spines[18] with bend "away from
+// parent" (red marker). Used to visually disambiguate which sign
+// produces the user's desired bend direction.
 // ACAN_DEBUG_NO_CHILDREN: when true, no children at all — just the
 // parent. Useful when iterating on parent morphology in isolation.
 // ACAN_DEBUG_SINGLE_CHILD_ONLY: when true (and NO_CHILDREN false),
@@ -4209,9 +4214,10 @@ function clearanceTest(ring, branches, minGap, childrenMap) {
 // spine fattening). When false, falls back to the buildOneAcantharian
 // helper. As of v1.32.40 propagation is enabled, so this stays true
 // for the simplified emit path.
-const ACAN_DEBUG_NO_CHILDREN       = false;
-const ACAN_DEBUG_SINGLE_CHILD_ONLY = true;
-const ACAN_DEBUG_CHILD_NODE_ONLY   = true;
+const ACAN_DEBUG_NO_CHILDREN          = false;
+const ACAN_DEBUG_SINGLE_CHILD_ONLY    = true;
+const ACAN_DEBUG_CHILD_NODE_ONLY      = true;
+const ACAN_DEBUG_TWO_COLOR_CHILDREN   = true;
 
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
 //
@@ -4482,18 +4488,29 @@ function generateAcantharianStructure(s) {
     // parent spine tips is enabled, switch back to recurScale-based
     // sizing so each child takes its natural per-tip size + variation.
     const DEBUG_OVERSIZE_NODE = false;
-    const emitChildNode = (ps, scale) => {
+    // bendIntent: +1 = "toward parent" (current code intent),
+    //             -1 = "away from parent" (sign-flipped from intent).
+    // debugColor: hex color for the overlay marker (or null for none).
+    const emitChildNode = (ps, scale, bendIntent = +1, debugColor = null) => {
       const childSR = DEBUG_OVERSIZE_NODE ? sphereRadius * 0.50 : sphereRadius * scale;
       const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
       // Body sphere (degenerate capsule).
-      branches.push({
+      const bodySphere = {
         start: childCenter.clone(),
         end:   childCenter.clone().add(new THREE.Vector3(0, 0.01, 0)),
         r0: childSR, r1: childSR,
         depth: 0, parent: null,
         tangent: ps.dir.clone(),
         wobble: 0,
-      });
+      };
+      branches.push(bodySphere);
+      if (debugColor !== null) {
+        if (!globalThis._acanDebugMarkers) globalThis._acanDebugMarkers = [];
+        // sphere reference will have its .start scaled in place by
+        // scaleStructureToSize, so the marker tracks the correct
+        // post-scale world position.
+        globalThis._acanDebugMarkers.push({ sphere: bodySphere, color: debugColor });
+      }
       // Straight child spines with length jitter (v1.32.34, restored
       // v1.32.36). Each spine stays EXACTLY along its own d direction
       // (no bend, no wobble) so the all-direction radial pattern is
@@ -4559,13 +4576,12 @@ function generateAcantharianStructure(s) {
         const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
 
-        // Project +ps.dir onto perp plane of d (v1.32.52: sign flipped
-        // from v1.32.51 because the user reports spines were visibly
-        // bending AWAY from parent — so my "toward" was their "away."
-        // Math is identical, just the sign is reversed: bend direction
-        // = (+ps.dir) - (ps.dir·d)·d instead of -ps.dir + (ps.dir·d)·d.
+        // Bend direction = projection of (-bendIntent · ps.dir) onto
+        // perp plane of d. bendIntent=+1 → bend "toward parent"
+        // (mathematical intent); bendIntent=-1 → bend "away from parent."
+        // v1.32.53 exposes this as a parameter so we can A/B test.
         const dotPSDir = d.dot(ps.dir);
-        _bendDir.copy(ps.dir).addScaledVector(d, -dotPSDir);
+        _bendDir.copy(ps.dir).multiplyScalar(-bendIntent).addScaledVector(d, dotPSDir * bendIntent);
         const bendLen = _bendDir.length();
         if (bendLen < 1e-3) {
           // d is (anti-)parallel to ps.dir — no defined "back toward
@@ -4612,10 +4628,17 @@ function generateAcantharianStructure(s) {
       }
     };
 
-    if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
+    if (ACAN_DEBUG_TWO_COLOR_CHILDREN && parentSpines.length >= 19) {
+      // A/B test: two children at different parent-spine tips with
+      // OPPOSING bend signs. Green = bend "toward parent" per the
+      // math intent. Red = bend "away from parent."
+      globalThis._acanDebugMarkers = [];
+      emitChildNode(parentSpines[0],  recurScale, +1, 0x00ff00); // green = toward
+      emitChildNode(parentSpines[18], recurScale, -1, 0xff0000); // red   = away
+    } else if (ACAN_DEBUG_SINGLE_CHILD_ONLY) {
       const ps = parentSpines[0];
       if (ACAN_DEBUG_CHILD_NODE_ONLY) {
-        emitChildNode(ps, recurScale);
+        emitChildNode(ps, recurScale, +1);
       } else {
         const childSR = sphereRadius * recurScale;
         const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
@@ -4628,7 +4651,7 @@ function generateAcantharianStructure(s) {
         const childScale = Math.min(0.9, recurScale * variation);
         if (childScale > 0.05) {
           if (ACAN_DEBUG_CHILD_NODE_ONLY) {
-            emitChildNode(ps, childScale);
+            emitChildNode(ps, childScale, +1);
           } else {
             const childSR = sphereRadius * childScale;
             const childCenter = ps.tip.clone().addScaledVector(ps.dir, childSR * CHILD_OFFSET_MUL);
@@ -6156,6 +6179,25 @@ async function generate(previewVoxels = 96) {
   if (!result) return;
   let { mesh, triCount, voxel, nComp, bridges } = result;
 
+  // DEBUG: overlay colored marker spheres for two-color child A/B test.
+  // The body-sphere reference's .start was scaled in place by
+  // scaleStructureToSize, so reading it now gives the post-scale
+  // world position.
+  if (globalThis._acanDebugMarkers && globalThis._acanDebugMarkers.length > 0) {
+    for (const m of globalThis._acanDebugMarkers) {
+      const pos = m.sphere.start;
+      const r = m.sphere.r0 * 1.5;
+      const markerGeom = new THREE.SphereGeometry(r, 18, 14);
+      const markerMat = new THREE.MeshBasicMaterial({
+        color: m.color, transparent: true, opacity: 0.45, depthWrite: false,
+      });
+      const marker = new THREE.Mesh(markerGeom, markerMat);
+      marker.position.copy(pos);
+      marker.renderOrder = 999;
+      exportGroup.add(marker);
+    }
+  }
+
   // Rings (independent of wall thickness — same across auto-fix iterations).
   setProgress('rings & accents…');
   await yieldFrame();
@@ -6664,6 +6706,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.53', date: '2026-05-04', n: 'Acantharian child A/B test — two children with opposing bend signs and colored overlay markers. ACAN_DEBUG_TWO_COLOR_CHILDREN flag emits two children: parentSpines[0] with bendIntent=+1 (the math "toward parent" direction) tagged green, parentSpines[18] with bendIntent=-1 tagged red. After buildBodyMesh, transparent colored sphere markers overlay each child\'s body sphere position so the user can visually identify which sign corresponds to their perceived "toward" vs "away."' },
   { v: 'v1.32.52', date: '2026-05-04', n: 'Acantharian child spines — flip arc bend direction. v1.32.51 was designed to bend toward parent (-ps.dir projected onto perp plane); harness verified 34/36 spines geometrically closer to parent than straight equivalent. User reported visual was the OPPOSITE — bending away. So my "toward" is somehow the user\'s "away." Flipped the sign: bendDir = +ps.dir projected onto perp plane. If the visual perception was inverted from geometry, this should now look like bending toward parent.' },
   { v: 'v1.32.51', date: '2026-05-04', n: 'Acantharian child spines — gentle 25° arc bending back toward parent. Each spine\'s bend direction = projection of -ps.dir (the direction from child to parent) onto the perp plane of d. Equatorial spines (d perpendicular to ps.dir) get the largest projection magnitude and bend most; spines pointing fully outward or fully back at parent have zero projection and stay straight. Spine path traces a true circular arc subtending 25°: r = thisLen/θ; at param t, alongDist=r·sin(tθ), perpDist=r·(1−cos(tθ)). 5 segments. Tip is displaced perpendicular by ~21% of length and along by ~97%.' },
   { v: 'v1.32.50', date: '2026-05-04', n: 'Acantharian — revert v1.32.49 uniform random curve. Back to straight uniform child spines with length jitter.' },
