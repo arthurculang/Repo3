@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.50</span>
+        <span id="version">v1.32.51</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.50";
+const VERSION = "v1.32.51";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4543,20 +4543,70 @@ function generateAcantharianStructure(s) {
         }
       }
 
-      // Straight child spines with length jitter (v1.32.34, restored
-      // v1.32.50). Each spine stays exactly along its own d direction.
+      // Gentle 25° arc bending back toward parent (v1.32.51). For
+      // each spine: bendDir = projection of -ps.dir (the direction
+      // from child to parent) onto the plane perpendicular to d.
+      // Equatorial spines have the largest projection magnitude and
+      // bend most; near-polar spines have small/zero projection and
+      // bend little/not at all (no arbitrary direction to bend in).
+      // Spine path follows a true circular arc subtending ARC_DEG.
+      const ARC_DEG = 25;
+      const ARC_RAD = ARC_DEG * Math.PI / 180;
+      const N_CHILD = 5;
+      const _bendDir = new THREE.Vector3();
       for (const d of childDirs) {
         const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
         const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
-        const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
-        branches.push({
-          start: startPt, end: endPt,
-          r0: childBaseR, r1: childTipR,
-          depth: 1, parent: 0,
-          tangent: d.clone(),
-          wobble: 0,
-        });
+
+        // Project -ps.dir onto perp plane of d.
+        // proj_perp(v) = v - (v·d)·d.
+        // For v = -ps.dir: proj = -ps.dir - (-ps.dir · d) · d = -ps.dir + (ps.dir·d)·d
+        const dotPSDir = d.dot(ps.dir);
+        _bendDir.copy(ps.dir).multiplyScalar(-1).addScaledVector(d, dotPSDir);
+        const bendLen = _bendDir.length();
+        if (bendLen < 1e-3) {
+          // d is (anti-)parallel to ps.dir — no defined "back toward
+          // parent" direction in the perp plane. Keep spine straight.
+          const endPt = childCenter.clone().addScaledVector(d, childSR + thisLen);
+          branches.push({
+            start: startPt, end: endPt,
+            r0: childBaseR, r1: childTipR,
+            depth: 1, parent: 0,
+            tangent: d.clone(),
+            wobble: 0,
+          });
+          continue;
+        }
+        _bendDir.divideScalar(bendLen);  // normalize
+
+        // Trace a circular arc of total angle ARC_RAD over arc-length thisLen.
+        // r = arcLen / angle. At parameter t ∈ [0,1]: along d by r·sin(tθ),
+        // perpendicular by r·(1 - cos(tθ)). At t=0: zero offset (clean
+        // emergence). At t=1: tip displaced perpendicular by r·(1-cos θ).
+        const r = thisLen / ARC_RAD;
+        const wp = [];
+        for (let k = 0; k <= N_CHILD; k++) {
+          const t = k / N_CHILD;
+          const ang = t * ARC_RAD;
+          const alongDist = r * Math.sin(ang);
+          const perpDist  = r * (1 - Math.cos(ang));
+          wp.push(startPt.clone()
+            .addScaledVector(d, alongDist)
+            .addScaledVector(_bendDir, perpDist));
+        }
+        for (let k = 0; k < N_CHILD; k++) {
+          const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
+          const r1 = childBaseR * (1 - t1) + childTipR * t1;
+          const r2 = childBaseR * (1 - t2) + childTipR * t2;
+          branches.push({
+            start: wp[k], end: wp[k + 1],
+            r0: r1, r1: r2,
+            depth: 1, parent: 0,
+            tangent: d.clone(),
+            wobble: 0,
+          });
+        }
       }
     };
 
@@ -6612,6 +6662,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.51', date: '2026-05-04', n: 'Acantharian child spines — gentle 25° arc bending back toward parent. Each spine\'s bend direction = projection of -ps.dir (the direction from child to parent) onto the perp plane of d. Equatorial spines (d perpendicular to ps.dir) get the largest projection magnitude and bend most; spines pointing fully outward or fully back at parent have zero projection and stay straight. Spine path traces a true circular arc subtending 25°: r = thisLen/θ; at param t, alongDist=r·sin(tθ), perpDist=r·(1−cos(tθ)). 5 segments. Tip is displaced perpendicular by ~21% of length and along by ~97%.' },
   { v: 'v1.32.50', date: '2026-05-04', n: 'Acantharian — revert v1.32.49 uniform random curve. Back to straight uniform child spines with length jitter.' },
   { v: 'v1.32.49', date: '2026-05-04', n: 'Acantharian child — uniform random per-spine curve, no hemisphere logic. Every child spine gets a random bend direction (rng()×2π in the perp plane) and random magnitude (5–20% of length) applied as a single sin(πt) arc, 5 segments. South-hemisphere spines that curve toward the parent fuse via smooth-min where they intersect — accepted as natural fusion rather than avoided. No northness scaling, no per-segment random walk, no shared wind axis.' },
   { v: 'v1.32.48', date: '2026-05-04', n: 'Acantharian — revert v1.32.47 northness-scaled curve. Back to straight uniform child spines with log-uniform length jitter only.' },
