@@ -911,7 +911,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.41</span>
+        <span id="version">v1.32.42</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -963,7 +963,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.41";
+const VERSION = "v1.32.42";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4530,59 +4530,23 @@ function generateAcantharianStructure(s) {
         }
       }
 
-      // Random per-spine wave/floppiness (v1.32.41). Each spine
-      // bends in a RANDOM direction in its own perpendicular plane,
-      // with a random magnitude — no global axis, no rotational
-      // sense, no coherent wind. Half the spines might happen to bend
-      // toward the parent and half away; with no systematic bias
-      // visible at the global scale, the eye reads it as organic
-      // floppiness rather than a directional lean.
-      //
-      // Profile: sin(πt) × (1 + 0.5·sin(2πt + harmonicPhase)) — the
-      // outer sin(πt) factor anchors both endpoints at zero offset
-      // (no launch kink, tip lands exactly on d). The secondary
-      // harmonic at random per-spine phase adds a slight S-curve
-      // character so spines don't all look like clean parabolic arcs.
-      const N_CHILD = 7;
+      // Straight child spines with length jitter (v1.32.34, restored
+      // v1.32.42). Each spine stays exactly along its own d direction
+      // (no bend, no wobble) so the all-direction radial pattern is
+      // rigorously preserved. Random per-spine bend was tried in
+      // v1.32.41 and reverted — same one-sided perception emerged.
       for (const d of childDirs) {
         const lenScale = Math.max(LEN_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
         const thisLen = childSpineLen * lenScale;
         const startPt = childCenter.clone().addScaledVector(d, childSR * 0.85);
         const endPt   = childCenter.clone().addScaledVector(d, childSR + thisLen);
-
-        tmp.set(d.x, d.y, d.z);
-        if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
-        else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
-        perp2.crossVectors(tmp, perp1).normalize();
-
-        const bendDirAngle = rng() * Math.PI * 2;
-        const bendCosP = Math.cos(bendDirAngle);
-        const bendSinP = Math.sin(bendDirAngle);
-        const bendMag = 0.05 + rng() * 0.15;       // 5–20% of length per-spine
-        const harmonicPhase = rng() * Math.PI * 2;
-
-        const wp = [];
-        for (let k = 0; k <= N_CHILD; k++) {
-          const t = k / N_CHILD;
-          const bendStrength = Math.sin(t * Math.PI)
-            * (1 + 0.5 * Math.sin(t * Math.PI * 2 + harmonicPhase));
-          const bendOffset = thisLen * bendMag * bendStrength;
-          wp.push(startPt.clone().lerp(endPt, t)
-            .addScaledVector(perp1, bendCosP * bendOffset)
-            .addScaledVector(perp2, bendSinP * bendOffset));
-        }
-        for (let k = 0; k < N_CHILD; k++) {
-          const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
-          const r1 = childBaseR * (1 - t1) + childTipR * t1;
-          const r2 = childBaseR * (1 - t2) + childTipR * t2;
-          branches.push({
-            start: wp[k], end: wp[k + 1],
-            r0: r1, r1: r2,
-            depth: 1, parent: 0,
-            tangent: d.clone(),
-            wobble: 0,
-          });
-        }
+        branches.push({
+          start: startPt, end: endPt,
+          r0: childBaseR, r1: childTipR,
+          depth: 1, parent: 0,
+          tangent: d.clone(),
+          wobble: 0,
+        });
       }
     };
 
@@ -6638,6 +6602,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.42', date: '2026-05-04', n: 'Acantharian — revert v1.32.41. Random per-spine bend reproduced the one-sided perception. Back to straight uniform child spines with log-uniform length jitter only.' },
   { v: 'v1.32.41', date: '2026-05-04', n: 'Acantharian child — random per-spine wave/floppiness. Each child spine now bends in a RANDOM direction in its own perpendicular plane (per-spine random angle), with random magnitude (5–20% of length per spine) and random secondary harmonic phase. No global axis, no rotational sense, no shared wind. Profile sin(πt) × (1 + 0.5·sin(2πt + harmonicPhase)) — outer sin(πt) anchors both endpoints at zero offset (no launch kink, tip lands exactly on d). Half the spines will happen to bend toward the parent and half away; with no systematic bias, the eye reads it as organic floppiness rather than a directional lean.' },
   { v: 'v1.32.40', date: '2026-05-04', n: 'Acantharian — propagate child morphology to ALL parent spine tips. Flipped ACAN_DEBUG_SINGLE_CHILD_ONLY → false (so the loop path emits a child per parent spine) and DEBUG_OVERSIZE_NODE → false (so each child takes its natural recurScale-based size with per-tip variation). Each child uses the same emitChildNode logic — body sphere, straight spines with length jitter, and parent-spine fattening that targets only the matching parent spine via tangent. Result: 36 children, each anchored to its own parent spine tip with a clean visible joint.' },
   { v: 'v1.32.39', date: '2026-05-04', n: 'Acantharian — replace external neck capsule with in-place parent-spine-0 fattening. Deep simulation showed: previous separate neck capsule was straight, but the parent\'s spine 0 is a 7-segment helical chain that curves left-right by ~1 mm at midspan — so the straight neck didn\'t align with the helical parent path and read as a separate "snake/vein" element bridging the gap. Better fix: identify spine 0\'s capsules in branches by tangent match (parent spine 0 d is unique among parent capsules) and bump any radii below MIN_TIP_R = childBaseR × 1.4 (~0.84 mm) up to that threshold. The natural baseR=1.2 mm at the spine base is unchanged; only the thinnest segments near the tip get fattened. Parent spine itself now stays visibly thick all the way to the child sphere — no more separate neck.' },
