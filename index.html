@@ -379,19 +379,27 @@
   #acanDebugPanel .adp-title {
     font-weight: 600; color: #fff; font-size: 13px;
   }
-  #acanDebugPanel .adp-l2 {
-    font-size: 11px; color: #98a0a8; cursor: pointer;
-    user-select: none;
-  }
-  #acanDebugPanel .adp-l2 input { vertical-align: middle; margin-right: 4px; }
   #acanDebugPanel .adp-current {
-    color: #98a0a8; margin-bottom: 4px;
+    color: #98a0a8; margin-bottom: 6px; min-height: 16px;
   }
-  #acanDebugPanel .adp-next {
-    color: #d8dde3; margin-bottom: 8px; min-height: 32px;
+  #acanDebugPanel .adp-current span { color: #fff; }
+  #acanDebugPanel .adp-jump-label {
+    display: block;
+    color: #98a0a8;
+    font-size: 11px;
+    margin-bottom: 8px;
   }
-  #acanDebugPanel .adp-current span,
-  #acanDebugPanel .adp-next span { color: #fff; }
+  #acanDebugPanel .adp-jump-label select {
+    display: block;
+    width: 100%;
+    margin-top: 3px;
+    background: #1a1f24;
+    color: #cdd2d8;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 6px;
+    font: inherit;
+  }
   #acanDebugPanel .adp-actions {
     display: flex; gap: 6px;
   }
@@ -968,7 +976,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.59</span>
+        <span id="version">v1.32.60</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1003,13 +1011,15 @@
     <div id="acanDebugPanel">
       <div class="adp-header">
         <span class="adp-title">Acantharian Step Debug</span>
-        <label class="adp-l2"><input type="checkbox" id="adpL2"> Level 2</label>
       </div>
       <div class="adp-current">Current: <span id="adpCurrent">—</span></div>
-      <div class="adp-next">Next: <span id="adpNext">—</span></div>
+      <label class="adp-jump-label">Jump to:
+        <select id="adpJumpSelect"></select>
+      </label>
       <div class="adp-actions">
-        <button id="adpNextBtn" type="button">Next ▸</button>
-        <button id="adpResetBtn" type="button">⟲ Reset to start</button>
+        <button id="adpNextStepBtn" type="button" title="Advance to the next phase letter (A→B, B→C, …)">Next Step ▸▸</button>
+        <button id="adpNextSubBtn"  type="button" title="Advance one substep (B1→B2, …)">Next Substep ▸</button>
+        <button id="adpResetBtn"    type="button">⟲ Reset</button>
       </div>
     </div>
   </main>
@@ -1032,7 +1042,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.59";
+const VERSION = "v1.32.60";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -6945,6 +6955,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.60', date: '2026-05-04', n: 'Acantharian step-debug — direct-jump dropdown + split Next-Step / Next-Substep buttons. Replaces the Level-1/Level-2 toggle from v1.32.59 with a more direct interface: a dropdown lists all 14 substeps and selecting one runs the pipeline up to that point. Two side-by-side buttons: "Next Step ▸▸" jumps to the next phase letter (A→B, B→C, …) and "Next Substep ▸" advances one substep within the current phase. Reset returns to step 0. Both buttons disable themselves when there\'s no further target.' },
   { v: 'v1.32.59', date: '2026-05-04', n: 'Acantharian step-debug mode (ON by default). Refactored generateAcantharianStructure into 5 phases × 14 substeps with explicit early-return checkpoints between each. Phase A: parent body sphere. Phase B: parent spines (B1 wind axis, B2 seashell dirs, B3 length jitter, B4 helix paths, B5 push capsules). Phase C: child body spheres (C1 targets, C2 centers, C3 push). Phase D: parent spine fattening (D1 identify, D2 bump radii). Phase E: child spines (E1 dirs+rotation, E2 push capsules). New floating debug panel (top-left of canvas) shows the current step + the description of the NEXT step that "Next ▸" will execute. Level 1 (default) jumps a full phase per click; toggle Level 2 to walk substep-by-substep within the current phase. Reset returns to step 0. Once the user identifies which step introduces a regression (e.g. when bend gets re-added later), they can pinpoint by name without rebuilding mental models from scratch.' },
   { v: 'v1.32.58', date: '2026-05-04', n: 'Acantharian — propagate child node + spines to ALL parent spine tips. Flipped ACAN_DEBUG_SINGLE_CHILD_ONLY from true to false; the loop path now emits a child at every parent spine tip. DEBUG_OVERSIZE_NODE stays false so each child takes its natural recurScale-based size with per-tip variation. Children continue to use the v1.32.44 spine-aligned orientation (north pole follows ps.dir).' },
   { v: 'v1.32.57', date: '2026-05-04', n: 'Acantharian — full reset to the v1.32.50 baseline. Wipes the entire arc-bend exploration (v1.32.51 25° toward, v1.32.52 sign flip, v1.32.53 two-color A/B test, v1.32.54 marker visibility fix, v1.32.55 60° bump, v1.32.56 90° hook). Back to straight uniform child spines with log-uniform length jitter only.' },
@@ -7288,13 +7299,37 @@ document.getElementById('newBtn').addEventListener('click', () => {
   scheduleRegen();
 });
 
-// ---------- Acantharian step-debug panel wiring (v1.32.59) ----------
-const adpEl       = document.getElementById('acanDebugPanel');
-const adpCurrent  = document.getElementById('adpCurrent');
-const adpNext     = document.getElementById('adpNext');
-const adpNextBtn  = document.getElementById('adpNextBtn');
-const adpResetBtn = document.getElementById('adpResetBtn');
-const adpL2El     = document.getElementById('adpL2');
+// ---------- Acantharian step-debug panel wiring (v1.32.59 / v1.32.60) ----------
+const adpEl          = document.getElementById('acanDebugPanel');
+const adpCurrent     = document.getElementById('adpCurrent');
+const adpJumpSelect  = document.getElementById('adpJumpSelect');
+const adpNextStepBtn = document.getElementById('adpNextStepBtn');
+const adpNextSubBtn  = document.getElementById('adpNextSubBtn');
+const adpResetBtn    = document.getElementById('adpResetBtn');
+
+// Compute the index of the NEXT phase boundary (the substep just before
+// the next l1 letter). If we're already on the last entry of the last
+// phase, returns null.
+function adpNextPhaseIdx(fromIdx) {
+  let i = fromIdx + 1;
+  while (i < ACAN_STEPS.length - 1 && ACAN_STEPS[i + 1].l1 === ACAN_STEPS[i].l1) {
+    i++;
+  }
+  return i < ACAN_STEPS.length ? i : null;
+}
+
+// Populate the dropdown once at startup.
+function adpPopulateSelect() {
+  adpJumpSelect.innerHTML = '';
+  for (let i = 0; i < ACAN_STEPS.length; i++) {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    const e = ACAN_STEPS[i];
+    opt.textContent = e.l1 === 'init' ? '— Empty —' : `${e.l2} — ${e.desc.replace(/^[A-E]\d+:\s*/, '')}`;
+    adpJumpSelect.appendChild(opt);
+  }
+}
+adpPopulateSelect();
 
 function adpRender() {
   if (!ACAN_STEP_DEBUG.enabled || state.creatureType !== 'acantharian') {
@@ -7304,41 +7339,45 @@ function adpRender() {
   adpEl.classList.add('active');
   const idx = ACAN_STEP_DEBUG.stepIdx;
   const cur = ACAN_STEPS[idx];
-  adpCurrent.textContent = `${cur.l2} — ${cur.desc.replace(/^[A-E]\d+:\s*/, '')}`;
-  // Determine the NEXT step (depends on level).
-  let nextIdx;
-  if (ACAN_STEP_DEBUG.level === 1) {
-    // Jump to next phase boundary.
-    nextIdx = idx + 1;
-    while (nextIdx < ACAN_STEPS.length - 1 && ACAN_STEPS[nextIdx + 1].l1 === ACAN_STEPS[nextIdx].l1) {
-      nextIdx++;
-    }
-  } else {
-    nextIdx = idx + 1;
-  }
-  if (nextIdx >= ACAN_STEPS.length) {
-    adpNext.textContent = '(end of pipeline)';
-    adpNextBtn.disabled = true;
-  } else {
-    const nx = ACAN_STEPS[nextIdx];
-    adpNext.textContent = `${nx.l2} — ${nx.desc.replace(/^[A-E]\d+:\s*/, '')}`;
-    adpNextBtn.disabled = false;
-  }
+  adpCurrent.textContent = cur.l1 === 'init'
+    ? '— Empty (start) —'
+    : `${cur.l2} — ${cur.desc.replace(/^[A-E]\d+:\s*/, '')}`;
+  adpJumpSelect.value = String(idx);
+  // Disable buttons that have no further target.
+  const nextSub = (idx + 1) < ACAN_STEPS.length ? (idx + 1) : null;
+  const nextPhase = adpNextPhaseIdx(idx);
+  adpNextSubBtn.disabled  = nextSub === null;
+  // "Next Step" only makes sense if it lands somewhere different from
+  // "Next Substep" — i.e. we're not already at the last substep of the
+  // current phase. If they're equal, the substep button covers it.
+  adpNextStepBtn.disabled = nextPhase === null
+    || (nextSub !== null && nextPhase === nextSub && idx > 0
+        && ACAN_STEPS[idx + 1] && ACAN_STEPS[idx + 1].l1 === ACAN_STEPS[idx].l1);
+  // Actually simpler: enable if there IS a next phase boundary at all.
+  adpNextStepBtn.disabled = nextPhase === null;
 }
 
-adpNextBtn.addEventListener('click', () => {
-  const idx = ACAN_STEP_DEBUG.stepIdx;
-  let nextIdx;
-  if (ACAN_STEP_DEBUG.level === 1) {
-    nextIdx = idx + 1;
-    while (nextIdx < ACAN_STEPS.length - 1 && ACAN_STEPS[nextIdx + 1].l1 === ACAN_STEPS[nextIdx].l1) {
-      nextIdx++;
-    }
-  } else {
-    nextIdx = idx + 1;
+adpJumpSelect.addEventListener('change', () => {
+  const idx = parseInt(adpJumpSelect.value, 10);
+  if (Number.isFinite(idx) && idx >= 0 && idx < ACAN_STEPS.length) {
+    ACAN_STEP_DEBUG.stepIdx = idx;
+    adpRender();
+    scheduleRegen();
   }
-  if (nextIdx < ACAN_STEPS.length) {
-    ACAN_STEP_DEBUG.stepIdx = nextIdx;
+});
+
+adpNextStepBtn.addEventListener('click', () => {
+  const target = adpNextPhaseIdx(ACAN_STEP_DEBUG.stepIdx);
+  if (target !== null) {
+    ACAN_STEP_DEBUG.stepIdx = target;
+    adpRender();
+    scheduleRegen();
+  }
+});
+
+adpNextSubBtn.addEventListener('click', () => {
+  if (ACAN_STEP_DEBUG.stepIdx + 1 < ACAN_STEPS.length) {
+    ACAN_STEP_DEBUG.stepIdx++;
     adpRender();
     scheduleRegen();
   }
@@ -7348,11 +7387,6 @@ adpResetBtn.addEventListener('click', () => {
   ACAN_STEP_DEBUG.stepIdx = 0;
   adpRender();
   scheduleRegen();
-});
-
-adpL2El.addEventListener('change', () => {
-  ACAN_STEP_DEBUG.level = adpL2El.checked ? 2 : 1;
-  adpRender();
 });
 
 document.getElementById('resetBtn').addEventListener('click', () => {
