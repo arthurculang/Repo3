@@ -983,7 +983,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.68</span>
+        <span id="version">v1.32.69</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1049,7 +1049,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.68";
+const VERSION = "v1.32.69";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4438,7 +4438,7 @@ const ACAN_STEPS = [
   { l1: 'E',    l2: 'E3', desc: 'E3: Per-child: compute startPt at child sphere surface for each spine.' },
   { l1: 'E',    l2: 'E4', desc: 'E4: Per-child: push child spines as STRAIGHT capsules (no bend) — visual baseline.' },
   { l1: 'E',    l2: 'E5', desc: 'E5: Per-child: compute bendDir per spine + flag flower-eligible spines (d·ps.dir > 0.85, far side from parent).' },
-  { l1: 'E',    l2: 'E6', desc: 'E6: Per-child: build path geometry — gentle 25° arc + 2-turn corkscrew helix for laterals, Heliconia bloom (stem + 5 petals) for flower-eligible.' },
+  { l1: 'E',    l2: 'E6', desc: 'E6: Per-child: build path geometry — gentle 25° arc + 4-turn tight corkscrew (amp 5×childBaseR) for laterals, Heliconia bloom (stem + 5 petals) for flower-eligible.' },
   { l1: 'E',    l2: 'E7', desc: 'E7: Per-child: push final capsules — corkscrew-bent arcs for laterals, flower stems + petals at the outward pole.' },
 ];
 
@@ -4719,9 +4719,9 @@ function generateAcantharianStructure(s) {
   //   t.startPts  = array of startPt Vector3 per spine (E3)
   //   t.bendDirs  = array of {bendDir Vector3 | null} per spine (E5)
   //   t.arcPaths  = array of wp[] arrays per spine (E6)
-  // Child spine radii — thinner than parent (v1.32.68: 0.5× → 0.35×).
-  const childBaseR_FixedRefE = baseR * 0.35;
-  const childTipR_FixedRefE = Math.min(tipR * 0.35, childBaseR_FixedRefE);
+  // Child spine radii — much thinner than parent (v1.32.69: 0.35× → 0.22×).
+  const childBaseR_FixedRefE = baseR * 0.22;
+  const childTipR_FixedRefE = Math.min(tipR * 0.22, childBaseR_FixedRefE);
 
   // E2: sample length jitter for every child spine.
   if (lastStep < 14) return STEP_RETURN();
@@ -4798,20 +4798,15 @@ function generateAcantharianStructure(s) {
   // - Other spines with non-null bendDir: build a circular arc.
   // - Pole-aligned spines (no bendDir, NOT flower): straight fallback.
   if (lastStep < 18) return STEP_RETURN();
-  // Arc magnitude dialed back to gentle 25° (v1.32.68 — direction now
-  // confirmed correct after the v1.32.64 Vector3 cloning fix).
   const ARC_DEG = 25;
   const ARC_RAD = ARC_DEG * Math.PI / 180;
-  // 7 segments give the corkscrew helix room to breathe — 2 turns over
-  // the spine length means each segment covers ≈ 100° of helix rotation.
-  const N_CHILD = 7;
-  // Corkscrew helix wobble (v1.32.68). Each spine winds around its
-  // own d axis as the path advances, giving a gentle spiral on top of
-  // the toward-parent arc. Amplitude tapers via sin(πt) so the spine
-  // emerges cleanly from the child sphere and tapers to a clean tip.
-  // Golden-angle phase per spine so adjacent spines spiral out of sync.
-  const CORKSCREW_TURNS  = 2.0;
-  const CORKSCREW_AMP_K  = 2.5;   // amp = childBaseR × this
+  // Corkscrew tightened (v1.32.69): more turns, bigger amplitude,
+  // more segments. With 4 turns over the spine length and 13
+  // segments, each segment covers ≈ 110° of helix rotation —
+  // dense enough to read as a real coil rather than a polygon.
+  const N_CHILD = 13;
+  const CORKSCREW_TURNS  = 4.0;
+  const CORKSCREW_AMP_K  = 5.0;   // loop diameter = 2 × amp ≈ 10×childBaseR
   const corkscrewAmp = childBaseR_FixedRefE * CORKSCREW_AMP_K;
   const _corkPerp1 = new THREE.Vector3();
   const _corkPerp2 = new THREE.Vector3();
@@ -7349,6 +7344,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.69', date: '2026-05-04', n: 'Acantharian child spines — much more pronounced corkscrew. Three coordinated bumps to make the spiral read clearly: (1) child spine radii thinner — baseR factor 0.35× → 0.22× (and tipR matching), so the spine itself is slim; (2) corkscrew amplitude factor 2.5× → 5× of childBaseR — loop diameter is now ≈10× the spine\'s own diameter, clear visible coil; (3) corkscrew turns 2 → 4 — tighter winding. N_CHILD bumped 7 → 13 segments to give the 4-turn helix enough resolution (≈110° per segment vs 144° at N=7). Arc bend stays at 25°.' },
   { v: 'v1.32.68', date: '2026-05-04', n: 'Acantharian child spines — three tweaks: (1) arc magnitude dialed back from 60° → 25° (gentle bend now that v1.32.64 confirmed direction is correct); (2) child spine radii slimmer — baseR factor 0.5× → 0.35× (and tipR matching); (3) corkscrew helix wobble added on top of the toward-parent arc — each spine winds 2 full turns around its own d axis with amplitude 2.5×childBaseR, sin(πt) taper so the spiral fades to zero at base and tip, golden-angle phase per spine so adjacent spines twist out of sync. N_CHILD bumped 5 → 7 segments to give the corkscrew enough resolution. Flower geometry unchanged.' },
   { v: 'v1.32.67', date: '2026-05-04', n: 'Colorize visualization mode (off by default). New universal "Colorize" checkbox in the controls panel — when on, the mesh is tinted by morphology part type with smooth gradients between regions. Each branch is tagged with colorType at generation time (parentCore, parentSpine, childCore, childSpine, flowerStem, flowerPetal). After mesh build, colorizeMesh walks vertices and assigns a per-vertex color = inverse-distance-weighted blend of the k-nearest branches\' palette colors (using a spatial hash for speed). Smooth color fades between part types fall out naturally because adjacent vertices have similar nearest-branch sets. Palette: cool deep purple at the parent core, warming through blue-violet → magenta → pink-red → orange → golden yellow at flower petals. Material is cloned with vertexColors=true only when colorize is on, so STL export tint stays default and the mode is purely visual.' },
   { v: 'v1.32.66', date: '2026-05-04', n: 'Acantharian — Heliconia-style flower bloom replaces straight north-pole child spines. Spines whose direction is closely aligned with ps.dir (d·ps.dir > 0.85, ≈ within 32° of the outward pole) — i.e. those on the far side of the child from the parent attachment, where the bend math has no defined direction — now emit a 6-capsule rainforest-flower bloom instead of a single straight capsule. Geometry: a short central stem (40% of spine length) + 5 tapered petals fanning outward at 50° polar from d (72° azimuth spacing), each petal at 60% length tapering from the stem end down to a fine tip. Visually: each child gets a small flower-cluster crown on its outer face, complementing the bent equator/lateral spines that arc back toward the parent.' },
