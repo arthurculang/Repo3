@@ -983,7 +983,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.72</span>
+        <span id="version">v1.32.73</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1049,7 +1049,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.72";
+const VERSION = "v1.32.73";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4438,7 +4438,7 @@ const ACAN_STEPS = [
   { l1: 'E',    l2: 'E3', desc: 'E3: Per-child: compute startPt at child sphere surface for each spine.' },
   { l1: 'E',    l2: 'E4', desc: 'E4: Per-child: push child spines as STRAIGHT capsules (no bend) — visual baseline.' },
   { l1: 'E',    l2: 'E5', desc: 'E5: Per-child: compute bendDir per spine + flag flower-eligible spines (d·ps.dir > 0.85, far side from parent).' },
-  { l1: 'E',    l2: 'E6', desc: 'E6: Per-child: build path geometry — gentle 25° arc + 5-turn tight corkscrew (amp 8×childBaseR) for laterals, Heliconia bloom (stem + 5 petals) for flower-eligible.' },
+  { l1: 'E',    l2: 'E6', desc: 'E6: Per-child: build path geometry — gentle 25° arc + 5-turn corkscrew (amp 13.3×childBaseR, ≈54× wire dia) for laterals, Heliconia bloom (stem + 5 petals) for flower-eligible.' },
   { l1: 'E',    l2: 'E7', desc: 'E7: Per-child: push final capsules — corkscrew-bent arcs for laterals, flower stems + petals at the outward pole.' },
 ];
 
@@ -4544,8 +4544,8 @@ function generateAcantharianStructure(s) {
   // two clusters stay visibly distinct — no two spines land at the
   // same length, but they cluster around two preferred radii.
   if (lastStep < 5) return STEP_RETURN();
-  const ORBIT_SHORT = 0.65;     // short orbit ≈ 65% of base spineLength
-  const ORBIT_LONG  = 1.35;     // long  orbit ≈ 135% of base spineLength
+  const ORBIT_SHORT = 0.845;    // short orbit ≈ 84.5% of base spineLength (v1.32.73: parent spines +30%)
+  const ORBIT_LONG  = 1.755;    // long  orbit ≈ 175.5% of base spineLength (v1.32.73: parent spines +30%)
   // Use a tighter jitter multiplier within each cluster — about
   // 0.4× the standard jitter range — so individual spines vary but
   // not enough to merge the two orbit clusters.
@@ -4721,9 +4721,9 @@ function generateAcantharianStructure(s) {
   //   t.startPts  = array of startPt Vector3 per spine (E3)
   //   t.bendDirs  = array of {bendDir Vector3 | null} per spine (E5)
   //   t.arcPaths  = array of wp[] arrays per spine (E6)
-  // Child spine radii — wire-thin (v1.32.70: 0.22× → 0.14×).
-  const childBaseR_FixedRefE = baseR * 0.14;
-  const childTipR_FixedRefE = Math.min(tipR * 0.14, childBaseR_FixedRefE);
+  // Child spine radii — wire-thin (v1.32.73: 0.14× → 0.098×, another 30% thinner).
+  const childBaseR_FixedRefE = baseR * 0.098;
+  const childTipR_FixedRefE = Math.min(tipR * 0.098, childBaseR_FixedRefE);
 
   // E2: sample length jitter for every child spine.
   if (lastStep < 14) return STEP_RETURN();
@@ -4802,13 +4802,13 @@ function generateAcantharianStructure(s) {
   if (lastStep < 18) return STEP_RETURN();
   const ARC_DEG = 25;
   const ARC_RAD = ARC_DEG * Math.PI / 180;
-  // Corkscrew tightened further (v1.32.70). 5 turns over the spine
-  // length with 25 segments → 5 segments per turn at 72° each, near
-  // the smoothness limit. Amplitude factor 8× childBaseR — loop
-  // diameter ≈ 16× the wire diameter so the coil is unmistakable.
+  // Corkscrew (v1.32.73): diameter widened another 66% → AMP_K
+  // 8.0 → 13.3. With the v1.32.73 thinner wire (childBaseR ≈ 0.098×)
+  // the coil now reads ~27× the wire radius (≈54× wire dia), an
+  // exaggerated open spiral. 5 turns over 25 segments preserved.
   const N_CHILD = 25;
   const CORKSCREW_TURNS  = 5.0;
-  const CORKSCREW_AMP_K  = 8.0;
+  const CORKSCREW_AMP_K  = 13.3;
   const corkscrewAmp = childBaseR_FixedRefE * CORKSCREW_AMP_K;
   const _corkPerp1 = new THREE.Vector3();
   const _corkPerp2 = new THREE.Vector3();
@@ -7355,6 +7355,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.73', date: '2026-05-06', n: 'Acantharian — three coordinated tweaks. (1) Parent spines 30% longer: ORBIT_SHORT 0.65 → 0.845 and ORBIT_LONG 1.35 → 1.755 (multiplied by 1.3). After scale-to-size renormalizes the bounding box, the visual effect is a smaller body with proportionally longer parent spines. (2) Child spines 30% thinner: childBaseR factor 0.14× → 0.098× (and tipR matching). (3) Corkscrew diameter 66% wider: CORKSCREW_AMP_K 8.0 → 13.3 — combined with the thinner wire, the coil now reads ≈54× the wire diameter, an exaggerated open spiral. 5 turns over 25 segments preserved. Arc bend stays at 25°.' },
   { v: 'v1.32.72', date: '2026-05-06', n: 'Colorize mode now has a reflective sheen. Replaced the cloned-metal-material approach with a fresh MeshPhysicalMaterial: low base roughness (0.22), modest metalness (0.35), and a full clearcoat layer (clearcoat 1.0, clearcoatRoughness 0.05) on top. Visually: a wet/lacquered candy-shell finish where the directional key + rim lights produce sharp specular highlights across the colored body, and the clearcoat catches glints independently of the base color. STL export is unaffected — the metal preset material is untouched and is still what the export pipeline uses.' },
   { v: 'v1.32.71', date: '2026-05-06', n: 'Defaults: (1) colorize ON by default (was off) so the part-type tint shows on first load; (2) Acantharian step debugger now defaults to the final substep (full creature rendered) instead of the empty/init state. Both Reset and the dropdown still let the user dial back to any earlier step or to the empty start.' },
   { v: 'v1.32.70', date: '2026-05-06', n: 'Acantharian child spines — corkscrew dialed up further. (1) child spine radii pushed thinner, baseR factor 0.22× → 0.14× (and tipR matching) so the wire is finer still; (2) corkscrew amplitude factor 5× → 8× of childBaseR — loop diameter now ≈16× the wire diameter, the coil is unmistakable; (3) corkscrew turns 4 → 5 (tighter winding); (4) N_CHILD bumped 13 → 25 segments to keep the 5-turn helix smooth — 5 segments per turn at 72° each, near the visual smoothness limit. Arc bend stays at 25°.' },
