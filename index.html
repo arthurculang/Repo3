@@ -976,7 +976,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.63</span>
+        <span id="version">v1.32.64</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1042,7 +1042,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.63";
+const VERSION = "v1.32.64";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4683,9 +4683,15 @@ function generateAcantharianStructure(s) {
   }
 
   // E7: replace E4's straight capsules with bent arc capsules.
+  // BUGFIX (v1.32.64): every capsule needs its OWN Vector3 instances
+  // for start and end. Previously path.wp[k] was passed by reference
+  // and shared between adjacent capsules (branches[i].end ===
+  // branches[i+1].start). scaleStructureToSize then multiplied each
+  // shared Vector3 in place once per branch that referenced it, so
+  // wp[1..N-1] got scaled k² while wp[0] and wp[N] only got k —
+  // warping the arc shape (with k≈0.8 the midpoints contracted to
+  // 0.64×). The .clone() calls below give each branch its own copy.
   if (lastStep < 19) return STEP_RETURN();
-  // Drop the E4 straight capsules so we don't have both straight
-  // and bent versions overlapping.
   branches.splice(e4StartIdx, e4EndIdx - e4StartIdx);
   for (const t of childTargets) {
     for (let i = 0; i < t.childDirs.length; i++) {
@@ -4693,7 +4699,7 @@ function generateAcantharianStructure(s) {
       const path = t.arcPaths[i];
       if (path.straight) {
         branches.push({
-          start: path.wp[0], end: path.wp[1],
+          start: path.wp[0].clone(), end: path.wp[1].clone(),
           r0: childBaseR_FixedRefE, r1: childTipR_FixedRefE,
           depth: 1, parent: 0,
           tangent: d.clone(),
@@ -4705,7 +4711,7 @@ function generateAcantharianStructure(s) {
           const r1 = childBaseR_FixedRefE * (1 - t1) + childTipR_FixedRefE * t1;
           const r2 = childBaseR_FixedRefE * (1 - t2) + childTipR_FixedRefE * t2;
           branches.push({
-            start: path.wp[k], end: path.wp[k + 1],
+            start: path.wp[k].clone(), end: path.wp[k + 1].clone(),
             r0: r1, r1: r2,
             depth: 1, parent: 0,
             tangent: d.clone(),
@@ -7082,6 +7088,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.64', date: '2026-05-04', n: 'BUGFIX: child arc capsules now use independent Vector3 copies for start/end. Found by stepping through E1→E7 with the user\'s help: at E7 the bent arc was using path.wp[k] and path.wp[k+1] BY REFERENCE for adjacent capsules, so branches[i].end and branches[i+1].start were the SAME Vector3 object. scaleStructureToSize then multiplied each shared object IN PLACE once per branch referencing it — wp[1..N-1] got scaled k² while wp[0] and wp[N] only got k. With k≈0.8 (typical for an 80mm-target 100mm-bbox), midpoints contracted to 0.64× while endpoints stayed at 0.8×, dramatically warping the arc and obliterating the visible bend. Fix: .clone() each wp[] when pushing a branch. The bent spines should now be unambiguously bent at E7.' },
   { v: 'v1.32.63', date: '2026-05-04', n: 'Acantharian — bumped E7 arc magnitude 25° → 60° to make the bend direction visually unambiguous. At 25° tip displacement was only ~21% of spine length; at 60° it\'s ~50%, so the spines visibly hook in the bend direction. This is a debug-direction test: if the spines visibly arc toward parent, the math is correct and we just dial back to 25° for the final gentle look. If they still arc OUTWARD at 60°, the formula is inverted somewhere and we investigate further.' },
   { v: 'v1.32.62', date: '2026-05-04', n: 'Acantharian step-debug — split phase E into 7 substeps (E1-E7) so the bend computation can be debugged piece-by-piece. E2: sample length jitter (rng draws). E3: compute startPt at child sphere surface. E4: push child spines as STRAIGHT capsules (visual baseline — confirms the straight emission is correct). E5: compute bendDir per spine = projection of −ps.dir onto perp plane of d (computational only). E6: build 5-segment circular-arc paths from startPt + d and bendDir (computational only). E7: replace E4\'s straight capsules with the bent arc versions. The user can now step through and identify exactly which substep the bend looks wrong at: if E4 is correct but E7 is wrong, the issue is in E5/E6\'s computation; if E4 already looks wrong, the issue is upstream.' },
   { v: 'v1.32.61', date: '2026-05-04', n: 'Acantharian child spines — gentle 25° arc bending toward parent (in step E2). Each child spine\'s bend direction = projection of -ps.dir onto the perp plane of d (i.e. the back-toward-parent direction perpendicular to the spine\'s own d). Spines whose d is (anti-)parallel to ps.dir get no bend and stay straight. 5-segment circular arc subtending 25° over the spine\'s full length. The new step-debug mode lets the user step in/out of E2 to confirm the bend direction visually before committing.' },
