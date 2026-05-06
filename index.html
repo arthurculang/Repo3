@@ -983,7 +983,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.70</span>
+        <span id="version">v1.32.71</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1049,7 +1049,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.70";
+const VERSION = "v1.32.71";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1099,7 +1099,7 @@ const DEFAULTS = {
   // shown in the panel. v1.30.0 added 'acantharian'; chunk 3 adds
   // 'coralline'.
   creatureType: 'acantharian',
-  colorize: false,    // v1.32.67 — colorize mode: tints mesh by part type for visualization (no STL effect)
+  colorize: true,     // v1.32.71 — colorize mode on by default; tints mesh by part type for visualization (no STL effect)
   // Acantharian-specific controls (chunk 2B, v1.30.1):
   acanSpines: 36,        // 6..48   how many spines radiate from the parent core.
                           //         18 (original) → 24 (v1.32.5) → 36 (v1.32.7) so the
@@ -4445,7 +4445,9 @@ const ACAN_STEPS = [
 const ACAN_STEP_DEBUG = {
   enabled: true,
   level: 1,
-  stepIdx: 0,    // 0..ACAN_STEPS.length-1; 0 = nothing emitted
+  // v1.32.71: default to the final substep (full creature rendered).
+  // User can dial back to an earlier step via the dropdown / Reset.
+  stepIdx: ACAN_STEPS.length - 1,
 };
 
 // ---------- Acantharian creature (chunk 2A, v1.30.0) ----------
@@ -7344,6 +7346,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.71', date: '2026-05-06', n: 'Defaults: (1) colorize ON by default (was off) so the part-type tint shows on first load; (2) Acantharian step debugger now defaults to the final substep (full creature rendered) instead of the empty/init state. Both Reset and the dropdown still let the user dial back to any earlier step or to the empty start.' },
   { v: 'v1.32.70', date: '2026-05-06', n: 'Acantharian child spines — corkscrew dialed up further. (1) child spine radii pushed thinner, baseR factor 0.22× → 0.14× (and tipR matching) so the wire is finer still; (2) corkscrew amplitude factor 5× → 8× of childBaseR — loop diameter now ≈16× the wire diameter, the coil is unmistakable; (3) corkscrew turns 4 → 5 (tighter winding); (4) N_CHILD bumped 13 → 25 segments to keep the 5-turn helix smooth — 5 segments per turn at 72° each, near the visual smoothness limit. Arc bend stays at 25°.' },
   { v: 'v1.32.69', date: '2026-05-04', n: 'Acantharian child spines — much more pronounced corkscrew. Three coordinated bumps to make the spiral read clearly: (1) child spine radii thinner — baseR factor 0.35× → 0.22× (and tipR matching), so the spine itself is slim; (2) corkscrew amplitude factor 2.5× → 5× of childBaseR — loop diameter is now ≈10× the spine\'s own diameter, clear visible coil; (3) corkscrew turns 2 → 4 — tighter winding. N_CHILD bumped 7 → 13 segments to give the 4-turn helix enough resolution (≈110° per segment vs 144° at N=7). Arc bend stays at 25°.' },
   { v: 'v1.32.68', date: '2026-05-04', n: 'Acantharian child spines — three tweaks: (1) arc magnitude dialed back from 60° → 25° (gentle bend now that v1.32.64 confirmed direction is correct); (2) child spine radii slimmer — baseR factor 0.5× → 0.35× (and tipR matching); (3) corkscrew helix wobble added on top of the toward-parent arc — each spine winds 2 full turns around its own d axis with amplitude 2.5×childBaseR, sin(πt) taper so the spiral fades to zero at base and tip, golden-angle phase per spine so adjacent spines twist out of sync. N_CHILD bumped 5 → 7 segments to give the corkscrew enough resolution. Flower geometry unchanged.' },
