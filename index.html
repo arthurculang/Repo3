@@ -976,7 +976,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.62</span>
+        <span id="version">v1.32.63</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1042,7 +1042,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.62";
+const VERSION = "v1.32.63";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4322,8 +4322,8 @@ const ACAN_STEPS = [
   { l1: 'E',    l2: 'E3', desc: 'E3: Per-child: compute startPt at child sphere surface for each spine.' },
   { l1: 'E',    l2: 'E4', desc: 'E4: Per-child: push child spines as STRAIGHT capsules (no bend) — visual baseline.' },
   { l1: 'E',    l2: 'E5', desc: 'E5: Per-child: compute bendDir for each spine = projection of −ps.dir onto perp plane of d.' },
-  { l1: 'E',    l2: 'E6', desc: 'E6: Per-child: build 5-segment circular-arc paths (replaces E4 straight version).' },
-  { l1: 'E',    l2: 'E7', desc: 'E7: Per-child: push the arc capsules as final 25°-bent child spines.' },
+  { l1: 'E',    l2: 'E6', desc: 'E6: Per-child: build 5-segment circular-arc paths (60° for direction debug — replaces E4 straight version).' },
+  { l1: 'E',    l2: 'E7', desc: 'E7: Per-child: push the arc capsules as final 60°-bent child spines.' },
 ];
 
 const ACAN_STEP_DEBUG = {
@@ -4651,7 +4651,7 @@ function generateAcantharianStructure(s) {
 
   // E6: build the arc path (wp[]) for each child spine.
   if (lastStep < 18) return STEP_RETURN();
-  const ARC_DEG = 25;
+  const ARC_DEG = 60;  // bumped from 25° for direction-debug visibility
   const ARC_RAD = ARC_DEG * Math.PI / 180;
   const N_CHILD = 5;
   for (const t of childTargets) {
@@ -7082,6 +7082,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.63', date: '2026-05-04', n: 'Acantharian — bumped E7 arc magnitude 25° → 60° to make the bend direction visually unambiguous. At 25° tip displacement was only ~21% of spine length; at 60° it\'s ~50%, so the spines visibly hook in the bend direction. This is a debug-direction test: if the spines visibly arc toward parent, the math is correct and we just dial back to 25° for the final gentle look. If they still arc OUTWARD at 60°, the formula is inverted somewhere and we investigate further.' },
   { v: 'v1.32.62', date: '2026-05-04', n: 'Acantharian step-debug — split phase E into 7 substeps (E1-E7) so the bend computation can be debugged piece-by-piece. E2: sample length jitter (rng draws). E3: compute startPt at child sphere surface. E4: push child spines as STRAIGHT capsules (visual baseline — confirms the straight emission is correct). E5: compute bendDir per spine = projection of −ps.dir onto perp plane of d (computational only). E6: build 5-segment circular-arc paths from startPt + d and bendDir (computational only). E7: replace E4\'s straight capsules with the bent arc versions. The user can now step through and identify exactly which substep the bend looks wrong at: if E4 is correct but E7 is wrong, the issue is in E5/E6\'s computation; if E4 already looks wrong, the issue is upstream.' },
   { v: 'v1.32.61', date: '2026-05-04', n: 'Acantharian child spines — gentle 25° arc bending toward parent (in step E2). Each child spine\'s bend direction = projection of -ps.dir onto the perp plane of d (i.e. the back-toward-parent direction perpendicular to the spine\'s own d). Spines whose d is (anti-)parallel to ps.dir get no bend and stay straight. 5-segment circular arc subtending 25° over the spine\'s full length. The new step-debug mode lets the user step in/out of E2 to confirm the bend direction visually before committing.' },
   { v: 'v1.32.60', date: '2026-05-04', n: 'Acantharian step-debug — direct-jump dropdown + split Next-Step / Next-Substep buttons. Replaces the Level-1/Level-2 toggle from v1.32.59 with a more direct interface: a dropdown lists all 14 substeps and selecting one runs the pipeline up to that point. Two side-by-side buttons: "Next Step ▸▸" jumps to the next phase letter (A→B, B→C, …) and "Next Substep ▸" advances one substep within the current phase. Reset returns to step 0. Both buttons disable themselves when there\'s no further target.' },
