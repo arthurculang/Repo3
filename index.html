@@ -976,7 +976,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.60</span>
+        <span id="version">v1.32.61</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1042,7 +1042,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.60";
+const VERSION = "v1.32.61";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4318,7 +4318,7 @@ const ACAN_STEPS = [
   { l1: 'D',    l2: 'D1', desc: 'D1: For each child, find its matching parent spine via tangent equality.' },
   { l1: 'D',    l2: 'D2', desc: 'D2: Bump matching parent capsule radii up to MIN_TIP_R = 0.84 mm so the joint reads cleanly.' },
   { l1: 'E',    l2: 'E1', desc: 'E1: Per-child: generate seashell directions and rotate to align polar axis with ps.dir.' },
-  { l1: 'E',    l2: 'E2', desc: 'E2: Per-child: sample length jitter and push child spine capsules into branches.' },
+  { l1: 'E',    l2: 'E2', desc: 'E2: Per-child: sample length jitter and push child spine capsules (5-seg arc, gentle 25° bend toward parent).' },
 ];
 
 const ACAN_STEP_DEBUG = {
@@ -4567,8 +4567,19 @@ function generateAcantharianStructure(s) {
     }
   }
 
-  // E2: Per-child length jitter + push spine capsules.
+  // E2: Per-child length jitter + push child spine capsules with a
+  // gentle 25° arc bending toward parent (v1.32.61). Bend direction
+  // for each spine = projection of -ps.dir onto the perp plane of d
+  // (i.e. the "back-toward-parent" direction perpendicular to the
+  // spine's own d). Spines whose d is nearly parallel/anti-parallel
+  // to ps.dir have a vanishing projection and stay straight (no
+  // arbitrary direction available). Spine path traces a circular
+  // arc subtending ARC_DEG over its full length.
   if (lastStep < 14) return STEP_RETURN();
+  const ARC_DEG = 25;
+  const ARC_RAD = ARC_DEG * Math.PI / 180;
+  const N_CHILD = 5;
+  const _bendDir = new THREE.Vector3();
   for (const t of childTargets) {
     const childScale = t.childSR / sphereRadius;
     const childSpineLen = spineLength * childScale;
@@ -4578,14 +4589,49 @@ function generateAcantharianStructure(s) {
       const lenScale = Math.max(LEN_SCALE_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5));
       const thisLen = childSpineLen * lenScale;
       const startPt = t.childCenter.clone().addScaledVector(d, t.childSR * 0.85);
-      const endPt   = t.childCenter.clone().addScaledVector(d, t.childSR + thisLen);
-      branches.push({
-        start: startPt, end: endPt,
-        r0: childBaseR, r1: childTipR,
-        depth: 1, parent: 0,
-        tangent: d.clone(),
-        wobble: 0,
-      });
+
+      // Toward-parent bend direction = projection of -ps.dir onto perp plane of d.
+      const dotPSDir = d.dot(t.ps.dir);
+      _bendDir.copy(t.ps.dir).multiplyScalar(-1).addScaledVector(d, dotPSDir);
+      const bendLen = _bendDir.length();
+      if (bendLen < 1e-3) {
+        // d is (anti-)parallel to ps.dir — no bend, push a straight spine.
+        const endPt = t.childCenter.clone().addScaledVector(d, t.childSR + thisLen);
+        branches.push({
+          start: startPt, end: endPt,
+          r0: childBaseR, r1: childTipR,
+          depth: 1, parent: 0,
+          tangent: d.clone(),
+          wobble: 0,
+        });
+        continue;
+      }
+      _bendDir.divideScalar(bendLen);
+
+      // Trace a circular arc of total angle ARC_RAD over arc length thisLen.
+      const r = thisLen / ARC_RAD;
+      const wp = [];
+      for (let k = 0; k <= N_CHILD; k++) {
+        const tt = k / N_CHILD;
+        const ang = tt * ARC_RAD;
+        const along = r * Math.sin(ang);
+        const perp  = r * (1 - Math.cos(ang));
+        wp.push(startPt.clone()
+          .addScaledVector(d, along)
+          .addScaledVector(_bendDir, perp));
+      }
+      for (let k = 0; k < N_CHILD; k++) {
+        const t1 = k / N_CHILD, t2 = (k + 1) / N_CHILD;
+        const r1 = childBaseR * (1 - t1) + childTipR * t1;
+        const r2 = childBaseR * (1 - t2) + childTipR * t2;
+        branches.push({
+          start: wp[k], end: wp[k + 1],
+          r0: r1, r1: r2,
+          depth: 1, parent: 0,
+          tangent: d.clone(),
+          wobble: 0,
+        });
+      }
     }
   }
 
@@ -6955,6 +7001,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.61', date: '2026-05-04', n: 'Acantharian child spines — gentle 25° arc bending toward parent (in step E2). Each child spine\'s bend direction = projection of -ps.dir onto the perp plane of d (i.e. the back-toward-parent direction perpendicular to the spine\'s own d). Spines whose d is (anti-)parallel to ps.dir get no bend and stay straight. 5-segment circular arc subtending 25° over the spine\'s full length. The new step-debug mode lets the user step in/out of E2 to confirm the bend direction visually before committing.' },
   { v: 'v1.32.60', date: '2026-05-04', n: 'Acantharian step-debug — direct-jump dropdown + split Next-Step / Next-Substep buttons. Replaces the Level-1/Level-2 toggle from v1.32.59 with a more direct interface: a dropdown lists all 14 substeps and selecting one runs the pipeline up to that point. Two side-by-side buttons: "Next Step ▸▸" jumps to the next phase letter (A→B, B→C, …) and "Next Substep ▸" advances one substep within the current phase. Reset returns to step 0. Both buttons disable themselves when there\'s no further target.' },
   { v: 'v1.32.59', date: '2026-05-04', n: 'Acantharian step-debug mode (ON by default). Refactored generateAcantharianStructure into 5 phases × 14 substeps with explicit early-return checkpoints between each. Phase A: parent body sphere. Phase B: parent spines (B1 wind axis, B2 seashell dirs, B3 length jitter, B4 helix paths, B5 push capsules). Phase C: child body spheres (C1 targets, C2 centers, C3 push). Phase D: parent spine fattening (D1 identify, D2 bump radii). Phase E: child spines (E1 dirs+rotation, E2 push capsules). New floating debug panel (top-left of canvas) shows the current step + the description of the NEXT step that "Next ▸" will execute. Level 1 (default) jumps a full phase per click; toggle Level 2 to walk substep-by-substep within the current phase. Reset returns to step 0. Once the user identifies which step introduces a regression (e.g. when bend gets re-added later), they can pinpoint by name without rebuilding mental models from scratch.' },
   { v: 'v1.32.58', date: '2026-05-04', n: 'Acantharian — propagate child node + spines to ALL parent spine tips. Flipped ACAN_DEBUG_SINGLE_CHILD_ONLY from true to false; the loop path now emits a child at every parent spine tip. DEBUG_OVERSIZE_NODE stays false so each child takes its natural recurScale-based size with per-tip variation. Children continue to use the v1.32.44 spine-aligned orientation (north pole follows ps.dir).' },
