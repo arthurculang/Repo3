@@ -983,7 +983,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.73</span>
+        <span id="version">v1.32.74</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1049,7 +1049,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.73";
+const VERSION = "v1.32.74";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4426,7 +4426,7 @@ const ACAN_STEPS = [
   { l1: 'B',    l2: 'B1', desc: 'B1: Derive wind axis + ripple axis from seed (per-creature wind for the wheat-in-wind bend).' },
   { l1: 'B',    l2: 'B2', desc: 'B2: Generate parent seashell-spiral directions (one per spine).' },
   { l1: 'B',    l2: 'B3', desc: 'B3: Per-spine: pick one of two probable orbits (short/long) + add small log-uniform jitter so length distribution is bimodal.' },
-  { l1: 'B',    l2: 'B4', desc: 'B4: Per-spine: build 7-segment helix path with cinnamon-twist + wind-bend.' },
+  { l1: 'B',    l2: 'B4', desc: 'B4: Per-spine: build 25-segment corkscrew helix (5 turns, amp 5×baseR×twist) + wind-bend.' },
   { l1: 'B',    l2: 'B5', desc: 'B5: Push parent spine capsules into branches.' },
   { l1: 'C',    l2: 'C1', desc: 'C1: Determine child targets (which parent tips get a child + per-tip scale jitter).' },
   { l1: 'C',    l2: 'C2', desc: 'C2: Compute child centers (offset 0.7·childSR along ps.dir).' },
@@ -4568,14 +4568,19 @@ function generateAcantharianStructure(s) {
     const endPt   = parentCenter.clone().addScaledVector(d, sphereRadius + thisLen);
     parentSpines.push({ tip: endPt.clone(), dir: d.clone() });
     if (useTwist) {
-      const N = 7;
+      // v1.32.74: parent corkscrew. Was 7 segments / 1.5 turns / amp
+      // 1.6×baseR — more of a gentle cinnamon wobble. Now 25 segments
+      // / 5 turns / amp 5×baseR (at twist=1; scaled by twist) so each
+      // parent spine reads as a clear open coil, matching the new
+      // child spine corkscrews.
+      const N = 25;
       tmp.set(d.x, d.y, d.z);
       if (Math.abs(d.y) < 0.9) perp1.crossVectors(tmp, new THREE.Vector3(0, 1, 0)).normalize();
       else                     perp1.crossVectors(tmp, new THREE.Vector3(1, 0, 0)).normalize();
       perp2.crossVectors(tmp, perp1).normalize();
       const phase0 = si * 2.39996323;
-      const turnsAlongSpine = 1.5;
-      const ampBase = baseR * 1.6 * twist;
+      const turnsAlongSpine = 5.0;
+      const ampBase = baseR * 5.0 * twist;
       const wpx = windDir.x - windDir.dot(d) * d.x;
       const wpy = windDir.y - windDir.dot(d) * d.y;
       const wpz = windDir.z - windDir.dot(d) * d.z;
@@ -7355,6 +7360,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.74', date: '2026-05-06', n: 'Acantharian — parent spines now corkscrew too. The existing helical-twist path (gated on the acanTwist slider) was bumped from 7 segments / 1.5 turns / amp 1.6×baseR (gentle cinnamon wobble) to 25 segments / 5 turns / amp 5×baseR (at twist=1, scaled linearly by twist). At the default twist=0.4 each parent spine now reads as a clear open coil, matching the v1.32.73 child-spine corkscrews. Wind-bend, ripple modulation, and the linear base→tip radius taper are unchanged. Setting acanTwist=0 still gives straight spines as before. B4 step description updated.' },
   { v: 'v1.32.73', date: '2026-05-06', n: 'Acantharian — three coordinated tweaks. (1) Parent spines 30% longer: ORBIT_SHORT 0.65 → 0.845 and ORBIT_LONG 1.35 → 1.755 (multiplied by 1.3). After scale-to-size renormalizes the bounding box, the visual effect is a smaller body with proportionally longer parent spines. (2) Child spines 30% thinner: childBaseR factor 0.14× → 0.098× (and tipR matching). (3) Corkscrew diameter 66% wider: CORKSCREW_AMP_K 8.0 → 13.3 — combined with the thinner wire, the coil now reads ≈54× the wire diameter, an exaggerated open spiral. 5 turns over 25 segments preserved. Arc bend stays at 25°.' },
   { v: 'v1.32.72', date: '2026-05-06', n: 'Colorize mode now has a reflective sheen. Replaced the cloned-metal-material approach with a fresh MeshPhysicalMaterial: low base roughness (0.22), modest metalness (0.35), and a full clearcoat layer (clearcoat 1.0, clearcoatRoughness 0.05) on top. Visually: a wet/lacquered candy-shell finish where the directional key + rim lights produce sharp specular highlights across the colored body, and the clearcoat catches glints independently of the base color. STL export is unaffected — the metal preset material is untouched and is still what the export pipeline uses.' },
   { v: 'v1.32.71', date: '2026-05-06', n: 'Defaults: (1) colorize ON by default (was off) so the part-type tint shows on first load; (2) Acantharian step debugger now defaults to the final substep (full creature rendered) instead of the empty/init state. Both Reset and the dropdown still let the user dial back to any earlier step or to the empty start.' },
