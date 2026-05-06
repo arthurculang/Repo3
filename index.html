@@ -141,6 +141,8 @@
   }
   .ctrl.disabled { opacity: 0.55; }
   .ctrl.disabled input[type="range"] { pointer-events: none; }
+  .checkbox-label { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  .checkbox-label input { margin: 0; }
   .ctrl-note {
     margin-top: 4px; font-size: 10px; letter-spacing: 0.02em;
     color: var(--ink-dim); line-height: 1.35;
@@ -592,6 +594,11 @@
       </div>
 
       <div class="ctrl">
+        <label class="checkbox-label"><input type="checkbox" id="colorize"> Colorize (visualization)</label>
+        <div class="ctrl-note">Tints the mesh by morphology part type — parent core, parent spine, child core, child spine, flower stem, flower petal — with smooth gradients between them. Visualization only; doesn't affect STL export.</div>
+      </div>
+
+      <div class="ctrl">
         <label>Body</label>
         <select id="bodyMode">
           <option value="cast">Cast-friendly (no shell, no tunnels)</option>
@@ -976,7 +983,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.66</span>
+        <span id="version">v1.32.67</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1042,7 +1049,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.66";
+const VERSION = "v1.32.67";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1092,6 +1099,7 @@ const DEFAULTS = {
   // shown in the panel. v1.30.0 added 'acantharian'; chunk 3 adds
   // 'coralline'.
   creatureType: 'acantharian',
+  colorize: false,    // v1.32.67 — colorize mode: tints mesh by part type for visualization (no STL effect)
   // Acantharian-specific controls (chunk 2B, v1.30.1):
   acanSpines: 36,        // 6..48   how many spines radiate from the parent core.
                           //         18 (original) → 24 (v1.32.5) → 36 (v1.32.7) so the
@@ -1953,6 +1961,114 @@ const material = new THREE.MeshStandardMaterial({
   roughness: MATERIALS[DEFAULTS.material].roughness,
   flatShading: false,
 });
+
+// ---------- Colorize mode (v1.32.67) ----------
+// Visualization-only: tints the mesh by morphology part-type
+// (parentCore, parentSpine, childCore, childSpine, flowerStem,
+// flowerPetal). Each branch is tagged with `colorType` at generation
+// time. After mesh build, colorizeMesh walks vertices and assigns a
+// vertex color = inverse-distance-weighted blend of the k-nearest
+// branches' palette colors. Smooth gradients fall out naturally
+// because adjacent vertices have similar nearest-branch sets.
+//
+// Palette: cool deep purple at the core, warming through blue-violet
+// → magenta → red → orange → golden yellow at the flower tips. Not
+// exported in STL — material is cloned with vertexColors=true only
+// when colorize is on, so the metallic tint stays default for export.
+const COLOR_PALETTE = {
+  parentCore:  new THREE.Color(0x3a1466),  // deep purple
+  parentSpine: new THREE.Color(0x5236a8),  // blue-violet
+  childCore:   new THREE.Color(0x9c2475),  // magenta
+  childSpine:  new THREE.Color(0xd63b5b),  // pink-red
+  flowerStem:  new THREE.Color(0xe08a3c),  // warm orange
+  flowerPetal: new THREE.Color(0xf5d442),  // golden yellow
+  default:     new THREE.Color(0x808080),
+};
+
+function colorizeMesh(mesh, branches) {
+  const geom = mesh.geometry;
+  const posAttr = geom.getAttribute('position');
+  if (!posAttr) return;
+  const pos = posAttr.array;
+  const vertCount = posAttr.count;
+  const colors = new Float32Array(vertCount * 3);
+
+  // Spatial hash by branch bbox. Cell size 8mm covers most branches in
+  // 1-2 cells; per vertex we look up 3³=27 neighboring cells.
+  const CELL = 8;
+  const hash = new Map();
+  const cellKey = (cx, cy, cz) => cx + ',' + cy + ',' + cz;
+  for (let bi = 0; bi < branches.length; bi++) {
+    const b = branches[bi];
+    if (!b.start || !b.end) continue;
+    const minX = Math.min(b.start.x, b.end.x), maxX = Math.max(b.start.x, b.end.x);
+    const minY = Math.min(b.start.y, b.end.y), maxY = Math.max(b.start.y, b.end.y);
+    const minZ = Math.min(b.start.z, b.end.z), maxZ = Math.max(b.start.z, b.end.z);
+    const r = Math.max(b.r0 || 0, b.r1 || 0);
+    const cx0 = Math.floor((minX - r) / CELL), cx1 = Math.floor((maxX + r) / CELL);
+    const cy0 = Math.floor((minY - r) / CELL), cy1 = Math.floor((maxY + r) / CELL);
+    const cz0 = Math.floor((minZ - r) / CELL), cz1 = Math.floor((maxZ + r) / CELL);
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
+        for (let cz = cz0; cz <= cz1; cz++) {
+          const k = cellKey(cx, cy, cz);
+          let arr = hash.get(k);
+          if (!arr) { arr = []; hash.set(k, arr); }
+          arr.push(bi);
+        }
+      }
+    }
+  }
+
+  const _seg = new THREE.Vector3();
+  for (let vi = 0; vi < vertCount; vi++) {
+    const x = pos[vi * 3], y = pos[vi * 3 + 1], z = pos[vi * 3 + 2];
+    const cellX = Math.floor(x / CELL), cellY = Math.floor(y / CELL), cellZ = Math.floor(z / CELL);
+    let totalWeight = 0, accR = 0, accG = 0, accB = 0;
+    let foundAny = false;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const list = hash.get(cellKey(cellX + dx, cellY + dy, cellZ + dz));
+          if (!list) continue;
+          for (const bi of list) {
+            const br = branches[bi];
+            // Distance from vertex to capsule centerline (segment).
+            _seg.subVectors(br.end, br.start);
+            const segLenSq = _seg.lengthSq();
+            const sx = br.start.x, sy = br.start.y, sz = br.start.z;
+            const tx = x - sx, ty = y - sy, tz = z - sz;
+            let tt = 0;
+            if (segLenSq > 1e-6) {
+              tt = (tx * _seg.x + ty * _seg.y + tz * _seg.z) / segLenSq;
+              if (tt < 0) tt = 0; else if (tt > 1) tt = 1;
+            }
+            const cx = sx + _seg.x * tt;
+            const cy = sy + _seg.y * tt;
+            const cz = sz + _seg.z * tt;
+            const distSq = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2;
+            const w = 1 / (distSq + 0.5);
+            const col = COLOR_PALETTE[br.colorType] || COLOR_PALETTE.default;
+            accR += col.r * w;
+            accG += col.g * w;
+            accB += col.b * w;
+            totalWeight += w;
+            foundAny = true;
+          }
+        }
+      }
+    }
+    if (foundAny) {
+      colors[vi * 3]     = accR / totalWeight;
+      colors[vi * 3 + 1] = accG / totalWeight;
+      colors[vi * 3 + 2] = accB / totalWeight;
+    } else {
+      const c = COLOR_PALETTE.default;
+      colors[vi * 3] = c.r; colors[vi * 3 + 1] = c.g; colors[vi * 3 + 2] = c.b;
+    }
+  }
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
 
 // Swap the shared material's tint to match the selected metal preset. All
 // meshes (body + rings) share this material reference, so the swap takes
@@ -4391,6 +4507,7 @@ function generateAcantharianStructure(s) {
     depth: 0, parent: null,
     tangent: new THREE.Vector3(0, 1, 0),
     wobble: 0,
+    colorType: 'parentCore',
   });
 
   // ============================================================
@@ -4505,6 +4622,7 @@ function generateAcantharianStructure(s) {
         r0: path.radii[k], r1: path.radii[k + 1],
         depth: 1, parent: 0,
         tangent: path.d.clone(), wobble: 0,
+        colorType: 'parentSpine',
       });
     }
   }
@@ -4546,6 +4664,7 @@ function generateAcantharianStructure(s) {
       depth: 0, parent: null,
       tangent: t.ps.dir.clone(),
       wobble: 0,
+      colorType: 'childCore',
     });
   }
 
@@ -4637,6 +4756,7 @@ function generateAcantharianStructure(s) {
         depth: 1, parent: 0,
         tangent: d.clone(),
         wobble: 0,
+        colorType: 'childSpine',
       });
     }
   }
@@ -4779,6 +4899,7 @@ function generateAcantharianStructure(s) {
           depth: 1, parent: 0,
           tangent: d.clone(),
           wobble: 0,
+          colorType: 'flowerStem',
         });
         for (let pi = 0; pi < path.petalDirs.length; pi++) {
           branches.push({
@@ -4787,6 +4908,7 @@ function generateAcantharianStructure(s) {
             depth: 1, parent: 0,
             tangent: path.petalDirs[pi].clone(),
             wobble: 0,
+            colorType: 'flowerPetal',
           });
         }
       } else if (path.straight) {
@@ -4796,6 +4918,7 @@ function generateAcantharianStructure(s) {
           depth: 1, parent: 0,
           tangent: d.clone(),
           wobble: 0,
+          colorType: 'childSpine',
         });
       } else {
         for (let k = 0; k < N_CHILD; k++) {
@@ -4808,6 +4931,7 @@ function generateAcantharianStructure(s) {
             depth: 1, parent: 0,
             tangent: d.clone(),
             wobble: 0,
+            colorType: 'childSpine',
           });
         }
       }
@@ -6720,6 +6844,15 @@ async function generate(previewVoxels = 96) {
   // the previous sculpture the whole time the new one is computing,
   // rather than a brief blank canvas.
   clearExport();
+  // Colorize mode (v1.32.67): tint mesh by morphology part-type
+  // for visualization. Clones the material so the metallic preset
+  // stays intact for STL export.
+  if (mesh && state.colorize) {
+    mesh.material = material.clone();
+    mesh.material.vertexColors = true;
+    mesh.material.color.setHex(0xffffff);
+    colorizeMesh(mesh, branches);
+  }
   if (mesh) exportGroup.add(mesh);
   addRingMeshes(rings);
 
@@ -7126,6 +7259,16 @@ if (creatureTypeEl) {
   });
 }
 
+// Colorize toggle (v1.32.67) — visualization-only mesh tint by part type.
+const colorizeEl = document.getElementById('colorize');
+if (colorizeEl) {
+  colorizeEl.checked = state.colorize;
+  colorizeEl.addEventListener('change', () => {
+    state.colorize = colorizeEl.checked;
+    scheduleRegen();
+  });
+}
+
 // Body-mode dropdown (v1.24.0). Toggles between cast-friendly /
 // solid-with-tunnels / hollow geometries via effectiveState() at
 // generation time. The wall slider is greyed out in non-hollow modes
@@ -7180,6 +7323,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.67', date: '2026-05-04', n: 'Colorize visualization mode (off by default). New universal "Colorize" checkbox in the controls panel — when on, the mesh is tinted by morphology part type with smooth gradients between regions. Each branch is tagged with colorType at generation time (parentCore, parentSpine, childCore, childSpine, flowerStem, flowerPetal). After mesh build, colorizeMesh walks vertices and assigns a per-vertex color = inverse-distance-weighted blend of the k-nearest branches\' palette colors (using a spatial hash for speed). Smooth color fades between part types fall out naturally because adjacent vertices have similar nearest-branch sets. Palette: cool deep purple at the parent core, warming through blue-violet → magenta → pink-red → orange → golden yellow at flower petals. Material is cloned with vertexColors=true only when colorize is on, so STL export tint stays default and the mode is purely visual.' },
   { v: 'v1.32.66', date: '2026-05-04', n: 'Acantharian — Heliconia-style flower bloom replaces straight north-pole child spines. Spines whose direction is closely aligned with ps.dir (d·ps.dir > 0.85, ≈ within 32° of the outward pole) — i.e. those on the far side of the child from the parent attachment, where the bend math has no defined direction — now emit a 6-capsule rainforest-flower bloom instead of a single straight capsule. Geometry: a short central stem (40% of spine length) + 5 tapered petals fanning outward at 50° polar from d (72° azimuth spacing), each petal at 60% length tapering from the stem end down to a fine tip. Visually: each child gets a small flower-cluster crown on its outer face, complementing the bent equator/lateral spines that arc back toward the parent.' },
   { v: 'v1.32.65', date: '2026-05-04', n: 'Acantharian — bimodal "probable orbits" length distribution for parent spines. Replaces the single log-uniform cluster with two preferred orbit radii: short orbit at 65% of spineLength and long orbit at 135%. Each spine independently flips a coin to land in one cluster or the other, then adds a smaller log-uniform jitter (jitter × 1.0 instead of × 2.5) around that orbit. The cluster jitter range is deliberately smaller than the orbit gap so the two clusters stay visibly distinct — every spine has its own length but they cluster around two probable radii rather than blending into a single distribution. B3 step description updated to reflect the bimodal model.' },
   { v: 'v1.32.64', date: '2026-05-04', n: 'BUGFIX: child arc capsules now use independent Vector3 copies for start/end. Found by stepping through E1→E7 with the user\'s help: at E7 the bent arc was using path.wp[k] and path.wp[k+1] BY REFERENCE for adjacent capsules, so branches[i].end and branches[i+1].start were the SAME Vector3 object. scaleStructureToSize then multiplied each shared object IN PLACE once per branch referencing it — wp[1..N-1] got scaled k² while wp[0] and wp[N] only got k. With k≈0.8 (typical for an 80mm-target 100mm-bbox), midpoints contracted to 0.64× while endpoints stayed at 0.8×, dramatically warping the arc and obliterating the visible bend. Fix: .clone() each wp[] when pushing a branch. The bent spines should now be unambiguously bent at E7.' },
@@ -7466,6 +7610,7 @@ function refreshUIFromState() {
   if (organicSupportsEl) organicSupportsEl.value = state.organicSupports;
   if (bodyModeEl) bodyModeEl.value = state.bodyMode;
   if (creatureTypeEl) creatureTypeEl.value = state.creatureType;
+  if (colorizeEl) colorizeEl.checked = state.colorize;
   refreshCreatureSection();
   refreshWallEnabled();
   refreshBodyModeWarn();
