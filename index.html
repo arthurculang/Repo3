@@ -976,7 +976,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.64</span>
+        <span id="version">v1.32.65</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1042,7 +1042,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.64";
+const VERSION = "v1.32.65";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4309,7 +4309,7 @@ const ACAN_STEPS = [
   { l1: 'A',    l2: 'A2', desc: 'A2: Push parent body sphere capsule.' },
   { l1: 'B',    l2: 'B1', desc: 'B1: Derive wind axis + ripple axis from seed (per-creature wind for the wheat-in-wind bend).' },
   { l1: 'B',    l2: 'B2', desc: 'B2: Generate parent seashell-spiral directions (one per spine).' },
-  { l1: 'B',    l2: 'B3', desc: 'B3: Per-spine: sample log-uniform length jitter.' },
+  { l1: 'B',    l2: 'B3', desc: 'B3: Per-spine: pick one of two probable orbits (short/long) + add small log-uniform jitter so length distribution is bimodal.' },
   { l1: 'B',    l2: 'B4', desc: 'B4: Per-spine: build 7-segment helix path with cinnamon-twist + wind-bend.' },
   { l1: 'B',    l2: 'B5', desc: 'B5: Push parent spine capsules into branches.' },
   { l1: 'C',    l2: 'C1', desc: 'C1: Determine child targets (which parent tips get a child + per-tip scale jitter).' },
@@ -4417,11 +4417,25 @@ function generateAcantharianStructure(s) {
   const parentPhaseOffset = (parentSeed * 1e-7) % (Math.PI * 2);
   const parentDirs = seashellSpiralDirections(spineCount, s.acanSpiralTurns ?? 3, parentPhaseOffset);
 
-  // B3: Per-spine length jitter.
+  // B3: Per-spine length jitter — bimodal "probable orbits" (v1.32.65).
+  // Each spine independently picks one of two preferred orbit
+  // lengths (short or long, gap ≈ 2× one another), then adds a
+  // smaller log-uniform jitter around that orbit. The cluster
+  // jitter range is intentionally smaller than the orbit gap so the
+  // two clusters stay visibly distinct — no two spines land at the
+  // same length, but they cluster around two preferred radii.
   if (lastStep < 5) return STEP_RETURN();
-  const parentLens = parentDirs.map(() =>
-    Math.max(LEN_SCALE_FLOOR, Math.exp((rng() - 0.5) * jitter * 2.5)) * spineLength
-  );
+  const ORBIT_SHORT = 0.65;     // short orbit ≈ 65% of base spineLength
+  const ORBIT_LONG  = 1.35;     // long  orbit ≈ 135% of base spineLength
+  // Use a tighter jitter multiplier within each cluster — about
+  // 0.4× the standard jitter range — so individual spines vary but
+  // not enough to merge the two orbit clusters.
+  const ORBIT_JITTER_K = 1.0;
+  const parentLens = parentDirs.map(() => {
+    const orbit = (rng() < 0.5) ? ORBIT_SHORT : ORBIT_LONG;
+    const jitterMul = Math.max(LEN_SCALE_FLOOR, Math.exp((rng() - 0.5) * jitter * ORBIT_JITTER_K));
+    return spineLength * orbit * jitterMul;
+  });
 
   // B4: Per-spine helix path with twist + wind-bend.
   if (lastStep < 6) return STEP_RETURN();
@@ -7088,6 +7102,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.65', date: '2026-05-04', n: 'Acantharian — bimodal "probable orbits" length distribution for parent spines. Replaces the single log-uniform cluster with two preferred orbit radii: short orbit at 65% of spineLength and long orbit at 135%. Each spine independently flips a coin to land in one cluster or the other, then adds a smaller log-uniform jitter (jitter × 1.0 instead of × 2.5) around that orbit. The cluster jitter range is deliberately smaller than the orbit gap so the two clusters stay visibly distinct — every spine has its own length but they cluster around two probable radii rather than blending into a single distribution. B3 step description updated to reflect the bimodal model.' },
   { v: 'v1.32.64', date: '2026-05-04', n: 'BUGFIX: child arc capsules now use independent Vector3 copies for start/end. Found by stepping through E1→E7 with the user\'s help: at E7 the bent arc was using path.wp[k] and path.wp[k+1] BY REFERENCE for adjacent capsules, so branches[i].end and branches[i+1].start were the SAME Vector3 object. scaleStructureToSize then multiplied each shared object IN PLACE once per branch referencing it — wp[1..N-1] got scaled k² while wp[0] and wp[N] only got k. With k≈0.8 (typical for an 80mm-target 100mm-bbox), midpoints contracted to 0.64× while endpoints stayed at 0.8×, dramatically warping the arc and obliterating the visible bend. Fix: .clone() each wp[] when pushing a branch. The bent spines should now be unambiguously bent at E7.' },
   { v: 'v1.32.63', date: '2026-05-04', n: 'Acantharian — bumped E7 arc magnitude 25° → 60° to make the bend direction visually unambiguous. At 25° tip displacement was only ~21% of spine length; at 60° it\'s ~50%, so the spines visibly hook in the bend direction. This is a debug-direction test: if the spines visibly arc toward parent, the math is correct and we just dial back to 25° for the final gentle look. If they still arc OUTWARD at 60°, the formula is inverted somewhere and we investigate further.' },
   { v: 'v1.32.62', date: '2026-05-04', n: 'Acantharian step-debug — split phase E into 7 substeps (E1-E7) so the bend computation can be debugged piece-by-piece. E2: sample length jitter (rng draws). E3: compute startPt at child sphere surface. E4: push child spines as STRAIGHT capsules (visual baseline — confirms the straight emission is correct). E5: compute bendDir per spine = projection of −ps.dir onto perp plane of d (computational only). E6: build 5-segment circular-arc paths from startPt + d and bendDir (computational only). E7: replace E4\'s straight capsules with the bent arc versions. The user can now step through and identify exactly which substep the bend looks wrong at: if E4 is correct but E7 is wrong, the issue is in E5/E6\'s computation; if E4 already looks wrong, the issue is upstream.' },
