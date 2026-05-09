@@ -1033,7 +1033,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.77</span>
+        <span id="version">v1.32.78</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1099,7 +1099,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.77";
+const VERSION = "v1.32.78";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2032,6 +2032,10 @@ const COLOR_PALETTE = {
   childSpine:  new THREE.Color(0xd63b5b),  // pink-red
   flowerStem:  new THREE.Color(0xe08a3c),  // warm orange
   flowerPetal: new THREE.Color(0xf5d442),  // golden yellow
+  // v1.32.78: coralline mushrooms
+  mushroomStalk: new THREE.Color(0xd9c8a4),  // warm beige
+  mushroomCap:   new THREE.Color(0xb84a2e),  // terracotta
+  mushroomGill:  new THREE.Color(0xf5edd5),  // cream
   default:     new THREE.Color(0x808080),
 };
 
@@ -5408,6 +5412,12 @@ function generateCorallineStructure(s) {
   const branches = [];
   const accents = [];
   const rng = mulberry32(s.seed);
+  // v1.32.78: separate rng stream for mushroom emission so toggling
+  // the feature on/off doesn't shift the underlying coral skeleton.
+  const mushroomRng = mulberry32(s.seed ^ 0x4d75736f); // 'Muso'
+  let mushroomCount = 0;
+  const MUSHROOM_MAX  = 8;
+  const MUSHROOM_PROB = 0.012; // probability per maxDepth tip
 
   // User-tunable controls (v1.31.1 + chunk 3C v1.31.2).
   const trunkLen        = s.corTrunkLen        ?? 18;
@@ -5610,6 +5620,13 @@ function generateCorallineStructure(s) {
       if (depth + 1 === maxDepth && plumage > 1e-3 && rng() < plumage) {
         emitTerminal(childEnd, childDir, childR1, childLen);
       }
+      // v1.32.78: occasional mushrooms — emerge from a maxDepth tip and
+      // grow upward, capped at MUSHROOM_MAX per creature.
+      if (depth + 1 === maxDepth
+          && mushroomCount < MUSHROOM_MAX
+          && mushroomRng() < MUSHROOM_PROB) {
+        emitMushroom(childEnd);
+      }
     }
   }
 
@@ -5715,6 +5732,112 @@ function generateCorallineStructure(s) {
     if      (r < 0.34) emitBell(tipPt, tipDir, tipR, tipLen);
     else if (r < 0.67) emitCurl(tipPt, tipDir, tipR, tipLen);
     else               emitPolyp(tipPt, tipDir, tipR, tipLen);
+  }
+
+  // v1.32.78: a mushroom emerges from basePt and grows upward.
+  // Components: tapered stalk with mild spiral torque, dome cap (two
+  // stacked spheres for a slightly flattened silhouette), radial gills
+  // on both top AND bottom of the cap (per request — real mushrooms
+  // only have gills below, but the brief asked for both).
+  function emitMushroom(basePt) {
+    const scale = trunkR * (0.6 + mushroomRng() * 0.8);   // 0.6–1.4 × trunkR
+    // Mostly +Y with up to ~18° random tilt for organic variety.
+    const tiltAng = mushroomRng() * 18 * Math.PI / 180;
+    const tiltAz  = mushroomRng() * Math.PI * 2;
+    const dir = new THREE.Vector3(
+      Math.sin(tiltAng) * Math.cos(tiltAz),
+      Math.cos(tiltAng),
+      Math.sin(tiltAng) * Math.sin(tiltAz)
+    ).normalize();
+    const stalkLen = scale * (2.5 + mushroomRng() * 2.5);  // 2.5–5 × scale
+    const stalkR   = Math.max(0.35, scale * 0.22);
+    const capR     = scale * (1.4 + mushroomRng() * 0.7);  // 1.4–2.1 × scale
+    // Stalk-perpendicular axes for both spiral torque and gill placement.
+    const tmpAxis = (Math.abs(dir.y) < 0.9) ? new THREE.Vector3(0, 1, 0)
+                                            : new THREE.Vector3(1, 0, 0);
+    const mPerp1 = new THREE.Vector3().crossVectors(dir, tmpAxis).normalize();
+    const mPerp2 = new THREE.Vector3().crossVectors(dir, mPerp1).normalize();
+    // Stalk: 6-segment chain, slight spiral torque (0.6–1.4 turns), pinched
+    // at endpoints (sin(πt) envelope) so the base + cap junction stay clean.
+    const N_STALK = 6;
+    const torqueTurns = 0.6 + mushroomRng() * 0.8;
+    const torqueAmp   = stalkR * 0.6;
+    const phase0      = mushroomRng() * Math.PI * 2;
+    const stalkWp = [];
+    for (let k = 0; k <= N_STALK; k++) {
+      const t = k / N_STALK;
+      const env = Math.sin(t * Math.PI);
+      const ph  = phase0 + t * torqueTurns * Math.PI * 2;
+      stalkWp.push(basePt.clone()
+        .addScaledVector(dir, stalkLen * t)
+        .addScaledVector(mPerp1, Math.cos(ph) * torqueAmp * env)
+        .addScaledVector(mPerp2, Math.sin(ph) * torqueAmp * env));
+    }
+    for (let k = 0; k < N_STALK; k++) {
+      const t1 = k / N_STALK, t2 = (k + 1) / N_STALK;
+      // base wider than top: 1.3× → 0.85× of stalkR
+      const ra = stalkR * (1.3 - 0.45 * t1);
+      const rb = stalkR * (1.3 - 0.45 * t2);
+      branches.push({
+        start: stalkWp[k].clone(), end: stalkWp[k + 1].clone(),
+        r0: ra, r1: rb,
+        depth: maxDepth, parent: 0,
+        tangent: dir.clone(), wobble: 0,
+        colorType: 'mushroomStalk',
+      });
+    }
+    // Cap: two stacked spheres for a slightly flattened dome. Lower
+    // sphere is wider and sits at the stalk top; upper sphere is
+    // smaller and offset along +dir. smin merges them.
+    const capCenter = stalkWp[N_STALK].clone().addScaledVector(dir, capR * 0.30);
+    const capCenterTop = capCenter.clone().addScaledVector(dir, capR * 0.55);
+    const tinyOff = new THREE.Vector3(0, 0.01, 0);
+    branches.push({
+      start: capCenter, end: capCenter.clone().add(tinyOff),
+      r0: capR, r1: capR,
+      depth: maxDepth, parent: 0,
+      tangent: dir.clone(), wobble: 0,
+      colorType: 'mushroomCap',
+    });
+    branches.push({
+      start: capCenterTop, end: capCenterTop.clone().add(tinyOff),
+      r0: capR * 0.85, r1: capR * 0.85,
+      depth: maxDepth, parent: 0,
+      tangent: dir.clone(), wobble: 0,
+      colorType: 'mushroomCap',
+    });
+    // Gills: radial fins around the cap — 14 each on top and bottom.
+    // Underside (classic mushroom gills) sit ~0.45 × capR below the
+    // cap centre and run outward to ~0.85 × capR. Top gills decorative
+    // — same pattern flipped, slightly shorter.
+    const GILL_COUNT = 14;
+    for (let g = 0; g < GILL_COUNT; g++) {
+      const az = (g / GILL_COUNT) * Math.PI * 2;
+      const gillDir = new THREE.Vector3()
+        .addScaledVector(mPerp1, Math.cos(az))
+        .addScaledVector(mPerp2, Math.sin(az));
+      // Bottom gill
+      const bIn  = capCenter.clone().addScaledVector(dir, -capR * 0.45);
+      const bOut = bIn.clone().addScaledVector(gillDir, capR * 0.85);
+      branches.push({
+        start: bIn, end: bOut,
+        r0: capR * 0.10, r1: capR * 0.04,
+        depth: maxDepth, parent: 0,
+        tangent: gillDir.clone(), wobble: 0,
+        colorType: 'mushroomGill',
+      });
+      // Top gill
+      const tIn  = capCenter.clone().addScaledVector(dir, capR * 0.55);
+      const tOut = tIn.clone().addScaledVector(gillDir, capR * 0.75);
+      branches.push({
+        start: tIn, end: tOut,
+        r0: capR * 0.08, r1: capR * 0.03,
+        depth: maxDepth, parent: 0,
+        tangent: gillDir.clone(), wobble: 0,
+        colorType: 'mushroomGill',
+      });
+    }
+    mushroomCount++;
   }
 
   return { branches, accents };
@@ -7499,6 +7622,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.78', date: '2026-05-06', n: 'Coralline — occasional mushroom growths. Up to 8 mushrooms per creature emerge from random maxDepth tips and grow upward. Each mushroom has: (1) a 6-segment tapered stalk (base wider than top) with mild spiral torque (0.6–1.4 turns, amplitude 60% of stalk radius, sin(πt) envelope so the base + cap junctions stay clean); (2) a slightly flattened dome cap built as two stacked spheres (lower one wider, upper one 85% radius, offset along stalk axis); (3) 14 radial gills on each side — both classic underside gills and decorative top gills (per request — real mushrooms only have gills below). Each is a thin tapered capsule. Direction is mostly +Y with up to ~18° random tilt for organic variety. Mushroom dice use a separate rng stream so toggling the feature can\'t shift the underlying coral skeleton. New colorize palette entries: mushroomStalk (warm beige), mushroomCap (terracotta), mushroomGill (cream).' },
   { v: 'v1.32.77', date: '2026-05-06', n: 'Coralline — wavier, more varied tendrils + new default creature. (1) creatureType default: acantharian → coralline. (2) New shared pushWavyChain helper builds every coral tendril (primary stems AND recursive children) as an 8-segment chain that wanders in 3D — two perpendicular wave axes, per-branch random frequencies (0.8–2.4 cycles primary, 1.2–3.2 secondary) and amplitudes (0.6–1.5× primary, 0.05–0.7× perpendicular). The bell envelope sin(πt) keeps tip endpoints exactly at the intended childEnd so recursive children stay attached. (3) Primary stems were single straight capsules; now wavy chains too with 0.55× amplitude (gentle stems, not full corkscrews). (4) Net effect: the bouquet reads as varied wandering tendrils — some near-flat with a single arc, some 3D-spiraling with multiple wave cycles — instead of geometric branching graphs. Cost: ~2× more capsules per coralline build (primaries went from 1 to 8 caps each, children from 4 to 8).' },
   { v: 'v1.32.76', date: '2026-05-06', n: 'Defaults + UI overhaul. (1) Default size 80 mm → 150 mm. (2) Colorize OFF by default (was on since v1.32.71). (3) Acantharian parent spines now droop slightly with gravity — each spine sags toward -Y with a t² envelope so the base stays put and the tip droops most (4% of spine length at the tip). (4) Controls panel restructured into floating "cards" with rounded corners + drop shadow — Setup, Material & size, Body, Skin, Render, Print compatibility, plus per-creature morphology cards. (5) New Skin card houses Colorize, Surface texture, and Texture detail in one place; texture is universal across creatures (not Radiolarian-only as the UI used to suggest). (6) Acantharian step-debug checkbox moved from the global controls into the Acantharian morphology card.' },
   { v: 'v1.32.75', date: '2026-05-06', n: 'Performance + UX. (1) colorizeMesh: hoisted per-branch geometry/color out of the per-vertex inner loop into Float64Arrays — the inner loop is now pure arithmetic with no Vector3 allocations, no per-iter recomputation of (end-start)/segLenSq, and no Map lookups for color. Math is bit-identical to the previous version. With ~36k branches and ~50–100k mesh vertices, this is a meaningful chunk of the total Acantharian build time. (2) Colorize toggle: when a body mesh already exists, toggling the checkbox now swaps the material (and recolors / strips colors) in place rather than forcing a full geometry regenerate(). lastBuildResult now keeps a ref to the body mesh. (3) Step-debug default OFF: ACAN_STEP_DEBUG.enabled flipped from true to false; new "Acantharian step debug" checkbox in the controls panel reveals the floating step panel on demand. The default stepIdx still points at the final substep so toggling debug back on shows the full creature.' },
