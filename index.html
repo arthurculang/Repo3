@@ -544,8 +544,8 @@
           <label>Creature type</label>
           <select id="creatureType">
             <option value="radiolarian">Radiolarian</option>
-            <option value="acantharian" selected>Acantharian</option>
-            <option value="coralline">Coralline</option>
+            <option value="acantharian">Acantharian</option>
+            <option value="coralline" selected>Coralline</option>
             <option value="foraminiferan">Foraminiferan</option>
           </select>
           <div class="ctrl-note">Selects which morphology generator runs. Each type has its own dedicated card below.</div>
@@ -1033,7 +1033,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.76</span>
+        <span id="version">v1.32.77</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1099,7 +1099,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.76";
+const VERSION = "v1.32.77";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1148,7 +1148,7 @@ const DEFAULTS = {
   // pipeline calls; each creature owns its own subset of controls
   // shown in the panel. v1.30.0 added 'acantharian'; chunk 3 adds
   // 'coralline'.
-  creatureType: 'acantharian',
+  creatureType: 'coralline',  // v1.32.77 — was 'acantharian'
   colorize: false,    // v1.32.76 — colorize off by default; users can opt in via the Colorize checkbox
   // Acantharian-specific controls (chunk 2B, v1.30.1):
   acanSpines: 36,        // 6..48   how many spines radiate from the parent core.
@@ -5448,6 +5448,67 @@ function generateCorallineStructure(s) {
     return 1 + a * 0.7;
   };
 
+  // v1.32.77: shared wavy-chain builder used for both primary stems
+  // and recursive child branches. Builds a multi-segment chain from
+  // startPt to endPt that wanders in 3D (two perpendicular axes), with
+  // per-branch random frequencies and amplitudes so every tendril
+  // looks visibly different. Bell envelope (sin(πt)) keeps the tips
+  // landing on endPt so children remain attached cleanly.
+  //
+  //   startPt, endPt    — line endpoints (tips meet endPt)
+  //   chainDir          — unit direction (endPt - startPt).normalize()
+  //   r0, r1            — base/tip capsule radii
+  //   depth             — branch depth (recorded on each capsule)
+  //   waveAxisHint      — preferred in-plane wave axis (for patch coherence)
+  //   ampMul            — extra amplitude scale (1 for children, ~0.55 for stems)
+  function pushWavyChain(startPt, endPt, chainDir, r0, r1, depth, waveAxisHint, ampMul) {
+    const chainLen = startPt.distanceTo(endPt);
+    if (chainLen < 1e-6) return;
+    // In-plane wave axis: project hint onto plane perpendicular to chainDir.
+    const proj = waveAxisHint.clone()
+      .addScaledVector(chainDir, -waveAxisHint.dot(chainDir));
+    let waveDir;
+    if (proj.lengthSq() < 1e-12) {
+      const fallback = (Math.abs(chainDir.y) < 0.9) ? new THREE.Vector3(0, 1, 0)
+                                                    : new THREE.Vector3(1, 0, 0);
+      waveDir = new THREE.Vector3().crossVectors(chainDir, fallback).normalize();
+    } else {
+      waveDir = proj.normalize();
+    }
+    const waveDir2 = new THREE.Vector3().crossVectors(chainDir, waveDir).normalize();
+    // Per-branch wave parameters — wide range so neighbours look different.
+    const baseAmp = chainLen * (0.20 + curl * 0.30) * ampMul;
+    const wAmp1 = baseAmp * (0.6 + rng() * 0.9);     // primary in-plane (always present)
+    const wAmp2 = baseAmp * (0.05 + rng() * 0.7);    // perpendicular (some flat, some 3D)
+    const wFreq1 = 0.8 + rng() * 1.6;                // 0.8–2.4 cycles primary
+    const wFreq2 = 1.2 + rng() * 2.0;                // 1.2–3.2 cycles secondary
+    const wPhase1 = rng() * Math.PI * 2;
+    const wPhase2 = rng() * Math.PI * 2;
+    const N_SEGS = 8;
+    const wp = [];
+    for (let k = 0; k <= N_SEGS; k++) {
+      const t = k / N_SEGS;
+      const env = Math.sin(t * Math.PI);            // bell — zero at endpoints
+      const off1 = wAmp1 * env * Math.sin(t * wFreq1 * Math.PI + wPhase1);
+      const off2 = wAmp2 * env * Math.sin(t * wFreq2 * Math.PI + wPhase2);
+      wp.push(startPt.clone().lerp(endPt, t)
+        .addScaledVector(waveDir, off1)
+        .addScaledVector(waveDir2, off2));
+    }
+    for (let k = 0; k < N_SEGS; k++) {
+      const t1 = k / N_SEGS, t2 = (k + 1) / N_SEGS;
+      const ra = r0 * (1 - t1) + r1 * t1;
+      const rb = r0 * (1 - t2) + r1 * t2;
+      branches.push({
+        start: wp[k].clone(), end: wp[k + 1].clone(),
+        r0: ra, r1: rb,
+        depth, parent: 0,
+        tangent: chainDir.clone(),
+        wobble: 0,
+      });
+    }
+  }
+
   // Per-primary wave axis and decay multiplier, threaded through grow()
   // so a whole subtree shares one wave direction (coherent flow within
   // a patch) and one decay rate (consistent patch length).
@@ -5469,13 +5530,10 @@ function generateCorallineStructure(s) {
     // patch waver in the same direction.
     const patchDecayMul = 0.7 + rng() * 0.7;
     const patchWaveAxis = new THREE.Vector3(rng() - 0.5, rng() - 0.5, rng() - 0.5).normalize();
-    branches.push({
-      start: startPt, end: endPt,
-      r0: trunkR, r1: trunkR * radiusDecay,
-      depth: 0, parent: null,
-      tangent: dir.clone(),
-      wobble: 0,
-    });
+    // v1.32.77: primary stems are now wavy multi-segment chains too,
+    // not single straight capsules. Smaller amp multiplier (0.55) so
+    // the stems read as gentle stems rather than full corkscrews.
+    pushWavyChain(startPt, endPt, dir, trunkR, trunkR * radiusDecay, 0, patchWaveAxis, 0.55);
     grow(endPt, dir, primaryLen, trunkR, 1, patchDecayMul, patchWaveAxis);
   }
 
@@ -5532,55 +5590,16 @@ function generateCorallineStructure(s) {
 
       const childEnd = parentEnd.clone().addScaledVector(childDir, childLen);
 
-      // Organic wavy multi-segment branch (v1.32.13). Each branch is
-      // a 4-segment chain whose perpendicular offset combines a
-      // primary sin(πt) arc with a 0.4× secondary 2× harmonic at a
-      // per-branch random phase — so each stalk gets a slight S-shape
-      // rather than a clean parabolic arc, plus per-branch wave-axis
-      // rotation around childDir (±15°) and amplitude jitter (0.7-1.3×)
-      // so siblings within a patch flow in similar but non-identical
-      // directions. Net effect: the foliage reads as organic curved
-      // tendrils rather than a geometric branching graph.
+      // v1.32.77: child branches now use the shared pushWavyChain
+      // helper — 8 segments, 3D wave (two perpendicular axes), wide
+      // per-branch frequency + amplitude variation. Replaces the
+      // 4-segment in-plane sin(πt) + 0.4·sin(2πt+φ) profile from
+      // v1.32.13. Per-patch coherent waveAxis is jittered ±15° around
+      // childDir per-branch so siblings flow in similar but not
+      // identical directions.
       const waveAxisLocal = patchWaveAxis.clone()
         .applyAxisAngle(childDir, (rng() - 0.5) * 0.5);
-      const waveProj = waveAxisLocal.clone()
-        .addScaledVector(childDir, -waveAxisLocal.dot(childDir));
-      const wpLen = waveProj.length();
-      let waveDir;
-      if (wpLen < 1e-6) {
-        if (Math.abs(childDir.y) < 0.9) {
-          perp1.crossVectors(childDir, new THREE.Vector3(0, 1, 0)).normalize();
-        } else {
-          perp1.crossVectors(childDir, new THREE.Vector3(1, 0, 0)).normalize();
-        }
-        waveDir = perp1.clone();
-      } else {
-        waveDir = waveProj.divideScalar(wpLen);
-      }
-      const baseAmp = childLen * (0.18 + curl * 0.22);
-      const waveAmp = baseAmp * (0.7 + rng() * 0.6);    // ±30% per branch
-      const harmonicPhase = rng() * Math.PI * 2;
-      const N_SEGS = 4;
-      const wp = [];
-      for (let k = 0; k <= N_SEGS; k++) {
-        const t = k / N_SEGS;
-        const profile = Math.sin(t * Math.PI)
-                      + 0.4 * Math.sin(t * Math.PI * 2 + harmonicPhase);
-        const offset = waveAmp * profile;
-        wp.push(parentEnd.clone().lerp(childEnd, t).addScaledVector(waveDir, offset));
-      }
-      for (let k = 0; k < N_SEGS; k++) {
-        const t1 = k / N_SEGS, t2 = (k + 1) / N_SEGS;
-        const r1 = childR0 * (1 - t1) + childR1 * t1;
-        const r2 = childR0 * (1 - t2) + childR1 * t2;
-        branches.push({
-          start: wp[k], end: wp[k + 1],
-          r0: r1, r1: r2,
-          depth, parent: 0,
-          tangent: childDir.clone(),
-          wobble: 0,
-        });
-      }
+      pushWavyChain(parentEnd.clone(), childEnd, childDir, childR0, childR1, depth, waveAxisLocal, 1.0);
       grow(childEnd, childDir, childLen, childR0, depth + 1, patchDecayMul, patchWaveAxis);
       // Alien-plumage terminal at leaf tips (v1.32.11). Only fires when
       // the recursion is about to bottom out (no further children),
@@ -7480,6 +7499,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.77', date: '2026-05-06', n: 'Coralline — wavier, more varied tendrils + new default creature. (1) creatureType default: acantharian → coralline. (2) New shared pushWavyChain helper builds every coral tendril (primary stems AND recursive children) as an 8-segment chain that wanders in 3D — two perpendicular wave axes, per-branch random frequencies (0.8–2.4 cycles primary, 1.2–3.2 secondary) and amplitudes (0.6–1.5× primary, 0.05–0.7× perpendicular). The bell envelope sin(πt) keeps tip endpoints exactly at the intended childEnd so recursive children stay attached. (3) Primary stems were single straight capsules; now wavy chains too with 0.55× amplitude (gentle stems, not full corkscrews). (4) Net effect: the bouquet reads as varied wandering tendrils — some near-flat with a single arc, some 3D-spiraling with multiple wave cycles — instead of geometric branching graphs. Cost: ~2× more capsules per coralline build (primaries went from 1 to 8 caps each, children from 4 to 8).' },
   { v: 'v1.32.76', date: '2026-05-06', n: 'Defaults + UI overhaul. (1) Default size 80 mm → 150 mm. (2) Colorize OFF by default (was on since v1.32.71). (3) Acantharian parent spines now droop slightly with gravity — each spine sags toward -Y with a t² envelope so the base stays put and the tip droops most (4% of spine length at the tip). (4) Controls panel restructured into floating "cards" with rounded corners + drop shadow — Setup, Material & size, Body, Skin, Render, Print compatibility, plus per-creature morphology cards. (5) New Skin card houses Colorize, Surface texture, and Texture detail in one place; texture is universal across creatures (not Radiolarian-only as the UI used to suggest). (6) Acantharian step-debug checkbox moved from the global controls into the Acantharian morphology card.' },
   { v: 'v1.32.75', date: '2026-05-06', n: 'Performance + UX. (1) colorizeMesh: hoisted per-branch geometry/color out of the per-vertex inner loop into Float64Arrays — the inner loop is now pure arithmetic with no Vector3 allocations, no per-iter recomputation of (end-start)/segLenSq, and no Map lookups for color. Math is bit-identical to the previous version. With ~36k branches and ~50–100k mesh vertices, this is a meaningful chunk of the total Acantharian build time. (2) Colorize toggle: when a body mesh already exists, toggling the checkbox now swaps the material (and recolors / strips colors) in place rather than forcing a full geometry regenerate(). lastBuildResult now keeps a ref to the body mesh. (3) Step-debug default OFF: ACAN_STEP_DEBUG.enabled flipped from true to false; new "Acantharian step debug" checkbox in the controls panel reveals the floating step panel on demand. The default stepIdx still points at the final substep so toggling debug back on shows the full creature.' },
   { v: 'v1.32.74', date: '2026-05-06', n: 'Acantharian — parent spines now corkscrew too. The existing helical-twist path (gated on the acanTwist slider) was bumped from 7 segments / 1.5 turns / amp 1.6×baseR (gentle cinnamon wobble) to 25 segments / 5 turns / amp 5×baseR (at twist=1, scaled linearly by twist). At the default twist=0.4 each parent spine now reads as a clear open coil, matching the v1.32.73 child-spine corkscrews. Wind-bend, ripple modulation, and the linear base→tip radius taper are unchanged. Setting acanTwist=0 still gives straight spines as before. B4 step description updated.' },
