@@ -153,6 +153,27 @@
     font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
     text-transform: uppercase; color: var(--ink-dim);
   }
+  /* v1.32.76: ctrl-card — each section sits on its own floating card
+     with rounded corners, subtle border + drop shadow. Inside a card
+     the existing .section-header rules (border-top, padding-top) are
+     overridden so the title sits flush at the card's top edge. */
+  .ctrl-card {
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px 10px;
+    margin: 14px 0;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35),
+                0 6px 14px rgba(0, 0, 0, 0.18);
+  }
+  .ctrl-card.hidden { display: none; }
+  .ctrl-card > .section-header {
+    margin: 0 0 10px;
+    padding-top: 0;
+    border-top: none;
+  }
+  .ctrl-card > .ctrl:last-child { margin-bottom: 0; }
+  .ctrl-card > .ctrl:first-of-type { margin-top: 4px; }
   .ctrl-warn {
     margin-top: 6px; padding: 6px 8px; border-radius: 4px;
     background: rgba(255, 107, 107, 0.10);
@@ -517,209 +538,226 @@
       <ul class="report-checks"></ul>
     </div>
     <div id="panelBody">
-      <div class="ctrl">
-        <label>Creature type</label>
-        <select id="creatureType">
-          <option value="radiolarian">Radiolarian</option>
-          <option value="acantharian" selected>Acantharian</option>
-          <option value="coralline">Coralline</option>
-          <option value="foraminiferan">Foraminiferan</option>
-        </select>
-        <div class="ctrl-note">Selects which morphology generator runs. Each type has its own dedicated controls below the universal section.</div>
-      </div>
-
-      <div class="ctrl">
-        <label>
-          Full configuration
-          <button class="field-btn" id="fullCopyBtn" type="button" title="Copy" aria-label="Copy full configuration">⧉</button>
-          <button class="field-btn" id="fullClearBtn" type="button" title="Clear" aria-label="Clear field">✕</button>
-        </label>
-        <input type="text" id="fullConfig" spellcheck="false" autocomplete="off" autocapitalize="off"
-               placeholder="paste a full configuration (seed + parameters) to apply"
-               title="Encoded seed + slider values. Pasting restores the entire creature.">
-      </div>
-
-      <div class="ctrl">
-        <label>
-          Parameter configuration
-          <button class="field-btn" id="paramsCopyBtn" type="button" title="Copy" aria-label="Copy parameter configuration">⧉</button>
-          <button class="field-btn" id="paramsClearBtn" type="button" title="Clear" aria-label="Clear field">✕</button>
-        </label>
-        <input type="text" id="params" spellcheck="false" autocomplete="off" autocapitalize="off"
-               placeholder="paste a parameter configuration to apply"
-               title="Encoded slider values (no seed). Two-way: read live or paste to apply.">
-      </div>
-
-      <div class="ctrl">
-        <label>
-          Seed <span class="val" id="seedVal">—</span>
-          <button class="field-btn" id="seedCopyBtn" type="button" title="Copy" aria-label="Copy seed">⧉</button>
-          <button class="field-btn" id="seedClearBtn" type="button" title="Clear" aria-label="Clear seed">✕</button>
-        </label>
-        <div class="row">
-          <input type="number" id="seed" min="0" max="4294967295" step="1" value="1">
-          <button class="dice" id="seedDice" title="Randomize seed" aria-label="Randomize seed">&#9861;</button>
+      <section class="ctrl-card">
+        <div class="section-header">Setup</div>
+        <div class="ctrl">
+          <label>Creature type</label>
+          <select id="creatureType">
+            <option value="radiolarian">Radiolarian</option>
+            <option value="acantharian" selected>Acantharian</option>
+            <option value="coralline">Coralline</option>
+            <option value="foraminiferan">Foraminiferan</option>
+          </select>
+          <div class="ctrl-note">Selects which morphology generator runs. Each type has its own dedicated card below.</div>
         </div>
-      </div>
 
-      <div class="ctrl">
-        <label>Material</label>
-        <select id="material">
-          <optgroup label="Metals (DMLS / SLM)">
-            <option value="stainless">Stainless Steel (316L)</option>
-            <option value="titanium">Titanium (Ti-6Al-4V)</option>
-            <option value="aluminum">Aluminum (AlSi10Mg)</option>
-            <option value="inconel">Inconel 718</option>
-            <option value="cocr">Cobalt-Chrome</option>
-            <option value="bronze">Bronze</option>
-            <option value="copper">Copper (CuCr1Zr)</option>
-          </optgroup>
-          <optgroup label="Lost-wax cast (i.materialise)">
-            <option value="brass-cast-gold">Brass + 18K Yellow Gold Plate</option>
-            <option value="brass-cast">Brass (Natural PU)</option>
-          </optgroup>
-          <optgroup label="Plastics (FDM / SLA / SLS)">
-            <option value="pla">PLA (FDM)</option>
-            <option value="petg">PETG (FDM)</option>
-            <option value="abs">ABS (FDM)</option>
-            <option value="nylon" selected>Nylon PA12 (SLS)</option>
-            <option value="resin">Resin (SLA)</option>
-          </optgroup>
-        </select>
-      </div>
+        <div class="ctrl">
+          <label>
+            Full configuration
+            <button class="field-btn" id="fullCopyBtn" type="button" title="Copy" aria-label="Copy full configuration">⧉</button>
+            <button class="field-btn" id="fullClearBtn" type="button" title="Clear" aria-label="Clear field">✕</button>
+          </label>
+          <input type="text" id="fullConfig" spellcheck="false" autocomplete="off" autocapitalize="off"
+                 placeholder="paste a full configuration (seed + parameters) to apply"
+                 title="Encoded seed + slider values. Pasting restores the entire creature.">
+        </div>
 
-      <div class="ctrl">
-        <label>Size (mm) <span class="val" id="sizeVal">80</span></label>
-        <input type="range" id="size" min="40" max="200" step="1" value="80">
-      </div>
+        <div class="ctrl">
+          <label>
+            Parameter configuration
+            <button class="field-btn" id="paramsCopyBtn" type="button" title="Copy" aria-label="Copy parameter configuration">⧉</button>
+            <button class="field-btn" id="paramsClearBtn" type="button" title="Clear" aria-label="Clear field">✕</button>
+          </label>
+          <input type="text" id="params" spellcheck="false" autocomplete="off" autocapitalize="off"
+                 placeholder="paste a parameter configuration to apply"
+                 title="Encoded slider values (no seed). Two-way: read live or paste to apply.">
+        </div>
 
-      <div class="ctrl">
-        <label class="checkbox-label"><input type="checkbox" id="colorize"> Colorize (visualization)</label>
-        <div class="ctrl-note">Tints the mesh by morphology part type — parent core, parent spine, child core, child spine, flower stem, flower petal — with smooth gradients between them. Visualization only; doesn't affect STL export.</div>
-      </div>
+        <div class="ctrl">
+          <label>
+            Seed <span class="val" id="seedVal">—</span>
+            <button class="field-btn" id="seedCopyBtn" type="button" title="Copy" aria-label="Copy seed">⧉</button>
+            <button class="field-btn" id="seedClearBtn" type="button" title="Clear" aria-label="Clear seed">✕</button>
+          </label>
+          <div class="row">
+            <input type="number" id="seed" min="0" max="4294967295" step="1" value="1">
+            <button class="dice" id="seedDice" title="Randomize seed" aria-label="Randomize seed">&#9861;</button>
+          </div>
+        </div>
+      </section>
 
-      <div class="ctrl" data-creature-section="acantharian">
-        <label class="checkbox-label"><input type="checkbox" id="acanStepDebug"> Acantharian step debug</label>
-        <div class="ctrl-note">Reveals the floating step-debug panel for the Acantharian build pipeline. Off by default for performance and screen real-estate.</div>
-      </div>
+      <section class="ctrl-card">
+        <div class="section-header">Material &amp; size</div>
+        <div class="ctrl">
+          <label>Material</label>
+          <select id="material">
+            <optgroup label="Metals (DMLS / SLM)">
+              <option value="stainless">Stainless Steel (316L)</option>
+              <option value="titanium">Titanium (Ti-6Al-4V)</option>
+              <option value="aluminum">Aluminum (AlSi10Mg)</option>
+              <option value="inconel">Inconel 718</option>
+              <option value="cocr">Cobalt-Chrome</option>
+              <option value="bronze">Bronze</option>
+              <option value="copper">Copper (CuCr1Zr)</option>
+            </optgroup>
+            <optgroup label="Lost-wax cast (i.materialise)">
+              <option value="brass-cast-gold">Brass + 18K Yellow Gold Plate</option>
+              <option value="brass-cast">Brass (Natural PU)</option>
+            </optgroup>
+            <optgroup label="Plastics (FDM / SLA / SLS)">
+              <option value="pla">PLA (FDM)</option>
+              <option value="petg">PETG (FDM)</option>
+              <option value="abs">ABS (FDM)</option>
+              <option value="nylon" selected>Nylon PA12 (SLS)</option>
+              <option value="resin">Resin (SLA)</option>
+            </optgroup>
+          </select>
+        </div>
 
-      <div class="ctrl">
-        <label>Body</label>
-        <select id="bodyMode">
-          <option value="cast">Cast-friendly (no shell, no tunnels)</option>
-          <option value="solid">Solid w/ tunnels (cast risk; preserves morphology)</option>
-          <option value="hollow">Hollow — not good for casting</option>
-          <option value="hollow-fill" selected>Hollow + Fill (cavities sealed for casting)</option>
-        </select>
-        <div id="bodyModeWarn" class="ctrl-warn hidden">⚠ Hollow shells often fail in lost-wax casting — switch to Hollow + Fill, Solid w/ tunnels, or Cast-friendly.</div>
-      </div>
+        <div class="ctrl">
+          <label>Size (mm) <span class="val" id="sizeVal">150</span></label>
+          <input type="range" id="size" min="40" max="200" step="1" value="150">
+        </div>
+      </section>
 
-      <div class="ctrl">
-        <label>Wall thickness (mm) <span class="val" id="wallVal">1.0</span></label>
-        <input type="range" id="wall" min="0" max="5" step="0.1" value="1.0">
-        <div class="ctrl-note">Carves the shell in Hollow mode; also caps coral pit depth in all modes.</div>
-      </div>
+      <section class="ctrl-card">
+        <div class="section-header">Body</div>
+        <div class="ctrl">
+          <label>Body</label>
+          <select id="bodyMode">
+            <option value="cast">Cast-friendly (no shell, no tunnels)</option>
+            <option value="solid">Solid w/ tunnels (cast risk; preserves morphology)</option>
+            <option value="hollow">Hollow — not good for casting</option>
+            <option value="hollow-fill" selected>Hollow + Fill (cavities sealed for casting)</option>
+          </select>
+          <div id="bodyModeWarn" class="ctrl-warn hidden">⚠ Hollow shells often fail in lost-wax casting — switch to Hollow + Fill, Solid w/ tunnels, or Cast-friendly.</div>
+        </div>
 
-      <div class="ctrl">
-        <label>Surface texture</label>
-        <select id="texture">
-          <option value="smooth">Smooth</option>
-          <option value="organic" selected>Organic (variegated)</option>
-        </select>
-      </div>
+        <div class="ctrl">
+          <label>Wall thickness (mm) <span class="val" id="wallVal">1.0</span></label>
+          <input type="range" id="wall" min="0" max="5" step="0.1" value="1.0">
+          <div class="ctrl-note">Carves the shell in Hollow mode; also caps coral pit depth in all modes.</div>
+        </div>
+      </section>
 
-      <div class="ctrl">
-        <label>Preview quality</label>
-        <select id="quality">
-          <option value="standard">Standard (96³)</option>
-          <option value="high">High (128³)</option>
-          <option value="ultra" selected>Ultra (160³)</option>
-        </select>
-      </div>
+      <section class="ctrl-card">
+        <div class="section-header">Skin</div>
+        <div class="ctrl">
+          <label class="checkbox-label"><input type="checkbox" id="colorize"> Colorize (visualization)</label>
+          <div class="ctrl-note">Tints the mesh by morphology part type with smooth gradients between regions. Visualization only; doesn't affect STL export.</div>
+        </div>
 
-      <div class="ctrl">
-        <label>Texture detail</label>
-        <select id="textureDetail">
-          <option value="off">Off (1×)</option>
-          <option value="medium">Medium (4×)</option>
-          <option value="high">High (16×)</option>
-          <option value="extreme" selected>Extreme (64×, large STL)</option>
-        </select>
-      </div>
+        <div class="ctrl">
+          <label>Surface texture</label>
+          <select id="texture">
+            <option value="smooth">Smooth</option>
+            <option value="organic" selected>Organic (variegated)</option>
+          </select>
+          <div class="ctrl-note">Applies to every creature. Organic adds layered noise displacement to the surface; Smooth keeps the SDF crisp.</div>
+        </div>
 
-      <div class="ctrl">
-        <label>Mesh simplify</label>
-        <select id="simplify">
-          <option value="off">Off (full fidelity)</option>
-          <option value="light">Light (−25% tris)</option>
-          <option value="medium">Medium (−50% tris)</option>
-          <option value="aggressive">Aggressive (−75% tris)</option>
-          <option value="extreme" selected>Extreme (−80% tris)</option>
-          <option value="severe">Severe (−85% tris)</option>
-          <option value="brutal">Brutal (−90% tris)</option>
-          <option value="maximum">Maximum (−95% tris)</option>
-          <option value="obliterate">Obliterate (−98% tris)</option>
-        </select>
-        <div class="ctrl-note">Reduces tri count + STL size for service-bureau uploads. Preserves morphology; spends some surface texture.</div>
-      </div>
+        <div class="ctrl">
+          <label>Texture detail</label>
+          <select id="textureDetail">
+            <option value="off">Off (1×)</option>
+            <option value="medium">Medium (4×)</option>
+            <option value="high">High (16×)</option>
+            <option value="extreme" selected>Extreme (64×, large STL)</option>
+          </select>
+        </div>
+      </section>
 
-      <div class="section-header">Print compatibility</div>
+      <section class="ctrl-card">
+        <div class="section-header">Render</div>
+        <div class="ctrl">
+          <label>Preview quality</label>
+          <select id="quality">
+            <option value="standard">Standard (96³)</option>
+            <option value="high">High (128³)</option>
+            <option value="ultra" selected>Ultra (160³)</option>
+          </select>
+        </div>
 
-      <div class="ctrl">
-        <label>Drop tiny shells</label>
-        <select id="dropShells">
-          <option value="off">Off</option>
-          <option value="light" selected>Light (drop &lt; 10 tri)</option>
-          <option value="medium">Medium (drop &lt; 50 tri)</option>
-          <option value="aggressive">Aggressive (drop &lt; 200 tri)</option>
-        </select>
-        <div class="ctrl-note">Removes small disconnected pieces from the mesh. Reduces "Number of shells" warnings.</div>
-      </div>
+        <div class="ctrl">
+          <label>Mesh simplify</label>
+          <select id="simplify">
+            <option value="off">Off (full fidelity)</option>
+            <option value="light">Light (−25% tris)</option>
+            <option value="medium">Medium (−50% tris)</option>
+            <option value="aggressive">Aggressive (−75% tris)</option>
+            <option value="extreme" selected>Extreme (−80% tris)</option>
+            <option value="severe">Severe (−85% tris)</option>
+            <option value="brutal">Brutal (−90% tris)</option>
+            <option value="maximum">Maximum (−95% tris)</option>
+            <option value="obliterate">Obliterate (−98% tris)</option>
+          </select>
+          <div class="ctrl-note">Reduces tri count + STL size for service-bureau uploads. Preserves morphology; spends some surface texture.</div>
+        </div>
+      </section>
 
-      <div class="ctrl">
-        <label>Manifold re-weld</label>
-        <select id="manifoldWeld">
-          <option value="off">Off</option>
-          <option value="tight" selected>Tight (0.001 mm)</option>
-          <option value="loose">Loose (0.01 mm)</option>
-        </select>
-        <div class="ctrl-note">Closes near-duplicate vertices left by simplify. Reduces "Bad edges" warnings.</div>
-      </div>
+      <section class="ctrl-card">
+        <div class="section-header">Print compatibility</div>
+        <div class="ctrl">
+          <label>Drop tiny shells</label>
+          <select id="dropShells">
+            <option value="off">Off</option>
+            <option value="light" selected>Light (drop &lt; 10 tri)</option>
+            <option value="medium">Medium (drop &lt; 50 tri)</option>
+            <option value="aggressive">Aggressive (drop &lt; 200 tri)</option>
+          </select>
+          <div class="ctrl-note">Removes small disconnected pieces from the mesh. Reduces "Number of shells" warnings.</div>
+        </div>
 
-      <div class="ctrl">
-        <label>Surface smooth</label>
-        <select id="smoothSurface">
-          <option value="off">Off</option>
-          <option value="light" selected>Light (1 pass)</option>
-          <option value="medium">Medium (3 passes)</option>
-          <option value="heavy">Heavy (5 passes)</option>
-        </select>
-        <div class="ctrl-note">Laplacian smoothing on vertex positions. Polishes residual non-manifold geometry; trades texture detail for cleaner topology.</div>
-      </div>
+        <div class="ctrl">
+          <label>Manifold re-weld</label>
+          <select id="manifoldWeld">
+            <option value="off">Off</option>
+            <option value="tight" selected>Tight (0.001 mm)</option>
+            <option value="loose">Loose (0.01 mm)</option>
+          </select>
+          <div class="ctrl-note">Closes near-duplicate vertices left by simplify. Reduces "Bad edges" warnings.</div>
+        </div>
 
-      <div class="ctrl">
-        <label>Wall dilation</label>
-        <select id="wallDilate">
-          <option value="off">Off</option>
-          <option value="light" selected>Light (+0.15 mm)</option>
-          <option value="medium">Medium (+0.30 mm)</option>
-          <option value="heavy">Heavy (+0.60 mm)</option>
-        </select>
-        <div class="ctrl-note">Grows every body surface outward, thickening thin walls below material minimum. Tunnels shrink by the same amount. Reduces "Thin walls" warnings.</div>
-      </div>
+        <div class="ctrl">
+          <label>Surface smooth</label>
+          <select id="smoothSurface">
+            <option value="off">Off</option>
+            <option value="light" selected>Light (1 pass)</option>
+            <option value="medium">Medium (3 passes)</option>
+            <option value="heavy">Heavy (5 passes)</option>
+          </select>
+          <div class="ctrl-note">Laplacian smoothing on vertex positions. Polishes residual non-manifold geometry; trades texture detail for cleaner topology.</div>
+        </div>
 
-      <div class="ctrl">
-        <label>Organic supports</label>
-        <select id="organicSupports">
-          <option value="off" selected>Off</option>
-          <option value="sparse">Sparse (1 tendril/anchor)</option>
-          <option value="medium">Medium (2 tendrils/anchor)</option>
-          <option value="dense">Dense (4 tendrils/anchor)</option>
-        </select>
-        <div class="ctrl-note">Adds tendril-cluster supports under unsupported overhangs. Reduces "Bridges" warnings; reads as additional intricate structure. Adds 5–15 sec to regen.</div>
-      </div>
+        <div class="ctrl">
+          <label>Wall dilation</label>
+          <select id="wallDilate">
+            <option value="off">Off</option>
+            <option value="light" selected>Light (+0.15 mm)</option>
+            <option value="medium">Medium (+0.30 mm)</option>
+            <option value="heavy">Heavy (+0.60 mm)</option>
+          </select>
+          <div class="ctrl-note">Grows every body surface outward, thickening thin walls below material minimum. Tunnels shrink by the same amount. Reduces "Thin walls" warnings.</div>
+        </div>
 
-      <div class="section-header" data-creature-section="acantharian">Acantharian morphology</div>
+        <div class="ctrl">
+          <label>Organic supports</label>
+          <select id="organicSupports">
+            <option value="off" selected>Off</option>
+            <option value="sparse">Sparse (1 tendril/anchor)</option>
+            <option value="medium">Medium (2 tendrils/anchor)</option>
+            <option value="dense">Dense (4 tendrils/anchor)</option>
+          </select>
+          <div class="ctrl-note">Adds tendril-cluster supports under unsupported overhangs. Reduces "Bridges" warnings; reads as additional intricate structure. Adds 5–15 sec to regen.</div>
+        </div>
+      </section>
+
+      <section class="ctrl-card" data-creature-section="acantharian">
+        <div class="section-header">Acantharian morphology</div>
+        <div class="ctrl">
+          <label class="checkbox-label"><input type="checkbox" id="acanStepDebug"> Step debug</label>
+          <div class="ctrl-note">Reveals the floating step-debug panel for the Acantharian build pipeline. Off by default.</div>
+        </div>
 
       <div class="ctrl" data-creature-section="acantharian">
         <label>Spine count <span class="val" id="acanSpinesVal">36</span></label>
@@ -783,8 +821,10 @@
         <input type="range" id="acanRecurVariation" min="0" max="1" step="0.05" value="0.6">
         <div class="ctrl-note">Per-child size variability (multiplicative). 0 = identical clones; 1 = wide small/medium/large mix.</div>
       </div>
+      </section>
 
-      <div class="section-header" data-creature-section="foraminiferan">Foraminiferan morphology</div>
+      <section class="ctrl-card" data-creature-section="foraminiferan">
+        <div class="section-header">Foraminiferan morphology</div>
 
       <div class="ctrl" data-creature-section="foraminiferan">
         <label>Turns <span class="val" id="foramTurnsVal">5.0</span></label>
@@ -856,8 +896,10 @@
         <input type="range" id="foramFuzz" min="0" max="1" step="0.05" value="0.5">
         <div class="ctrl-note">Surface complexity. Higher = more perpendicular fuzz bumps (cilia-like protrusions, min radius 0.5 mm so they print) plus parallel helical filaments wrapping the tube like a braided rope. The grooves between filaments + the bumps give the surface a furry, organic feel.</div>
       </div>
+      </section>
 
-      <div class="section-header" data-creature-section="coralline">Coralline morphology</div>
+      <section class="ctrl-card" data-creature-section="coralline">
+        <div class="section-header">Coralline morphology</div>
 
       <div class="ctrl" data-creature-section="coralline">
         <label>Trunk length (mm) <span class="val" id="corTrunkLenVal">18</span></label>
@@ -909,8 +951,10 @@
         <input type="range" id="corPlumage" min="0" max="1" step="0.05" value="0.7">
         <div class="ctrl-note">Fraction of leaf tips that grow a hybrid terminal element — randomly assigned per leaf from three types: flower-bell (calyx + radiating petals), fern-fiddlehead curl, and anemone-polyp bristle cluster. Mixing botanical and animal forms gives the creature an alien, no-Earth-analog feel.</div>
       </div>
+      </section>
 
-      <div class="section-header" data-creature-section="radiolarian">Radiolarian morphology</div>
+      <section class="ctrl-card" data-creature-section="radiolarian">
+        <div class="section-header">Radiolarian morphology</div>
 
       <div class="ctrl" data-creature-section="radiolarian">
         <label>Complexity <span class="val" id="complexityVal">4</span></label>
@@ -984,11 +1028,12 @@
         <label>Radial N <span class="val" id="radialNVal">5</span></label>
         <input type="range" id="radialN" min="2" max="8" step="1" value="5">
       </div>
+      </section>
     </div>
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.75</span>
+        <span id="version">v1.32.76</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1054,7 +1099,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.75";
+const VERSION = "v1.32.76";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1104,7 +1149,7 @@ const DEFAULTS = {
   // shown in the panel. v1.30.0 added 'acantharian'; chunk 3 adds
   // 'coralline'.
   creatureType: 'acantharian',
-  colorize: true,     // v1.32.71 — colorize mode on by default; tints mesh by part type for visualization (no STL effect)
+  colorize: false,    // v1.32.76 — colorize off by default; users can opt in via the Colorize checkbox
   // Acantharian-specific controls (chunk 2B, v1.30.1):
   acanSpines: 36,        // 6..48   how many spines radiate from the parent core.
                           //         18 (original) → 24 (v1.32.5) → 36 (v1.32.7) so the
@@ -1246,7 +1291,7 @@ const DEFAULTS = {
                                  // bureaus (Sculpteo, Shapeways) is now the
                                  // primary path. Brass/lost-wax remains in
                                  // the dropdown for users who want it.
-  size: 80,  // target max bounding-box dimension (mm)
+  size: 150, // target max bounding-box dimension (mm)  v1.32.76: default 80 → 150
   wall: 1.0, // default hollow shell with 1mm wall — above every material's
              // minWall, sensible at default size/export-resolution.
   negStyle: 'helix',  // 'none' | 'helix' | 'colony' — default to helix so
@@ -4620,6 +4665,10 @@ function generateAcantharianStructure(s) {
       const rippleMul = 0.55 + 0.45 * Math.sin(ripplePhase);
       const bendMag = windCrossMag * rippleMul * twist;
       const harmonicPhase = si * 1.7321;
+      // v1.32.76: gravity droop. Each spine sags slightly toward -Y
+      // with a t² envelope so the base stays put and the tip droops
+      // most. Magnitude 4% of spine length at the tip — subtle.
+      const gravityDroopAmp = thisLen * 0.04;
       const wp = [];
       const radii = [];
       for (let k = 0; k <= N; k++) {
@@ -4631,9 +4680,12 @@ function generateAcantharianStructure(s) {
         const bendStrength = Math.sin(t * Math.PI)
           * (1 + 0.40 * Math.sin(t * Math.PI * 2 + harmonicPhase));
         const bendOffset = thisLen * 0.50 * bendMag * bendStrength;
-        wp.push(startPt.clone().lerp(endPt, t)
+        const droopY = -gravityDroopAmp * t * t;
+        const wpPt = startPt.clone().lerp(endPt, t)
           .addScaledVector(perp1, twistDX + bendCosP * bendOffset)
-          .addScaledVector(perp2, twistDY + bendSinP * bendOffset));
+          .addScaledVector(perp2, twistDY + bendSinP * bendOffset);
+        wpPt.y += droopY;
+        wp.push(wpPt);
       }
       for (let k = 0; k <= N; k++) {
         const t = k / N;
@@ -7428,6 +7480,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.76', date: '2026-05-06', n: 'Defaults + UI overhaul. (1) Default size 80 mm → 150 mm. (2) Colorize OFF by default (was on since v1.32.71). (3) Acantharian parent spines now droop slightly with gravity — each spine sags toward -Y with a t² envelope so the base stays put and the tip droops most (4% of spine length at the tip). (4) Controls panel restructured into floating "cards" with rounded corners + drop shadow — Setup, Material & size, Body, Skin, Render, Print compatibility, plus per-creature morphology cards. (5) New Skin card houses Colorize, Surface texture, and Texture detail in one place; texture is universal across creatures (not Radiolarian-only as the UI used to suggest). (6) Acantharian step-debug checkbox moved from the global controls into the Acantharian morphology card.' },
   { v: 'v1.32.75', date: '2026-05-06', n: 'Performance + UX. (1) colorizeMesh: hoisted per-branch geometry/color out of the per-vertex inner loop into Float64Arrays — the inner loop is now pure arithmetic with no Vector3 allocations, no per-iter recomputation of (end-start)/segLenSq, and no Map lookups for color. Math is bit-identical to the previous version. With ~36k branches and ~50–100k mesh vertices, this is a meaningful chunk of the total Acantharian build time. (2) Colorize toggle: when a body mesh already exists, toggling the checkbox now swaps the material (and recolors / strips colors) in place rather than forcing a full geometry regenerate(). lastBuildResult now keeps a ref to the body mesh. (3) Step-debug default OFF: ACAN_STEP_DEBUG.enabled flipped from true to false; new "Acantharian step debug" checkbox in the controls panel reveals the floating step panel on demand. The default stepIdx still points at the final substep so toggling debug back on shows the full creature.' },
   { v: 'v1.32.74', date: '2026-05-06', n: 'Acantharian — parent spines now corkscrew too. The existing helical-twist path (gated on the acanTwist slider) was bumped from 7 segments / 1.5 turns / amp 1.6×baseR (gentle cinnamon wobble) to 25 segments / 5 turns / amp 5×baseR (at twist=1, scaled linearly by twist). At the default twist=0.4 each parent spine now reads as a clear open coil, matching the v1.32.73 child-spine corkscrews. Wind-bend, ripple modulation, and the linear base→tip radius taper are unchanged. Setting acanTwist=0 still gives straight spines as before. B4 step description updated.' },
   { v: 'v1.32.73', date: '2026-05-06', n: 'Acantharian — three coordinated tweaks. (1) Parent spines 30% longer: ORBIT_SHORT 0.65 → 0.845 and ORBIT_LONG 1.35 → 1.755 (multiplied by 1.3). After scale-to-size renormalizes the bounding box, the visual effect is a smaller body with proportionally longer parent spines. (2) Child spines 30% thinner: childBaseR factor 0.14× → 0.098× (and tipR matching). (3) Corkscrew diameter 66% wider: CORKSCREW_AMP_K 8.0 → 13.3 — combined with the thinner wire, the coil now reads ≈54× the wire diameter, an exaggerated open spiral. 5 turns over 25 segments preserved. Arc bend stays at 25°.' },
