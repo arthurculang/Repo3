@@ -598,6 +598,11 @@
         <div class="ctrl-note">Tints the mesh by morphology part type — parent core, parent spine, child core, child spine, flower stem, flower petal — with smooth gradients between them. Visualization only; doesn't affect STL export.</div>
       </div>
 
+      <div class="ctrl" data-creature-section="acantharian">
+        <label class="checkbox-label"><input type="checkbox" id="acanStepDebug"> Acantharian step debug</label>
+        <div class="ctrl-note">Reveals the floating step-debug panel for the Acantharian build pipeline. Off by default for performance and screen real-estate.</div>
+      </div>
+
       <div class="ctrl">
         <label>Body</label>
         <select id="bodyMode">
@@ -983,7 +988,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.74</span>
+        <span id="version">v1.32.75</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1049,7 +1054,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.74";
+const VERSION = "v1.32.75";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -1998,12 +2003,34 @@ function colorizeMesh(mesh, branches) {
   const CELL = 8;
   const hash = new Map();
   const cellKey = (cx, cy, cz) => cx + ',' + cy + ',' + cz;
-  for (let bi = 0; bi < branches.length; bi++) {
+
+  // v1.32.75 perf: hoist per-branch values into Float64 typed arrays
+  // so the per-vertex inner loop is pure arithmetic — no Vector3
+  // allocations, no per-iter recomputation of (end - start) or
+  // segLenSq, no Map lookups for color. Math is bit-identical to the
+  // original (same operands, same operation order, same precision).
+  const N = branches.length;
+  const sxA = new Float64Array(N), syA = new Float64Array(N), szA = new Float64Array(N);
+  const dxA = new Float64Array(N), dyA = new Float64Array(N), dzA = new Float64Array(N);
+  const segLenSqA = new Float64Array(N);
+  const colR = new Float64Array(N), colG = new Float64Array(N), colB = new Float64Array(N);
+  const defaultCol = COLOR_PALETTE.default;
+
+  for (let bi = 0; bi < N; bi++) {
     const b = branches[bi];
     if (!b.start || !b.end) continue;
-    const minX = Math.min(b.start.x, b.end.x), maxX = Math.max(b.start.x, b.end.x);
-    const minY = Math.min(b.start.y, b.end.y), maxY = Math.max(b.start.y, b.end.y);
-    const minZ = Math.min(b.start.z, b.end.z), maxZ = Math.max(b.start.z, b.end.z);
+    const sx = b.start.x, sy = b.start.y, sz = b.start.z;
+    const ex = b.end.x,   ey = b.end.y,   ez = b.end.z;
+    const dx = ex - sx, dy = ey - sy, dz = ez - sz;
+    sxA[bi] = sx; syA[bi] = sy; szA[bi] = sz;
+    dxA[bi] = dx; dyA[bi] = dy; dzA[bi] = dz;
+    segLenSqA[bi] = dx * dx + dy * dy + dz * dz;
+    const col = COLOR_PALETTE[b.colorType] || defaultCol;
+    colR[bi] = col.r; colG[bi] = col.g; colB[bi] = col.b;
+
+    const minX = Math.min(sx, ex), maxX = Math.max(sx, ex);
+    const minY = Math.min(sy, ey), maxY = Math.max(sy, ey);
+    const minZ = Math.min(sz, ez), maxZ = Math.max(sz, ez);
     const r = Math.max(b.r0 || 0, b.r1 || 0);
     const cx0 = Math.floor((minX - r) / CELL), cx1 = Math.floor((maxX + r) / CELL);
     const cy0 = Math.floor((minY - r) / CELL), cy1 = Math.floor((maxY + r) / CELL);
@@ -2020,7 +2047,6 @@ function colorizeMesh(mesh, branches) {
     }
   }
 
-  const _seg = new THREE.Vector3();
   for (let vi = 0; vi < vertCount; vi++) {
     const x = pos[vi * 3], y = pos[vi * 3 + 1], z = pos[vi * 3 + 2];
     const cellX = Math.floor(x / CELL), cellY = Math.floor(y / CELL), cellZ = Math.floor(z / CELL);
@@ -2031,27 +2057,26 @@ function colorizeMesh(mesh, branches) {
         for (let dz = -1; dz <= 1; dz++) {
           const list = hash.get(cellKey(cellX + dx, cellY + dy, cellZ + dz));
           if (!list) continue;
-          for (const bi of list) {
-            const br = branches[bi];
-            // Distance from vertex to capsule centerline (segment).
-            _seg.subVectors(br.end, br.start);
-            const segLenSq = _seg.lengthSq();
-            const sx = br.start.x, sy = br.start.y, sz = br.start.z;
+          for (let li = 0; li < list.length; li++) {
+            const bi = list[li];
+            const sx = sxA[bi], sy = syA[bi], sz = szA[bi];
+            const segDx = dxA[bi], segDy = dyA[bi], segDz = dzA[bi];
+            const segLenSq = segLenSqA[bi];
             const tx = x - sx, ty = y - sy, tz = z - sz;
             let tt = 0;
             if (segLenSq > 1e-6) {
-              tt = (tx * _seg.x + ty * _seg.y + tz * _seg.z) / segLenSq;
+              tt = (tx * segDx + ty * segDy + tz * segDz) / segLenSq;
               if (tt < 0) tt = 0; else if (tt > 1) tt = 1;
             }
-            const cx = sx + _seg.x * tt;
-            const cy = sy + _seg.y * tt;
-            const cz = sz + _seg.z * tt;
-            const distSq = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2;
+            const cx = sx + segDx * tt;
+            const cy = sy + segDy * tt;
+            const cz = sz + segDz * tt;
+            const ddx = x - cx, ddy = y - cy, ddz = z - cz;
+            const distSq = ddx * ddx + ddy * ddy + ddz * ddz;
             const w = 1 / (distSq + 0.5);
-            const col = COLOR_PALETTE[br.colorType] || COLOR_PALETTE.default;
-            accR += col.r * w;
-            accG += col.g * w;
-            accB += col.b * w;
+            accR += colR[bi] * w;
+            accG += colG[bi] * w;
+            accB += colB[bi] * w;
             totalWeight += w;
             foundAny = true;
           }
@@ -2063,8 +2088,7 @@ function colorizeMesh(mesh, branches) {
       colors[vi * 3 + 1] = accG / totalWeight;
       colors[vi * 3 + 2] = accB / totalWeight;
     } else {
-      const c = COLOR_PALETTE.default;
-      colors[vi * 3] = c.r; colors[vi * 3 + 1] = c.g; colors[vi * 3 + 2] = c.b;
+      colors[vi * 3] = defaultCol.r; colors[vi * 3 + 1] = defaultCol.g; colors[vi * 3 + 2] = defaultCol.b;
     }
   }
   geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -4443,10 +4467,13 @@ const ACAN_STEPS = [
 ];
 
 const ACAN_STEP_DEBUG = {
-  enabled: true,
+  // v1.32.75: default OFF. Enable via the "Acantharian step debug"
+  // checkbox in the controls panel. When off the floating panel is
+  // hidden and the early-return checks in generateAcantharianStructure
+  // are no-ops (lastStep falls through to a sentinel beyond all steps).
+  enabled: false,
   level: 1,
   // v1.32.71: default to the final substep (full creature rendered).
-  // User can dial back to an earlier step via the dropdown / Reset.
   stepIdx: ACAN_STEPS.length - 1,
 };
 
@@ -6901,6 +6928,9 @@ async function generate(previewVoxels = 96) {
   lastBuildResult = {
     fieldInfo: result.fieldInfo, voxel: result.voxel, branches, rings,
     effWall: eff.wall, effNegStyle: eff.negStyle,
+    // v1.32.75: keep a ref to the body mesh so the Colorize toggle
+    // can re-tint in place instead of forcing a full regenerate().
+    bodyMesh: mesh,
   };
 
   // Mass + cost readout. Body volume comes from the preview mesh via the
@@ -7302,7 +7332,45 @@ if (colorizeEl) {
   colorizeEl.checked = state.colorize;
   colorizeEl.addEventListener('change', () => {
     state.colorize = colorizeEl.checked;
+    // v1.32.75: fast-path — if a body mesh already exists, just swap
+    // its material (and recolor) in place rather than rebuilding all
+    // geometry. The render loop picks up the change next frame.
+    const bodyMesh = lastBuildResult && lastBuildResult.bodyMesh;
+    if (bodyMesh && lastBuildResult.branches) {
+      const oldMat = bodyMesh.material;
+      if (state.colorize) {
+        bodyMesh.material = new THREE.MeshPhysicalMaterial({
+          color: 0xffffff,
+          vertexColors: true,
+          metalness: 0.35,
+          roughness: 0.22,
+          clearcoat: 1.0,
+          clearcoatRoughness: 0.05,
+          flatShading: false,
+        });
+        colorizeMesh(bodyMesh, lastBuildResult.branches);
+      } else {
+        bodyMesh.material = material;
+        bodyMesh.geometry.deleteAttribute('color');
+      }
+      if (oldMat && oldMat !== material) oldMat.dispose();
+      return;
+    }
     scheduleRegen();
+  });
+}
+
+// v1.32.75: Acantharian step-debug master toggle. Default OFF; flipping
+// it on reveals the floating debug panel. No regenerate needed for the
+// default stepIdx (final substep) since lastStep is already past every
+// truncation check.
+const acanStepDebugEl = document.getElementById('acanStepDebug');
+if (acanStepDebugEl) {
+  acanStepDebugEl.checked = ACAN_STEP_DEBUG.enabled;
+  acanStepDebugEl.addEventListener('change', () => {
+    ACAN_STEP_DEBUG.enabled = acanStepDebugEl.checked;
+    adpRender();
+    if (ACAN_STEP_DEBUG.stepIdx < ACAN_STEPS.length - 1) scheduleRegen();
   });
 }
 
@@ -7360,6 +7428,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.75', date: '2026-05-06', n: 'Performance + UX. (1) colorizeMesh: hoisted per-branch geometry/color out of the per-vertex inner loop into Float64Arrays — the inner loop is now pure arithmetic with no Vector3 allocations, no per-iter recomputation of (end-start)/segLenSq, and no Map lookups for color. Math is bit-identical to the previous version. With ~36k branches and ~50–100k mesh vertices, this is a meaningful chunk of the total Acantharian build time. (2) Colorize toggle: when a body mesh already exists, toggling the checkbox now swaps the material (and recolors / strips colors) in place rather than forcing a full geometry regenerate(). lastBuildResult now keeps a ref to the body mesh. (3) Step-debug default OFF: ACAN_STEP_DEBUG.enabled flipped from true to false; new "Acantharian step debug" checkbox in the controls panel reveals the floating step panel on demand. The default stepIdx still points at the final substep so toggling debug back on shows the full creature.' },
   { v: 'v1.32.74', date: '2026-05-06', n: 'Acantharian — parent spines now corkscrew too. The existing helical-twist path (gated on the acanTwist slider) was bumped from 7 segments / 1.5 turns / amp 1.6×baseR (gentle cinnamon wobble) to 25 segments / 5 turns / amp 5×baseR (at twist=1, scaled linearly by twist). At the default twist=0.4 each parent spine now reads as a clear open coil, matching the v1.32.73 child-spine corkscrews. Wind-bend, ripple modulation, and the linear base→tip radius taper are unchanged. Setting acanTwist=0 still gives straight spines as before. B4 step description updated.' },
   { v: 'v1.32.73', date: '2026-05-06', n: 'Acantharian — three coordinated tweaks. (1) Parent spines 30% longer: ORBIT_SHORT 0.65 → 0.845 and ORBIT_LONG 1.35 → 1.755 (multiplied by 1.3). After scale-to-size renormalizes the bounding box, the visual effect is a smaller body with proportionally longer parent spines. (2) Child spines 30% thinner: childBaseR factor 0.14× → 0.098× (and tipR matching). (3) Corkscrew diameter 66% wider: CORKSCREW_AMP_K 8.0 → 13.3 — combined with the thinner wire, the coil now reads ≈54× the wire diameter, an exaggerated open spiral. 5 turns over 25 segments preserved. Arc bend stays at 25°.' },
   { v: 'v1.32.72', date: '2026-05-06', n: 'Colorize mode now has a reflective sheen. Replaced the cloned-metal-material approach with a fresh MeshPhysicalMaterial: low base roughness (0.22), modest metalness (0.35), and a full clearcoat layer (clearcoat 1.0, clearcoatRoughness 0.05) on top. Visually: a wet/lacquered candy-shell finish where the directional key + rim lights produce sharp specular highlights across the colored body, and the clearcoat catches glints independently of the base color. STL export is unaffected — the metal preset material is untouched and is still what the export pipeline uses.' },
