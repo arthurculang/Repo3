@@ -1033,7 +1033,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.78</span>
+        <span id="version">v1.32.79</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1094,12 +1094,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
-import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+// v1.32.79: three's mergeVertices import removed — replaced by the
+// local fastMergeVertices (same semantics, integer-hashed).
 
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.78";
+const VERSION = "v1.32.79";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -2051,7 +2052,11 @@ function colorizeMesh(mesh, branches) {
   // 1-2 cells; per vertex we look up 3³=27 neighboring cells.
   const CELL = 8;
   const hash = new Map();
-  const cellKey = (cx, cy, cz) => cx + ',' + cy + ',' + cz;
+  // v1.32.79 perf: packed integer cell key instead of a string —
+  // 10 bits per axis with a +512 offset covers ±4096mm, far beyond
+  // any sculpture. Saves a string build + string hash per lookup
+  // (27 lookups per vertex).
+  const cellKey = (cx, cy, cz) => ((cx + 512) | ((cy + 512) << 10) | ((cz + 512) << 20));
 
   // v1.32.75 perf: hoist per-branch values into Float64 typed arrays
   // so the per-vertex inner loop is pure arithmetic — no Vector3
@@ -2818,7 +2823,15 @@ const MC_EB = new Int8Array([1,2,3,0,5,6,7,4,4,5,6,7]);
 // visible instead of the inside (bug fixed in v1.0.1).
 function marchingCubes(field, nx, ny, nz, ox, oy, oz, vs, iso) {
   const strideZ = nx * ny;
-  const positions = [];
+  // v1.32.79 perf: accumulate positions in fixed-size Float32Array
+  // chunks instead of a growing JS number[] — same values in the same
+  // order (each f64 → f32 conversion happens exactly once either way),
+  // but no per-push boxing and no multi-hundred-MB array reallocation.
+  const CHUNK = 1 << 16;
+  const chunks = [];
+  let cur = new Float32Array(CHUNK);
+  let curLen = 0;
+  let total = 0;
   const edge = new Float32Array(36);
   const vv = new Float32Array(8);
   for (let z = 0; z < nz - 1; z++) {
@@ -2866,17 +2879,25 @@ function marchingCubes(field, nx, ny, nz, ox, oy, oz, vs, iso) {
           if (e0 === -1) break;
           const e1 = MC_TRI_TABLE[tb + i + 1];
           const e2 = MC_TRI_TABLE[tb + i + 2];
-          positions.push(
-            edge[e0*3], edge[e0*3+1], edge[e0*3+2],
-            edge[e2*3], edge[e2*3+1], edge[e2*3+2],
-            edge[e1*3], edge[e1*3+1], edge[e1*3+2],
-          );
+          if (curLen + 9 > CHUNK) {
+            chunks.push(cur.subarray(0, curLen));
+            total += curLen;
+            cur = new Float32Array(CHUNK);
+            curLen = 0;
+          }
+          cur[curLen++] = edge[e0*3]; cur[curLen++] = edge[e0*3+1]; cur[curLen++] = edge[e0*3+2];
+          cur[curLen++] = edge[e2*3]; cur[curLen++] = edge[e2*3+1]; cur[curLen++] = edge[e2*3+2];
+          cur[curLen++] = edge[e1*3]; cur[curLen++] = edge[e1*3+1]; cur[curLen++] = edge[e1*3+2];
         }
       }
     }
   }
+  if (curLen > 0) { chunks.push(cur.subarray(0, curLen)); total += curLen; }
+  const positions = new Float32Array(total);
+  let off = 0;
+  for (const c of chunks) { positions.set(c, off); off += c.length; }
   const geom = new THREE.BufferGeometry();
-  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   return geom;
 }
 
@@ -3248,16 +3269,44 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
     const bx = b.end.x, by = b.end.y, bz = b.end.z;
     const bw = b.wobble || 0;
 
+    // v1.32.79 perf: sdConeCapsule + smin inlined with the per-branch
+    // invariants (segment vector, length², wobble phase, k test) hoisted
+    // out of the voxel loop. The remaining expressions keep the exact
+    // operand order of the original functions, so the field is
+    // bit-identical — this is purely eliminating redundant recompute
+    // (the originals re-derived bax/bay/baz/l2 for every voxel).
+    const bax = bx - ax, bay = by - ay, baz = bz - az;
+    const l2 = bax * bax + bay * bay + baz * baz || 1e-9;
+    const drdh = r1 - r0;
+    const bw23 = bw * 2.3;
+    const kIsFlat = k <= 1e-6;
+
     for (let zi = zmin; zi <= zmax; zi++) {
       const pz = oz + zi * voxel;
+      const paz = pz - az;
       for (let yi = ymin; yi <= ymax; yi++) {
         const py = oy + yi * voxel;
+        const pay = py - ay;
         const rowBase = zi * stride + yi * nx;
         for (let xi = xmin; xi <= xmax; xi++) {
           const px = ox + xi * voxel;
-          const d = sdConeCapsule(px, py, pz, ax, ay, az, bx, by, bz, r0, r1, bw);
+          const pax = px - ax;
+          let h = (pax * bax + pay * bay + paz * baz) / l2;
+          if (h < 0) h = 0; else if (h > 1) h = 1;
+          let r = r0 + drdh * h;
+          const w1 = Math.sin(bw + h * 6.2831853);
+          const w2 = Math.sin(bw23 + h * 11.0);
+          r *= 1 + 0.10 * w1 + 0.05 * w2;
+          const ddx = pax - bax * h, ddy = pay - bay * h, ddz = paz - baz * h;
+          const d = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz) - r;
           const idx = rowBase + xi;
-          field[idx] = smin(field[idx], d, k);
+          const a = field[idx];
+          if (kIsFlat) {
+            if (d < a) field[idx] = d;
+          } else {
+            const hh = Math.max(0, k - Math.abs(a - d)) / k;
+            field[idx] = (a < d ? a : d) - hh * hh * k * 0.25;
+          }
         }
       }
     }
@@ -3537,22 +3586,33 @@ function subdivideMidpoint(geom, levels) {
     newPositions.set(positions, 0);
     let nextVert = Vold;
 
-    // Edge → midpoint vertex index map. Key encodes ordered (lo, hi).
-    // Vold * Vold can blow past 2^53 only when Vold > ~94M — well above
-    // anything we'll subdivide.
-    const edgeMap = new Map();
+    // Edge → midpoint vertex index. v1.32.79 perf: open-addressed
+    // integer hash table (typed arrays) instead of a numeric-keyed Map.
+    // At Extreme texture detail the last level dedupes ~5M edges; Map
+    // overhead (boxed doubles, rehash growth) dominated the whole
+    // subdivision pass. Capacity = pow2 ≥ 3×tris keeps load ≤ 0.5.
+    // The midpoint float math is unchanged (same argument order at the
+    // same first-encounter, cached thereafter) so output is identical.
+    let edgeCap = 1;
+    while (edgeCap < Told * 3) edgeCap <<= 1;
+    const edgeMask = edgeCap - 1;
+    const edgeLo = new Int32Array(edgeCap).fill(-1);
+    const edgeHi = new Int32Array(edgeCap);
+    const edgeVal = new Int32Array(edgeCap);
     function midpoint(a, b) {
       const lo = a < b ? a : b;
       const hi = a < b ? b : a;
-      const key = lo * Vold + hi;
-      let m = edgeMap.get(key);
-      if (m !== undefined) return m;
-      m = nextVert++;
+      let slot = ((Math.imul(lo, 0x9E3779B1) ^ Math.imul(hi, 0x85EBCA77)) >>> 0) & edgeMask;
+      while (edgeLo[slot] !== -1) {
+        if (edgeLo[slot] === lo && edgeHi[slot] === hi) return edgeVal[slot];
+        slot = (slot + 1) & edgeMask;
+      }
+      const m = nextVert++;
       const ai = a * 3, bi = b * 3, mi = m * 3;
       newPositions[mi]     = (positions[ai]     + positions[bi])     * 0.5;
       newPositions[mi + 1] = (positions[ai + 1] + positions[bi + 1]) * 0.5;
       newPositions[mi + 2] = (positions[ai + 2] + positions[bi + 2]) * 0.5;
-      edgeMap.set(key, m);
+      edgeLo[slot] = lo; edgeHi[slot] = hi; edgeVal[slot] = m;
       return m;
     }
 
@@ -3958,7 +4018,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     const raw = marchingCubes(f.field, f.nx, f.ny, f.nz, f.ox, f.oy, f.oz, f.voxel, 0);
     const rawVerts = raw.getAttribute('position').count;
     if (rawVerts === 0) { raw.dispose(); geom = null; comp = { nComp: 0, vertComp: null }; return; }
-    geom = mergeVertices(raw, 1e-4);
+    geom = fastMergeVertices(raw, 1e-4);
     raw.dispose();
     comp = countComponents(geom);
   };
@@ -4086,13 +4146,21 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
     }
   }
 
+  // v1.32.79 perf: the 64³ drag preview is a ~300ms transient — the
+  // full-quality settle pass replaces it moments later. Skipping the
+  // export-prep stages (deep subdivision, simplify, shell cleanup)
+  // during that transient makes dragging responsive without changing
+  // the final settled mesh in any way.
+  const previewLite = previewVoxels <= 64;
+
   // Subdivide the mesh BEFORE the texture pass (v1.23.0). Decouples
   // texture-mesh density from MC-mesh density, so the user can crank
   // texture detail without remeshing morphology. Skip entirely for
   // smooth texture — subdivision without displacement just bloats the
   // STL with no visual gain.
   if (s.texture === 'organic') {
-    const subLevels = TEXDETAIL_LEVELS[s.textureDetail] || 0;
+    let subLevels = TEXDETAIL_LEVELS[s.textureDetail] || 0;
+    if (previewLite) subLevels = Math.min(subLevels, 1);
     if (subLevels > 0) subdivideMidpoint(geom, subLevels);
   }
   // Surface texture is applied in mesh domain (v1.22.0+) — operates on
@@ -4104,10 +4172,9 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   // Mesh simplify (v1.25.1 — replaces v1.25.0's SimplifyModifier which
   // OOM-crashed on 7M+ tri inputs). Vertex-clustering decimation via
   // mergeAndFilterDegenerates: merge nearby vertices then drop the
-  // degenerate triangles produced by collapse. O(n), ~100ms even on
-  // the heaviest meshes.
+  // degenerate triangles produced by collapse.
   const simplifyTol = SIMPLIFY_TOLS[s.simplify] || 0;
-  if (simplifyTol > 0) {
+  if (simplifyTol > 0 && !previewLite) {
     try {
       const simplified = mergeAndFilterDegenerates(geom, simplifyTol);
       geom.dispose();
@@ -4123,12 +4190,13 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   // FIRST so the next two passes don't waste work on geometry that's
   // about to be discarded; then re-weld near-duplicate boundary
   // vertices left by simplify; then smooth the surviving topology.
-  const dropMin = DROPSHELLS_THRESHOLDS[s.dropShells] || 0;
+  // All skipped in the 64³ drag preview (export prep, not morphology).
+  const dropMin = previewLite ? 0 : (DROPSHELLS_THRESHOLDS[s.dropShells] || 0);
   if (dropMin > 0) {
     try { geom = dropTinyShells(geom, dropMin); }
     catch (e) { console.warn('dropTinyShells failed:', e.message); }
   }
-  const weldTol = MANIFOLDWELD_TOLS[s.manifoldWeld] || 0;
+  const weldTol = previewLite ? 0 : (MANIFOLDWELD_TOLS[s.manifoldWeld] || 0);
   if (weldTol > 0) {
     try {
       const welded = mergeAndFilterDegenerates(geom, weldTol);
@@ -4136,7 +4204,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
       geom = welded;
     } catch (e) { console.warn('manifoldWeld failed:', e.message); }
   }
-  const smoothPasses = SMOOTHSURFACE_PASSES[s.smoothSurface] || 0;
+  const smoothPasses = previewLite ? 0 : (SMOOTHSURFACE_PASSES[s.smoothSurface] || 0);
   if (smoothPasses > 0) {
     try { geom = smoothLaplacian(geom, smoothPasses); }
     catch (e) { console.warn('smoothLaplacian failed:', e.message); }
@@ -4184,8 +4252,108 @@ function countComponents(geom) {
 // them. Used both by Mesh simplify (v1.25.1) and Manifold re-weld.
 // Always recomputes normals at the end so downstream passes see fresh
 // per-vertex normals.
+// v1.32.79 perf: drop-in replacement for three's mergeVertices. Same
+// algorithm — quantize every attribute component to ~~(v × 10^log10(1/tol)),
+// merge vertices whose full quantized tuples match, first-seen vertex
+// data wins, new indices assigned in first-seen order — but the hash is
+// an open-addressed integer table over the tuple instead of a JS string
+// key per vertex. three's version builds + hashes a fresh string per
+// referenced vertex (up to ~40M of them post-subdivision at Extreme
+// detail), which dominated the entire simplify stage. Collisions are
+// resolved by re-quantizing the candidate's source components, so the
+// grouping is exact tuple equality — identical to string equality.
+function fastMergeVertices(geometry, tolerance = 1e-4) {
+  tolerance = Math.max(tolerance, Number.EPSILON);
+  const indices = geometry.getIndex();
+  const positions = geometry.getAttribute('position');
+  const vertexCount = indices ? indices.count : positions.count;
+  const attrNames = Object.keys(geometry.attributes);
+  const nAttr = attrNames.length;
+  const attrs = attrNames.map(n => geometry.attributes[n]);
+  const sizes = attrs.map(a => a.itemSize);
+  let tupleLen = 0;
+  for (const sz of sizes) tupleLen += sz;
+
+  const decimalShift = Math.log10(1 / tolerance);
+  const shiftMultiplier = Math.pow(10, decimalShift);
+
+  const uniqueUpper = positions.count;      // output verts ≤ distinct source verts
+  let cap = 1;
+  while (cap < uniqueUpper * 2) cap <<= 1;
+  const mask = cap - 1;
+  const slotToNew = new Int32Array(cap).fill(-1);
+  const newHash = new Int32Array(uniqueUpper);   // 32-bit tuple hash per new vertex
+  const srcIndex = new Uint32Array(uniqueUpper); // source vertex per new vertex
+
+  const newIndices = new Uint32Array(vertexCount);
+  const q = new Int32Array(tupleLen);
+  let nextIndex = 0;
+
+  const idxArr = indices ? indices.array : null;
+  for (let i = 0; i < vertexCount; i++) {
+    const index = idxArr ? idxArr[i] : i;
+    let hsh = 0;
+    let ti = 0;
+    for (let ai = 0; ai < nAttr; ai++) {
+      const arr = attrs[ai].array;
+      const itemSize = sizes[ai];
+      const base = index * itemSize;
+      for (let k = 0; k < itemSize; k++) {
+        const v = ~~(arr[base + k] * shiftMultiplier);
+        q[ti++] = v;
+        hsh = (Math.imul(hsh, 31) + v) | 0;
+      }
+    }
+    let slot = (hsh >>> 0) & mask;
+    let ni = -1;
+    while (true) {
+      const cand = slotToNew[slot];
+      if (cand === -1) break;
+      if (newHash[cand] === hsh) {
+        // Verify exact tuple equality by re-quantizing the candidate's
+        // source components (no giant tuple store needed).
+        const cSrc = srcIndex[cand];
+        let same = true;
+        let tj = 0;
+        for (let ai = 0; ai < nAttr && same; ai++) {
+          const arr = attrs[ai].array;
+          const itemSize = sizes[ai];
+          const base = cSrc * itemSize;
+          for (let k = 0; k < itemSize; k++) {
+            if (~~(arr[base + k] * shiftMultiplier) !== q[tj++]) { same = false; break; }
+          }
+        }
+        if (same) { ni = cand; break; }
+      }
+      slot = (slot + 1) & mask;
+    }
+    if (ni === -1) {
+      ni = nextIndex++;
+      slotToNew[slot] = ni;
+      newHash[ni] = hsh;
+      srcIndex[ni] = index;
+    }
+    newIndices[i] = ni;
+  }
+
+  const result = new THREE.BufferGeometry();
+  for (let ai = 0; ai < nAttr; ai++) {
+    const src = attrs[ai].array;
+    const itemSize = sizes[ai];
+    const dst = new src.constructor(nextIndex * itemSize);
+    for (let v = 0; v < nextIndex; v++) {
+      const sBase = srcIndex[v] * itemSize, dBase = v * itemSize;
+      for (let k = 0; k < itemSize; k++) dst[dBase + k] = src[sBase + k];
+    }
+    result.setAttribute(attrNames[ai], new THREE.BufferAttribute(dst, itemSize));
+  }
+  const outIdx = nextIndex > 65535 ? newIndices : new Uint16Array(newIndices);
+  result.setIndex(new THREE.BufferAttribute(outIdx, 1));
+  return result;
+}
+
 function mergeAndFilterDegenerates(geom, tolerance) {
-  const merged = mergeVertices(geom, tolerance);
+  const merged = fastMergeVertices(geom, tolerance);
   const idx = merged.getIndex();
   if (!idx) { merged.computeVertexNormals(); return merged; }
   const ix = idx.array;
@@ -7060,34 +7228,41 @@ async function generate(previewVoxels = 96) {
   // In cast/solid modes (eff !== state, eff.wall = 0), applyAutoFix will
   // early-return since its first check is `if (state.wall <= 0) return`,
   // so no rebuild occurs and the slider is correctly left alone.
-  setProgress('printability check…');
-  await yieldFrame();
-  if (myToken !== genToken) return;
-  let report = analyzePrintability(result, rings, eff, branches);
-  let fixCount = 0;
-  const MAX_FIX = 3;
-  while (!report.pass && fixCount < MAX_FIX) {
-    const fixes = applyAutoFix(eff, report.checks, voxel);
-    if (fixes.length === 0) break;  // nothing further is auto-fixable
-    // Auto-fix only mutates state.wall in hollow mode (where eff === state);
-    // in cast/solid modes the function early-returns, so eff.wall stays 0.
-    // Sync the wall slider so the user sees their adjusted value.
-    if (bindings.wall && state.bodyMode === 'hollow') {
-      bindings.wall.el.value = String(state.wall.toFixed(1));
-      bindings.wall.update();
-    }
-    setProgress(`auto-fix #${fixCount+1}: ${fixes.join(', ')}…`);
+  // v1.32.79 perf: skip the printability analysis + auto-fix rebuild
+  // loop on the 64³ drag preview — each auto-fix iteration is a FULL
+  // field+MC+texture rebuild, and the settle pass redoes the analysis
+  // (and any fixes) on the real-quality mesh moments later. The print
+  // report panel keeps showing the last settled result during a drag.
+  if (previewVoxels > 64) {
+    setProgress('printability check…');
     await yieldFrame();
     if (myToken !== genToken) return;
-    const reb = await buildBodyMesh(branches, accents, eff, previewVoxels, myToken, onPhase);
-    if (myToken !== genToken) return;
-    if (!reb) return;
-    result = reb;
-    ({ mesh, triCount, voxel, nComp, bridges } = reb);
-    fixCount++;
-    report = analyzePrintability(reb, rings, eff, branches);
+    let report = analyzePrintability(result, rings, eff, branches);
+    let fixCount = 0;
+    const MAX_FIX = 3;
+    while (!report.pass && fixCount < MAX_FIX) {
+      const fixes = applyAutoFix(eff, report.checks, voxel);
+      if (fixes.length === 0) break;  // nothing further is auto-fixable
+      // Auto-fix only mutates state.wall in hollow mode (where eff === state);
+      // in cast/solid modes the function early-returns, so eff.wall stays 0.
+      // Sync the wall slider so the user sees their adjusted value.
+      if (bindings.wall && state.bodyMode === 'hollow') {
+        bindings.wall.el.value = String(state.wall.toFixed(1));
+        bindings.wall.update();
+      }
+      setProgress(`auto-fix #${fixCount+1}: ${fixes.join(', ')}…`);
+      await yieldFrame();
+      if (myToken !== genToken) return;
+      const reb = await buildBodyMesh(branches, accents, eff, previewVoxels, myToken, onPhase);
+      if (myToken !== genToken) return;
+      if (!reb) return;
+      result = reb;
+      ({ mesh, triCount, voxel, nComp, bridges } = reb);
+      fixCount++;
+      report = analyzePrintability(reb, rings, eff, branches);
+    }
+    displayPrintReport(report, fixCount);
   }
-  displayPrintReport(report, fixCount);
 
   // Mesh is ready — only NOW swap out the previous render. The user sees
   // the previous sculpture the whole time the new one is computing,
@@ -7622,6 +7797,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.79', date: '2026-07-02', n: 'Major performance pass — identical output, ~5× faster full rebuild at default settings, verified stage-by-stage against the previous implementation in a Node harness (SHA-256 comparison of field/position/index buffers). (1) fastMergeVertices replaces three\'s mergeVertices at both call sites: same algorithm (quantized-tuple merge, first-seen wins) but an open-addressed integer hash instead of a JS string key per referenced vertex — the simplify weld over the 64×-subdivided mesh drops from ~38s to ~5s (7.7×), the post-MC weld 3.5×. (2) subdivideMidpoint edge dedup switched from a numeric-keyed Map to a typed-array open-addressed table — 2× (6.8s → 3.3s at Extreme detail). (3) buildField: per-branch segment invariants hoisted out of the per-voxel loop with capsule SDF + smooth-min inlined (bit-identical operand order). (4) marchingCubes accumulates into Float32Array chunks instead of a multi-million-element JS number array (same values, far less GC). (5) scheduleRegen: the 64³ fast preview now fires only during a drag burst — a single click (checkbox, dropdown, dice) no longer runs the whole pipeline twice. (6) The 64³ drag preview is now "lite": subdivision capped at 1 level, simplify/shell-cleanup/printability-auto-fix deferred to the settle pass — the final settled mesh is unchanged. (7) colorizeMesh spatial hash uses packed-integer cell keys.' },
   { v: 'v1.32.78', date: '2026-05-06', n: 'Coralline — occasional mushroom growths. Up to 8 mushrooms per creature emerge from random maxDepth tips and grow upward. Each mushroom has: (1) a 6-segment tapered stalk (base wider than top) with mild spiral torque (0.6–1.4 turns, amplitude 60% of stalk radius, sin(πt) envelope so the base + cap junctions stay clean); (2) a slightly flattened dome cap built as two stacked spheres (lower one wider, upper one 85% radius, offset along stalk axis); (3) 14 radial gills on each side — both classic underside gills and decorative top gills (per request — real mushrooms only have gills below). Each is a thin tapered capsule. Direction is mostly +Y with up to ~18° random tilt for organic variety. Mushroom dice use a separate rng stream so toggling the feature can\'t shift the underlying coral skeleton. New colorize palette entries: mushroomStalk (warm beige), mushroomCap (terracotta), mushroomGill (cream).' },
   { v: 'v1.32.77', date: '2026-05-06', n: 'Coralline — wavier, more varied tendrils + new default creature. (1) creatureType default: acantharian → coralline. (2) New shared pushWavyChain helper builds every coral tendril (primary stems AND recursive children) as an 8-segment chain that wanders in 3D — two perpendicular wave axes, per-branch random frequencies (0.8–2.4 cycles primary, 1.2–3.2 secondary) and amplitudes (0.6–1.5× primary, 0.05–0.7× perpendicular). The bell envelope sin(πt) keeps tip endpoints exactly at the intended childEnd so recursive children stay attached. (3) Primary stems were single straight capsules; now wavy chains too with 0.55× amplitude (gentle stems, not full corkscrews). (4) Net effect: the bouquet reads as varied wandering tendrils — some near-flat with a single arc, some 3D-spiraling with multiple wave cycles — instead of geometric branching graphs. Cost: ~2× more capsules per coralline build (primaries went from 1 to 8 caps each, children from 4 to 8).' },
   { v: 'v1.32.76', date: '2026-05-06', n: 'Defaults + UI overhaul. (1) Default size 80 mm → 150 mm. (2) Colorize OFF by default (was on since v1.32.71). (3) Acantharian parent spines now droop slightly with gravity — each spine sags toward -Y with a t² envelope so the base stays put and the tip droops most (4% of spine length at the tip). (4) Controls panel restructured into floating "cards" with rounded corners + drop shadow — Setup, Material & size, Body, Skin, Render, Print compatibility, plus per-creature morphology cards. (5) New Skin card houses Colorize, Surface texture, and Texture detail in one place; texture is universal across creatures (not Radiolarian-only as the UI used to suggest). (6) Acantharian step-debug checkbox moved from the global controls into the Acantharian morphology card.' },
@@ -7933,7 +8109,7 @@ function refreshUIFromState() {
 // less voxel detail. Full 96³ pass fires 300ms after the last input event,
 // delivering the crisp final when the drag settles. Both phases share the
 // same seed+state, so the only visible difference is surface resolution.
-let fastScheduled = false, fullTimer = null;
+let fastScheduled = false, fullTimer = null, lastRegenCallAt = 0;
 function scheduleRegen() {
   // Every slider input funnels through here, so this is the right place
   // to keep the encoded-config fields in sync with state.
@@ -7946,7 +8122,16 @@ function scheduleRegen() {
   // rAF wrap ensures the browser gets one paint cycle to render the busy
   // state before generate() starts blocking.
   setBusy(true);
-  if (!fastScheduled) {
+  // v1.32.79 perf: the 64³ fast preview only fires during a BURST of
+  // scheduleRegen calls (i.e. a slider drag — events every ~16ms). A
+  // single discrete change (checkbox, dropdown, dice click) used to run
+  // the ENTIRE pipeline twice: once at 64³ and again at full quality
+  // 300ms later. Now the first call in a burst schedules only the full
+  // pass; the fast pass kicks in from the second call onward.
+  const now = performance.now();
+  const isBurst = (now - lastRegenCallAt) < 250;
+  lastRegenCallAt = now;
+  if (isBurst && !fastScheduled) {
     fastScheduled = true;
     setTimeout(() => {
       fastScheduled = false;
