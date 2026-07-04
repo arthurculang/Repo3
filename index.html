@@ -4408,7 +4408,15 @@ function fastMergeVertices(geometry, tolerance = 1e-4, positionOnly = false) {
       for (let k = 0; k < itemSize; k++) {
         const v = ~~(arr[base + k] * shiftMultiplier);
         q[ti++] = v;
-        hsh = (Math.imul(hsh, 31) + v) | 0;
+        // xor-multiply mixing (Fibonacci hashing). A plain ×31 chain
+        // over a 3-component position tuple stays below ~2^21, so all
+        // hashes land in the bottom slice of the table and probes
+        // degrade quadratically at position-only tolerance 0.25 —
+        // observed as a multi-minute hang. imul by a large odd
+        // constant avalanches into the full 32 bits. Hash choice only
+        // routes slots; grouping is decided by the exact tuple
+        // comparison below, so output is unchanged.
+        hsh = Math.imul(hsh ^ v, 0x9E3779B1) | 0;
       }
     }
     let slot = (hsh >>> 0) & mask;
