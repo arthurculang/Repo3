@@ -1033,7 +1033,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.80</span>
+        <span id="version">v1.32.81</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1100,7 +1100,7 @@ import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.80";
+const VERSION = "v1.32.81";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -4197,7 +4197,18 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   let effSubLevels = 0;
   if (s.texture === 'organic') {
     effSubLevels = TEXDETAIL_LEVELS[s.textureDetail] || 0;
-    if (previewLite) effSubLevels = Math.min(effSubLevels, 1);
+    if (previewLite) {
+      effSubLevels = Math.min(effSubLevels, 1);
+    } else if ((SIMPLIFY_TOLS[s.simplify] || 0) >= 0.25 && effSubLevels > 2) {
+      // v1.32.81: Extreme texture detail (×64 subdivision) displaces
+      // octaves at 0.14–0.33mm, but a simplify tolerance ≥ 0.25mm
+      // clusters all of that away immediately afterward — the finest
+      // level was pure compute-then-annihilate. Capping at 2 levels
+      // (×16) keeps every octave the simplify stage can preserve and
+      // cuts the subdivide + texture + weld stages ~4×. Lower simplify
+      // settings still get the full 3 levels.
+      effSubLevels = 2;
+    }
   }
   if (s.organicSupports !== 'off' || effSubLevels === 0) fastComputeNormals(geom);
 
@@ -8057,6 +8068,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.81', date: '2026-07-04', n: 'Sub-tolerance texture-detail cap (Tier 2 of the ultracode review — the one visible-output change, deliberately shipped alone so it can be eyeballed). At Extreme texture detail the mesh is subdivided ×64 so noise octaves can displace at 0.14–0.33mm feature sizes — but a Mesh-simplify tolerance ≥ 0.25mm (the Extreme default and everything above it) clusters those vertices away immediately afterward. The finest subdivision level was computed and then annihilated every rebuild. Now: when simplify tolerance ≥ 0.25mm, effective subdivision is capped at 2 levels (×16), keeping every octave the simplify stage can actually preserve. Cuts the subdivide + texture + simplify-weld stages roughly 4× — the single largest remaining time slice at default settings. Lower simplify settings (Off through Aggressive) still get the full ×64. Visual difference at the defaults is at/below the simplify tolerance, i.e. effectively imperceptible in the final mesh.' },
   { v: 'v1.32.80', date: '2026-07-04', n: 'Ultracode review round — geometry BUGFIX + second performance pass (Tier 1 of the 50-agent review; every change re-verified in the Node harness). BUGFIX: scaleStructureToSize now dedups shared Vector3s — four generator sites (Acantharian parent-spine corkscrews, recursive child spines, Coralline fern fiddleheads, Foraminiferan fuzz filaments) pushed consecutive chain capsules sharing waypoint objects, so interior waypoints were scaled k² instead of k, warping every multi-segment chain in a size-dependent way (same bug class as the v1.32.64 child-arc fix, now fixed centrally). Perf: (1) fastMergeVertices memoizes per SOURCE vertex — post-subdivision welds hashed each of ~6.7M verts ~6× through the 40M-entry index, now once (bit-identical output); (2) simplify/manifoldWeld weld on POSITION only — normals were hashed then immediately recomputed, doubling tuple work and blocking seam-vertex merges (this also makes manifoldWeld actually close seams as intended); (3) new fastComputeNormals (flat typed arrays, same algorithm) replaces three\'s Vector3-based computeVertexNormals at every multi-million-vert call site, and redundant passes were eliminated: the post-Phase-2 pass is skipped when subdivision immediately deletes it, the post-texture pass is skipped when simplify/weld/smooth recompute normals anyway; (4) buildField row-cull — skips AABB rows farther from the branch segment than a conservative influence margin (max radius ×1.15 + 2× global smin k + dilation + 2 voxels); marched surface verified identical, ~half the rows skipped; (5) findBridge brute-force O(main×stray) nearest-pair replaced with an exact uniform-grid shell search — kills multi-second stalls on connectivity-repair seeds; (6) analyzePrintability no longer re-runs the full sealed-cavity BFS for hollow-fill (buildField already ran it with fill=true; result is 0 by construction); (7) detectSealedCavities BFS closures inlined (millions of arrow-fn allocations removed); (8) findOuterHullVertices hypot→sqrt; (9) subdivideMidpoint final level copies to an exact-size buffer instead of retaining the ~25%-oversized allocation.' },
   { v: 'v1.32.79', date: '2026-07-02', n: 'Major performance pass — identical output, ~5× faster full rebuild at default settings, verified stage-by-stage against the previous implementation in a Node harness (SHA-256 comparison of field/position/index buffers). (1) fastMergeVertices replaces three\'s mergeVertices at both call sites: same algorithm (quantized-tuple merge, first-seen wins) but an open-addressed integer hash instead of a JS string key per referenced vertex — the simplify weld over the 64×-subdivided mesh drops from ~38s to ~5s (7.7×), the post-MC weld 3.5×. (2) subdivideMidpoint edge dedup switched from a numeric-keyed Map to a typed-array open-addressed table — 2× (6.8s → 3.3s at Extreme detail). (3) buildField: per-branch segment invariants hoisted out of the per-voxel loop with capsule SDF + smooth-min inlined (bit-identical operand order). (4) marchingCubes accumulates into Float32Array chunks instead of a multi-million-element JS number array (same values, far less GC). (5) scheduleRegen: the 64³ fast preview now fires only during a drag burst — a single click (checkbox, dropdown, dice) no longer runs the whole pipeline twice. (6) The 64³ drag preview is now "lite": subdivision capped at 1 level, simplify/shell-cleanup/printability-auto-fix deferred to the settle pass — the final settled mesh is unchanged. (7) colorizeMesh spatial hash uses packed-integer cell keys.' },
   { v: 'v1.32.78', date: '2026-05-06', n: 'Coralline — occasional mushroom growths. Up to 8 mushrooms per creature emerge from random maxDepth tips and grow upward. Each mushroom has: (1) a 6-segment tapered stalk (base wider than top) with mild spiral torque (0.6–1.4 turns, amplitude 60% of stalk radius, sin(πt) envelope so the base + cap junctions stay clean); (2) a slightly flattened dome cap built as two stacked spheres (lower one wider, upper one 85% radius, offset along stalk axis); (3) 14 radial gills on each side — both classic underside gills and decorative top gills (per request — real mushrooms only have gills below). Each is a thin tapered capsule. Direction is mostly +Y with up to ~18° random tilt for organic variety. Mushroom dice use a separate rng stream so toggling the feature can\'t shift the underlying coral skeleton. New colorize palette entries: mushroomStalk (warm beige), mushroomCap (terracotta), mushroomGill (cream).' },
