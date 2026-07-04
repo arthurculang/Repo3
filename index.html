@@ -1033,7 +1033,7 @@
     <div id="panelFooter">
       <!-- Hardcoded version is rendered immediately on page load — must match VERSION const in the module script. -->
       <span>
-        <span id="version">v1.32.79</span>
+        <span id="version">v1.32.80</span>
         <button id="versionLogLink" type="button" title="Show version log">log</button>
       </span>
       <span id="costReadout" title="Estimated mass and print cost for the selected material">—</span>
@@ -1100,7 +1100,7 @@ import { STLExporter } from 'three/addons/exporters/STLExporter.js';
 // Keep this in sync with the hardcoded version string in #version
 // in the panel-footer markup below — the HTML uses it before the ES
 // module finishes loading so the footer never shows a stale value.
-const VERSION = "v1.32.79";
+const VERSION = "v1.32.80";
 document.getElementById('version').textContent = VERSION;
 
 // ---------- State ----------
@@ -3248,6 +3248,24 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
   const minR = voxel * 0.8;
   const kBase = s.smooth;
 
+  // v1.32.80 perf: per-row cull margin. A capsule is diagonal in its
+  // AABB, so ~half the AABB's x-rows never come within the branch's
+  // influence radius — their voxels only ever receive far-field values
+  // that can't affect any marching-cubes sign change or crossing-cell
+  // interpolation. Margin is conservative: max wobble-inflated radius
+  // + 2× the LARGEST smin blend radius of ANY branch (a later, softer
+  // branch can blend against this one's far field) + wall dilation +
+  // 2 voxels of slack. The marched surface is unchanged (verified in
+  // the Node harness: identical MC output); only far-field voxel
+  // VALUES differ, at magnitudes no downstream pass reads.
+  const cullDilate = WALLDILATE_AMOUNTS[s.wallDilate] || 0;
+  let kMaxGlobal = 0;
+  for (const b of branches) {
+    const rM = Math.max(Math.max(minR, b.r0), Math.max(minR, b.r1));
+    const kb = kBase * rM * (0.2 + 0.7 * (b.depth / Math.max(1, s.complexity)));
+    if (kb > kMaxGlobal) kMaxGlobal = kb;
+  }
+
   for (const b of branches) {
     const r0 = Math.max(minR, b.r0);
     const r1 = Math.max(minR, b.r1);
@@ -3281,6 +3299,16 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
     const bw23 = bw * 2.3;
     const kIsFlat = k <= 1e-6;
 
+    // Row-cull setup: distance from the x-aligned row segment
+    // [rowX0..rowX1]×{py,pz} to the branch segment A→B, computed once
+    // per row (~40 flops) instead of full SDF work per voxel.
+    const rowX0 = ox + xmin * voxel;
+    const rowLx = (xmax - xmin) * voxel;
+    const rowA = rowLx * rowLx;              // d1·d1 for the row segment
+    const rowB = rowLx * bax;                // d1·d2
+    const cullPad = rMax * 1.15 + kMaxGlobal * 2 + cullDilate + voxel * 2;
+    const cullPadSq = cullPad * cullPad;
+
     for (let zi = zmin; zi <= zmax; zi++) {
       const pz = oz + zi * voxel;
       const paz = pz - az;
@@ -3288,6 +3316,37 @@ function buildField(branches, accents, s, targetVoxels = 96, postCarveBranches =
         const py = oy + yi * voxel;
         const pay = py - ay;
         const rowBase = zi * stride + yi * nx;
+        // Segment-segment closest distance (Ericson), row vs branch.
+        {
+          const rpx = rowX0 - ax, rpy = py - ay, rpz = pz - az;
+          const cDot = rowLx * rpx;                       // d1·r
+          const fDot = bax * rpx + bay * rpy + baz * rpz; // d2·r
+          let ss = 0, tt = 0;
+          if (rowA > 1e-12) {
+            const denom = rowA * l2 - rowB * rowB;
+            if (denom > 1e-12) {
+              ss = (rowB * fDot - cDot * l2) / denom;
+              if (ss < 0) ss = 0; else if (ss > 1) ss = 1;
+            }
+            tt = (rowB * ss + fDot) / l2;
+            if (tt < 0) {
+              tt = 0;
+              ss = -cDot / rowA;
+              if (ss < 0) ss = 0; else if (ss > 1) ss = 1;
+            } else if (tt > 1) {
+              tt = 1;
+              ss = (rowB - cDot) / rowA;
+              if (ss < 0) ss = 0; else if (ss > 1) ss = 1;
+            }
+          } else {
+            tt = fDot / l2;
+            if (tt < 0) tt = 0; else if (tt > 1) tt = 1;
+          }
+          const gx = (rowX0 + rowLx * ss) - (ax + bax * tt);
+          const gy = py - (ay + bay * tt);
+          const gz = pz - (az + baz * tt);
+          if (gx * gx + gy * gy + gz * gz > cullPadSq) continue;
+        }
         for (let xi = xmin; xi <= xmax; xi++) {
           const px = ox + xi * voxel;
           const pax = px - ax;
@@ -3631,12 +3690,19 @@ function subdivideMidpoint(geom, levels) {
 
     // Trim the position buffer to the actually-allocated vertex count
     // (estimate above was upper-bound; real count is ~Vold + edges).
-    const finalPositions = newPositions.subarray(0, nextVert * 3);
+    // v1.32.80: on the FINAL level, copy to an exact-size buffer —
+    // subarray would keep the ~25%-oversized upper-bound allocation
+    // alive for the lifetime of the displayed mesh (~20-30MB at
+    // Extreme detail). Intermediate levels keep the cheap subarray
+    // since their buffers are replaced (and freed) next level anyway.
+    const finalPositions = (lvl === levels - 1)
+      ? newPositions.slice(0, nextVert * 3)
+      : newPositions.subarray(0, nextVert * 3);
     geom.setAttribute('position', new THREE.BufferAttribute(finalPositions, 3));
     geom.setIndex(new THREE.BufferAttribute(newIndices, 1));
     geom.deleteAttribute('normal');  // stale; texture pass will recompute
   }
-  geom.computeVertexNormals();
+  fastComputeNormals(geom);
 }
 
 // Per-region surface displacement (v1.22.0 rewrite — moved from SDF
@@ -3697,7 +3763,10 @@ function findOuterHullVertices(geom) {
     const dx = positions[i*3]   - cx;
     const dy = positions[i*3+1] - cy;
     const dz = positions[i*3+2] - cz;
-    const r = Math.hypot(dx, dy, dz);
+    // v1.32.80 perf: sqrt instead of Math.hypot — hypot's overflow-safe
+    // path is ~5-10× slower and irrelevant at mm scales. Differs from
+    // hypot by ≤1ulp, far inside the 0.78 outer-fraction threshold.
+    const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
     radii[i] = r;
     if (r < 1e-6) { bins[i] = -1; continue; }
     const theta = Math.atan2(dy, dx) + Math.PI;             // [0, 2π]
@@ -3721,7 +3790,7 @@ function findOuterHullVertices(geom) {
   return isOuter;
 }
 
-function applyVertexTexture(geom, s) {
+function applyVertexTexture(geom, s, skipFinalNormals = false) {
   if (s.texture !== 'organic') return;
   const posAttr = geom.getAttribute('position');
   const nrmAttr = geom.getAttribute('normal');
@@ -3836,7 +3905,11 @@ function applyVertexTexture(geom, s) {
   // Recompute normals so lighting tracks the new surface; without this
   // the shaded preview keeps the old smooth normals and the texture
   // reads as flat-shaded faceting rather than organic relief.
-  geom.computeVertexNormals();
+  // v1.32.80: skipped when the caller knows a downstream pass
+  // (simplify / manifold weld / surface smooth) recomputes normals
+  // anyway — at default settings this pass ran over ~6.7M vertices
+  // and its result was consumed by nothing.
+  if (!skipFinalNormals) fastComputeNormals(geom);
 }
 
 // Component centroids + sizes (Chunk B / v1.12.0). Averages vertex
@@ -3986,7 +4059,7 @@ function interiorBridgeSegments(start, end, s, rng, voxel) {
 // clone so lighting is correct.
 function makePreviewMesh(geom) {
   const c = geom.clone();
-  c.computeVertexNormals();
+  fastComputeNormals(c);
   return new THREE.Mesh(c, material);
 }
 
@@ -4114,7 +4187,19 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   if (comp.nComp > 1) {
     console.warn(`buildBodyMesh: still ${comp.nComp} components after Phase 1 + Phase 2 (seed=${s.seed})`);
   }
-  geom.computeVertexNormals();
+  // v1.32.80 perf: this normal pass used to run unconditionally, but
+  // when subdivision follows (the default: organic texture at any
+  // detail level > off) subdivideMidpoint deletes and recomputes
+  // normals itself — the pass was pure waste. It is still needed by
+  // Phase 3 overhang detection (organic supports) and by the texture/
+  // display path when no subdivision runs.
+  const previewLite = previewVoxels <= 64;
+  let effSubLevels = 0;
+  if (s.texture === 'organic') {
+    effSubLevels = TEXDETAIL_LEVELS[s.textureDetail] || 0;
+    if (previewLite) effSubLevels = Math.min(effSubLevels, 1);
+  }
+  if (s.organicSupports !== 'off' || effSubLevels === 0) fastComputeNormals(geom);
 
   // Phase 3 (chunk 3, v1.28.0): organic supports for casting/printing.
   // Detects overhang vertices on the Phase-2-repaired mesh, clusters
@@ -4137,7 +4222,7 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
         geom.dispose();
         rebuild();
         if (!geom) return { mesh: null, triCount: 0, voxel: f.voxel, nComp: 0, bridges: nRepairs, fieldInfo: f };
-        geom.computeVertexNormals();
+        fastComputeNormals(geom);
         if (onPhase) await onPhase(
           `Phase 3 complete: ${supportPaths.length} support tendrils added`,
           makePreviewMesh(geom)
@@ -4150,24 +4235,28 @@ async function buildBodyMesh(branches, accents, s, previewVoxels = 96, parentTok
   // full-quality settle pass replaces it moments later. Skipping the
   // export-prep stages (deep subdivision, simplify, shell cleanup)
   // during that transient makes dragging responsive without changing
-  // the final settled mesh in any way.
-  const previewLite = previewVoxels <= 64;
+  // the final settled mesh in any way. (previewLite + effSubLevels are
+  // now computed further up, before the post-Phase-2 normal pass.)
 
   // Subdivide the mesh BEFORE the texture pass (v1.23.0). Decouples
   // texture-mesh density from MC-mesh density, so the user can crank
   // texture detail without remeshing morphology. Skip entirely for
   // smooth texture — subdivision without displacement just bloats the
   // STL with no visual gain.
-  if (s.texture === 'organic') {
-    let subLevels = TEXDETAIL_LEVELS[s.textureDetail] || 0;
-    if (previewLite) subLevels = Math.min(subLevels, 1);
-    if (subLevels > 0) subdivideMidpoint(geom, subLevels);
-  }
+  if (effSubLevels > 0) subdivideMidpoint(geom, effSubLevels);
   // Surface texture is applied in mesh domain (v1.22.0+) — operates on
   // vertex positions along their existing normals so it can't fill
   // negative-space tunnels the way the v1.21.x SDF-domain pass did.
   // No-ops for s.texture === 'smooth'.
-  applyVertexTexture(geom, s);
+  // v1.32.80: the texture pass's final normal recompute (~6.7M verts)
+  // is skipped when a downstream pass (simplify / manifold weld /
+  // surface smooth) recomputes normals anyway. In previewLite those
+  // passes are skipped, so the texture pass keeps its recompute.
+  const texNormalsRedundant = !previewLite && (
+    (SIMPLIFY_TOLS[s.simplify] || 0) > 0 ||
+    (MANIFOLDWELD_TOLS[s.manifoldWeld] || 0) > 0 ||
+    (SMOOTHSURFACE_PASSES[s.smoothSurface] || 0) > 0);
+  applyVertexTexture(geom, s, texNormalsRedundant);
 
   // Mesh simplify (v1.25.1 — replaces v1.25.0's SimplifyModifier which
   // OOM-crashed on 7M+ tri inputs). Vertex-clustering decimation via
@@ -4262,12 +4351,18 @@ function countComponents(geom) {
 // detail), which dominated the entire simplify stage. Collisions are
 // resolved by re-quantizing the candidate's source components, so the
 // grouping is exact tuple equality — identical to string equality.
-function fastMergeVertices(geometry, tolerance = 1e-4) {
+function fastMergeVertices(geometry, tolerance = 1e-4, positionOnly = false) {
   tolerance = Math.max(tolerance, Number.EPSILON);
   const indices = geometry.getIndex();
   const positions = geometry.getAttribute('position');
   const vertexCount = indices ? indices.count : positions.count;
-  const attrNames = Object.keys(geometry.attributes);
+  // v1.32.80: positionOnly welds on position alone — used by the
+  // simplify/manifoldWeld paths where normals are recomputed right
+  // after welding anyway, so hashing them (a) doubled the tuple work
+  // and (b) prevented near-duplicate vertices with seam normals from
+  // ever merging, which is the whole point of manifoldWeld. Non-
+  // position attributes are dropped (the caller recomputes normals).
+  const attrNames = positionOnly ? ['position'] : Object.keys(geometry.attributes);
   const nAttr = attrNames.length;
   const attrs = attrNames.map(n => geometry.attributes[n]);
   const sizes = attrs.map(a => a.itemSize);
@@ -4285,6 +4380,14 @@ function fastMergeVertices(geometry, tolerance = 1e-4) {
   const newHash = new Int32Array(uniqueUpper);   // 32-bit tuple hash per new vertex
   const srcIndex = new Uint32Array(uniqueUpper); // source vertex per new vertex
 
+  // v1.32.80 perf: memoize per SOURCE vertex. A post-subdivision mesh
+  // references each of its ~6.7M vertices ~6 times through the ~40M-
+  // entry index; hashing per REFERENCE redid the same quantize+probe
+  // sixfold. First reference does the full work; repeats are a single
+  // typed-array load. First-seen ordering is unchanged, so output is
+  // bit-identical to the per-reference version.
+  const srcToNew = indices ? new Int32Array(positions.count).fill(-1) : null;
+
   const newIndices = new Uint32Array(vertexCount);
   const q = new Int32Array(tupleLen);
   let nextIndex = 0;
@@ -4292,6 +4395,10 @@ function fastMergeVertices(geometry, tolerance = 1e-4) {
   const idxArr = indices ? indices.array : null;
   for (let i = 0; i < vertexCount; i++) {
     const index = idxArr ? idxArr[i] : i;
+    if (srcToNew !== null) {
+      const memo = srcToNew[index];
+      if (memo !== -1) { newIndices[i] = memo; continue; }
+    }
     let hsh = 0;
     let ti = 0;
     for (let ai = 0; ai < nAttr; ai++) {
@@ -4301,7 +4408,15 @@ function fastMergeVertices(geometry, tolerance = 1e-4) {
       for (let k = 0; k < itemSize; k++) {
         const v = ~~(arr[base + k] * shiftMultiplier);
         q[ti++] = v;
-        hsh = (Math.imul(hsh, 31) + v) | 0;
+        // xor-multiply mixing (Fibonacci hashing). A plain ×31 chain
+        // over a 3-component position tuple stays below ~2^21, so all
+        // hashes land in the bottom slice of the table and probes
+        // degrade quadratically at position-only tolerance 0.25 —
+        // observed as a multi-minute hang. imul by a large odd
+        // constant avalanches into the full 32 bits. Hash choice only
+        // routes slots; grouping is decided by the exact tuple
+        // comparison below, so output is unchanged.
+        hsh = Math.imul(hsh ^ v, 0x9E3779B1) | 0;
       }
     }
     let slot = (hsh >>> 0) & mask;
@@ -4333,6 +4448,7 @@ function fastMergeVertices(geometry, tolerance = 1e-4) {
       newHash[ni] = hsh;
       srcIndex[ni] = index;
     }
+    if (srcToNew !== null) srcToNew[index] = ni;
     newIndices[i] = ni;
   }
 
@@ -4352,10 +4468,67 @@ function fastMergeVertices(geometry, tolerance = 1e-4) {
   return result;
 }
 
+// v1.32.80 perf: flat typed-array vertex-normal computation — same
+// algorithm as three's BufferGeometry.computeVertexNormals (accumulate
+// per-triangle cross products into the f32 normal attribute, then
+// normalize), but without a Vector3 method call per triangle corner.
+// 2-4× faster at the multi-million-vertex call sites.
+function fastComputeNormals(geom) {
+  const posAttr = geom.getAttribute('position');
+  if (!posAttr) return;
+  const p = posAttr.array;
+  const V = posAttr.count;
+  const idx = geom.getIndex();
+  let nrmAttr = geom.getAttribute('normal');
+  let n;
+  if (nrmAttr && nrmAttr.array.length === V * 3) {
+    n = nrmAttr.array;
+    n.fill(0);
+  } else {
+    n = new Float32Array(V * 3);
+    nrmAttr = new THREE.BufferAttribute(n, 3);
+    geom.setAttribute('normal', nrmAttr);
+  }
+  if (idx) {
+    const ix = idx.array;
+    for (let t = 0; t < ix.length; t += 3) {
+      const a3 = ix[t] * 3, b3 = ix[t + 1] * 3, c3 = ix[t + 2] * 3;
+      const ax = p[a3], ay = p[a3 + 1], az = p[a3 + 2];
+      const cbx = p[c3] - p[b3], cby = p[c3 + 1] - p[b3 + 1], cbz = p[c3 + 2] - p[b3 + 2];
+      const abx = ax - p[b3], aby = ay - p[b3 + 1], abz = az - p[b3 + 2];
+      const nx = cby * abz - cbz * aby;
+      const ny = cbz * abx - cbx * abz;
+      const nz = cbx * aby - cby * abx;
+      n[a3] += nx; n[a3 + 1] += ny; n[a3 + 2] += nz;
+      n[b3] += nx; n[b3 + 1] += ny; n[b3 + 2] += nz;
+      n[c3] += nx; n[c3 + 1] += ny; n[c3 + 2] += nz;
+    }
+  } else {
+    for (let v3 = 0; v3 < V * 3; v3 += 9) {
+      const cbx = p[v3 + 6] - p[v3 + 3], cby = p[v3 + 7] - p[v3 + 4], cbz = p[v3 + 8] - p[v3 + 5];
+      const abx = p[v3] - p[v3 + 3], aby = p[v3 + 1] - p[v3 + 4], abz = p[v3 + 2] - p[v3 + 5];
+      const nx = cby * abz - cbz * aby;
+      const ny = cbz * abx - cbx * abz;
+      const nz = cbx * aby - cby * abx;
+      n[v3] = nx; n[v3 + 1] = ny; n[v3 + 2] = nz;
+      n[v3 + 3] = nx; n[v3 + 4] = ny; n[v3 + 5] = nz;
+      n[v3 + 6] = nx; n[v3 + 7] = ny; n[v3 + 8] = nz;
+    }
+  }
+  for (let i = 0; i < n.length; i += 3) {
+    const x = n[i], y = n[i + 1], z = n[i + 2];
+    const l = Math.sqrt(x * x + y * y + z * z);
+    if (l > 0) { n[i] = x / l; n[i + 1] = y / l; n[i + 2] = z / l; }
+  }
+  nrmAttr.needsUpdate = true;
+}
+
 function mergeAndFilterDegenerates(geom, tolerance) {
-  const merged = fastMergeVertices(geom, tolerance);
+  // v1.32.80: weld on position only (normals are recomputed below, so
+  // hashing them was pure overhead and blocked seam-vertex merging).
+  const merged = fastMergeVertices(geom, tolerance, /* positionOnly */ true);
   const idx = merged.getIndex();
-  if (!idx) { merged.computeVertexNormals(); return merged; }
+  if (!idx) { fastComputeNormals(merged); return merged; }
   const ix = idx.array;
   let validTris = 0;
   for (let i = 0; i < ix.length; i += 3) {
@@ -4374,7 +4547,7 @@ function mergeAndFilterDegenerates(geom, tolerance) {
     }
     merged.setIndex(new THREE.BufferAttribute(filtered, 1));
   }
-  merged.computeVertexNormals();
+  fastComputeNormals(merged);
   return merged;
 }
 
@@ -4423,7 +4596,7 @@ function dropTinyShells(geom, minTris) {
     }
   }
   geom.setIndex(new THREE.BufferAttribute(filtered, 1));
-  geom.computeVertexNormals();
+  fastComputeNormals(geom);
   return geom;
 }
 
@@ -4493,7 +4666,7 @@ function smoothLaplacian(geom, passes) {
   }
   if (cur !== positions) positions.set(cur);
   posAttr.needsUpdate = true;
-  geom.computeVertexNormals();
+  fastComputeNormals(geom);
   return geom;
 }
 
@@ -4509,18 +4682,85 @@ function findBridge(geom, vertComp, nComp) {
   let mainComp = 0;
   for (let i = 1; i < nComp; i++) if (buckets[i].length > buckets[mainComp].length) mainComp = i;
   const mainVerts = buckets[mainComp];
+  if (mainVerts.length === 0) return null;
+
+  // v1.32.80 perf: the old implementation was a brute-force
+  // O(mainVerts × strayVerts) scan — multi-second stalls whenever two
+  // large components disconnected. Replaced with an exact uniform-grid
+  // nearest-pair search: hash main-component vertices into cells, then
+  // for each stray vertex expand cell shells outward until the current
+  // best distance provably can't be beaten. Same minimum-distance pair
+  // (ties at exact float equality may pick a different but equally
+  // close pair).
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < mainVerts.length; i++) {
+    const v3 = mainVerts[i] * 3;
+    const x = pos[v3], y = pos[v3 + 1], z = pos[v3 + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const spanMax = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 1e-3);
+  const cell = Math.max(spanMax / 48, 1e-3);
+  const gx = Math.max(1, Math.ceil((maxX - minX) / cell) + 1);
+  const gy = Math.max(1, Math.ceil((maxY - minY) / cell) + 1);
+  const gz = Math.max(1, Math.ceil((maxZ - minZ) / cell) + 1);
+  const cellOf = (x, y, z) => {
+    let cx = Math.floor((x - minX) / cell); if (cx < 0) cx = 0; else if (cx >= gx) cx = gx - 1;
+    let cy = Math.floor((y - minY) / cell); if (cy < 0) cy = 0; else if (cy >= gy) cy = gy - 1;
+    let cz = Math.floor((z - minZ) / cell); if (cz < 0) cz = 0; else if (cz >= gz) cz = gz - 1;
+    return { cx, cy, cz };
+  };
+  const grid = new Map();  // packed cell -> array of main vertex indices
+  const pack = (cx, cy, cz) => cx + gx * (cy + gy * cz);
+  for (let i = 0; i < mainVerts.length; i++) {
+    const a = mainVerts[i];
+    const v3 = a * 3;
+    const { cx, cy, cz } = cellOf(pos[v3], pos[v3 + 1], pos[v3 + 2]);
+    const key = pack(cx, cy, cz);
+    let arr = grid.get(key);
+    if (!arr) { arr = []; grid.set(key, arr); }
+    arr.push(a);
+  }
+
   let best = Infinity, bestA = -1, bestB = -1;
+  const maxRing = Math.max(gx, gy, gz);
   for (let c = 0; c < nComp; c++) {
     if (c === mainComp) continue;
     const other = buckets[c];
-    for (let i = 0; i < mainVerts.length; i++) {
-      const a = mainVerts[i];
-      const ax = pos[a*3], ay = pos[a*3+1], az = pos[a*3+2];
-      for (let j = 0; j < other.length; j++) {
-        const b = other[j];
-        const dx = pos[b*3] - ax, dy = pos[b*3+1] - ay, dz = pos[b*3+2] - az;
-        const d2 = dx*dx + dy*dy + dz*dz;
-        if (d2 < best) { best = d2; bestA = a; bestB = b; }
+    for (let j = 0; j < other.length; j++) {
+      const b = other[j];
+      const b3 = b * 3;
+      const bxp = pos[b3], byp = pos[b3 + 1], bzp = pos[b3 + 2];
+      const { cx, cy, cz } = cellOf(bxp, byp, bzp);
+      for (let ring = 0; ring <= maxRing; ring++) {
+        // Any cell in this ring is at least (ring-1)*cell away; once
+        // that bound exceeds the best distance found, stop expanding.
+        if (ring > 0 && best < Infinity && (ring - 1) * cell > Math.sqrt(best)) break;
+        const x0 = Math.max(0, cx - ring), x1 = Math.min(gx - 1, cx + ring);
+        const y0 = Math.max(0, cy - ring), y1 = Math.min(gy - 1, cy + ring);
+        const z0 = Math.max(0, cz - ring), z1 = Math.min(gz - 1, cz + ring);
+        for (let zc = z0; zc <= z1; zc++) {
+          for (let yc = y0; yc <= y1; yc++) {
+            for (let xc = x0; xc <= x1; xc++) {
+              // Shell only — interior cells were scanned by smaller rings.
+              if (ring > 0 &&
+                  xc !== x0 && xc !== x1 &&
+                  yc !== y0 && yc !== y1 &&
+                  zc !== z0 && zc !== z1) continue;
+              const arr = grid.get(pack(xc, yc, zc));
+              if (!arr) continue;
+              for (let m = 0; m < arr.length; m++) {
+                const a = arr[m];
+                const a3 = a * 3;
+                const dx = pos[a3] - bxp, dy = pos[a3 + 1] - byp, dz = pos[a3 + 2] - bzp;
+                const d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 < best) { best = d2; bestA = a; bestB = b; }
+              }
+            }
+          }
+        }
+        if (ring === maxRing) break;
       }
     }
   }
@@ -6686,22 +6926,24 @@ function detectSealedCavities(field, nx, ny, nz, voxel, fill = false) {
   }
 
   // BFS through empty-space connectivity (6-neighbour).
+  // v1.32.80 perf: neighbor checks inlined — the old per-dequeue
+  // closure allocated millions of arrow functions across the flood
+  // (this BFS visits nearly every empty voxel), and its n<0/n>=total
+  // bounds test was redundant (the x/y/z guards already ensure
+  // validity).
   while (qHead < qTail) {
     const idx = queue[qHead++];
     const z = (idx / stride) | 0;
     const rem = idx - z * stride;
     const y = (rem / nx) | 0;
     const x = rem - y * nx;
-    const tryNb = (n) => {
-      if (n < 0 || n >= total || reachable[n]) return;
-      if (field[n] > 0) { reachable[n] = 1; queue[qTail++] = n; }
-    };
-    if (x > 0)      tryNb(idx - 1);
-    if (x < nx - 1) tryNb(idx + 1);
-    if (y > 0)      tryNb(idx - nx);
-    if (y < ny - 1) tryNb(idx + nx);
-    if (z > 0)      tryNb(idx - stride);
-    if (z < nz - 1) tryNb(idx + stride);
+    let n;
+    if (x > 0)      { n = idx - 1;      if (!reachable[n] && field[n] > 0) { reachable[n] = 1; queue[qTail++] = n; } }
+    if (x < nx - 1) { n = idx + 1;      if (!reachable[n] && field[n] > 0) { reachable[n] = 1; queue[qTail++] = n; } }
+    if (y > 0)      { n = idx - nx;     if (!reachable[n] && field[n] > 0) { reachable[n] = 1; queue[qTail++] = n; } }
+    if (y < ny - 1) { n = idx + nx;     if (!reachable[n] && field[n] > 0) { reachable[n] = 1; queue[qTail++] = n; } }
+    if (z > 0)      { n = idx - stride; if (!reachable[n] && field[n] > 0) { reachable[n] = 1; queue[qTail++] = n; } }
+    if (z < nz - 1) { n = idx + stride; if (!reachable[n] && field[n] > 0) { reachable[n] = 1; queue[qTail++] = n; } }
   }
 
   // Pass 2: count connected components among the SEALED voxels and
@@ -6722,16 +6964,13 @@ function detectSealedCavities(field, nx, ny, nz, voxel, fill = false) {
       const rem = idx - z * stride;
       const y = (rem / nx) | 0;
       const x = rem - y * nx;
-      const tryNb2 = (n) => {
-        if (n < 0 || n >= total || reachable[n] || compId[n]) return;
-        if (field[n] > 0) { compId[n] = nCavities; sealedVoxels++; queue[qTail++] = n; }
-      };
-      if (x > 0)      tryNb2(idx - 1);
-      if (x < nx - 1) tryNb2(idx + 1);
-      if (y > 0)      tryNb2(idx - nx);
-      if (y < ny - 1) tryNb2(idx + nx);
-      if (z > 0)      tryNb2(idx - stride);
-      if (z < nz - 1) tryNb2(idx + stride);
+      let n;
+      if (x > 0)      { n = idx - 1;      if (!reachable[n] && !compId[n] && field[n] > 0) { compId[n] = nCavities; sealedVoxels++; queue[qTail++] = n; } }
+      if (x < nx - 1) { n = idx + 1;      if (!reachable[n] && !compId[n] && field[n] > 0) { compId[n] = nCavities; sealedVoxels++; queue[qTail++] = n; } }
+      if (y > 0)      { n = idx - nx;     if (!reachable[n] && !compId[n] && field[n] > 0) { compId[n] = nCavities; sealedVoxels++; queue[qTail++] = n; } }
+      if (y < ny - 1) { n = idx + nx;     if (!reachable[n] && !compId[n] && field[n] > 0) { compId[n] = nCavities; sealedVoxels++; queue[qTail++] = n; } }
+      if (z > 0)      { n = idx - stride; if (!reachable[n] && !compId[n] && field[n] > 0) { compId[n] = nCavities; sealedVoxels++; queue[qTail++] = n; } }
+      if (z < nz - 1) { n = idx + stride; if (!reachable[n] && !compId[n] && field[n] > 0) { compId[n] = nCavities; sealedVoxels++; queue[qTail++] = n; } }
     }
   }
 
@@ -6867,7 +7106,15 @@ function analyzePrintability(buildResult, rings, s, branches) {
   // the fill happened in buildField; if it doesn't that's a bug.
   if ((s.bodyMode === 'hollow' || s.bodyMode === 'hollow-fill') && buildResult.fieldInfo) {
     const f = buildResult.fieldInfo;
-    const cavities = detectSealedCavities(f.field, f.nx, f.ny, f.nz, f.voxel);
+    // v1.32.80 perf: in hollow-fill mode buildField ALREADY ran the
+    // full sealed-cavity BFS and filled every pocket (fill=true at the
+    // buildField call site), so re-scanning the same field here always
+    // reports 0 — it was a duplicate full-grid two-pass BFS (~0.3-0.5s
+    // at Ultra) per generate. Report the known result directly. The
+    // live scan is kept for plain 'hollow' where nothing was filled.
+    const cavities = s.bodyMode === 'hollow-fill'
+      ? { nCavities: 0, sealedVoxels: 0, volumeMM3: 0 }
+      : detectSealedCavities(f.field, f.nx, f.ny, f.nz, f.voxel);
     const isLostWax = !!mat.lostWax;
     let label;
     if (cavities.nCavities === 0) {
@@ -7075,14 +7322,27 @@ function scaleStructureToSize(branches, accents, targetMax) {
   const cur = Math.max(size.x, size.y, size.z);
   if (cur < 1e-3) return 1;
   const k = targetMax / cur;
+  // v1.32.80 BUGFIX: dedup shared Vector3s. Several generators push
+  // consecutive chain capsules where branches[i].end and
+  // branches[i+1].start are the SAME Vector3 object (Acantharian
+  // parent-spine corkscrews, recursive child spines, Coralline fern
+  // fiddleheads, Foraminiferan fuzz filaments). Scaling per-branch
+  // multiplied those shared points TWICE (k² instead of k), warping
+  // interior waypoints of every multi-segment chain in a
+  // size-dependent way — the same bug class fixed for child arcs in
+  // v1.32.64, now fixed centrally for all current and future sites.
+  const scaled = new Set();
+  const scaleOnce = (v) => {
+    if (!scaled.has(v)) { v.multiplyScalar(k); scaled.add(v); }
+  };
   for (const b of branches) {
-    b.start.multiplyScalar(k);
-    b.end.multiplyScalar(k);
+    scaleOnce(b.start);
+    scaleOnce(b.end);
     b.r0 *= k;
     b.r1 *= k;
   }
   for (const a of accents) {
-    a.pos.multiplyScalar(k);
+    scaleOnce(a.pos);
     a.size *= k;
   }
   return k;
@@ -7797,6 +8057,7 @@ function updateQualityLabels() {
 // at top. Each note is one short line — the full commit body lives in
 // git, this is just the user-visible changelog.
 const VERSION_LOG = [
+  { v: 'v1.32.80', date: '2026-07-04', n: 'Ultracode review round — geometry BUGFIX + second performance pass (Tier 1 of the 50-agent review; every change re-verified in the Node harness). BUGFIX: scaleStructureToSize now dedups shared Vector3s — four generator sites (Acantharian parent-spine corkscrews, recursive child spines, Coralline fern fiddleheads, Foraminiferan fuzz filaments) pushed consecutive chain capsules sharing waypoint objects, so interior waypoints were scaled k² instead of k, warping every multi-segment chain in a size-dependent way (same bug class as the v1.32.64 child-arc fix, now fixed centrally). Perf: (1) fastMergeVertices memoizes per SOURCE vertex — post-subdivision welds hashed each of ~6.7M verts ~6× through the 40M-entry index, now once (bit-identical output); (2) simplify/manifoldWeld weld on POSITION only — normals were hashed then immediately recomputed, doubling tuple work and blocking seam-vertex merges (this also makes manifoldWeld actually close seams as intended); (3) new fastComputeNormals (flat typed arrays, same algorithm) replaces three\'s Vector3-based computeVertexNormals at every multi-million-vert call site, and redundant passes were eliminated: the post-Phase-2 pass is skipped when subdivision immediately deletes it, the post-texture pass is skipped when simplify/weld/smooth recompute normals anyway; (4) buildField row-cull — skips AABB rows farther from the branch segment than a conservative influence margin (max radius ×1.15 + 2× global smin k + dilation + 2 voxels); marched surface verified identical, ~half the rows skipped; (5) findBridge brute-force O(main×stray) nearest-pair replaced with an exact uniform-grid shell search — kills multi-second stalls on connectivity-repair seeds; (6) analyzePrintability no longer re-runs the full sealed-cavity BFS for hollow-fill (buildField already ran it with fill=true; result is 0 by construction); (7) detectSealedCavities BFS closures inlined (millions of arrow-fn allocations removed); (8) findOuterHullVertices hypot→sqrt; (9) subdivideMidpoint final level copies to an exact-size buffer instead of retaining the ~25%-oversized allocation.' },
   { v: 'v1.32.79', date: '2026-07-02', n: 'Major performance pass — identical output, ~5× faster full rebuild at default settings, verified stage-by-stage against the previous implementation in a Node harness (SHA-256 comparison of field/position/index buffers). (1) fastMergeVertices replaces three\'s mergeVertices at both call sites: same algorithm (quantized-tuple merge, first-seen wins) but an open-addressed integer hash instead of a JS string key per referenced vertex — the simplify weld over the 64×-subdivided mesh drops from ~38s to ~5s (7.7×), the post-MC weld 3.5×. (2) subdivideMidpoint edge dedup switched from a numeric-keyed Map to a typed-array open-addressed table — 2× (6.8s → 3.3s at Extreme detail). (3) buildField: per-branch segment invariants hoisted out of the per-voxel loop with capsule SDF + smooth-min inlined (bit-identical operand order). (4) marchingCubes accumulates into Float32Array chunks instead of a multi-million-element JS number array (same values, far less GC). (5) scheduleRegen: the 64³ fast preview now fires only during a drag burst — a single click (checkbox, dropdown, dice) no longer runs the whole pipeline twice. (6) The 64³ drag preview is now "lite": subdivision capped at 1 level, simplify/shell-cleanup/printability-auto-fix deferred to the settle pass — the final settled mesh is unchanged. (7) colorizeMesh spatial hash uses packed-integer cell keys.' },
   { v: 'v1.32.78', date: '2026-05-06', n: 'Coralline — occasional mushroom growths. Up to 8 mushrooms per creature emerge from random maxDepth tips and grow upward. Each mushroom has: (1) a 6-segment tapered stalk (base wider than top) with mild spiral torque (0.6–1.4 turns, amplitude 60% of stalk radius, sin(πt) envelope so the base + cap junctions stay clean); (2) a slightly flattened dome cap built as two stacked spheres (lower one wider, upper one 85% radius, offset along stalk axis); (3) 14 radial gills on each side — both classic underside gills and decorative top gills (per request — real mushrooms only have gills below). Each is a thin tapered capsule. Direction is mostly +Y with up to ~18° random tilt for organic variety. Mushroom dice use a separate rng stream so toggling the feature can\'t shift the underlying coral skeleton. New colorize palette entries: mushroomStalk (warm beige), mushroomCap (terracotta), mushroomGill (cream).' },
   { v: 'v1.32.77', date: '2026-05-06', n: 'Coralline — wavier, more varied tendrils + new default creature. (1) creatureType default: acantharian → coralline. (2) New shared pushWavyChain helper builds every coral tendril (primary stems AND recursive children) as an 8-segment chain that wanders in 3D — two perpendicular wave axes, per-branch random frequencies (0.8–2.4 cycles primary, 1.2–3.2 secondary) and amplitudes (0.6–1.5× primary, 0.05–0.7× perpendicular). The bell envelope sin(πt) keeps tip endpoints exactly at the intended childEnd so recursive children stay attached. (3) Primary stems were single straight capsules; now wavy chains too with 0.55× amplitude (gentle stems, not full corkscrews). (4) Net effect: the bouquet reads as varied wandering tendrils — some near-flat with a single arc, some 3D-spiraling with multiple wave cycles — instead of geometric branching graphs. Cost: ~2× more capsules per coralline build (primaries went from 1 to 8 caps each, children from 4 to 8).' },
